@@ -14,5 +14,6 @@ inputs = [
   "packages/registry/libuv/src/kandelo-uptime.c",
   "scripts/package-build-roots.sh",
   "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/kandelo-toolchain-common.cmake",
   "sdk/cmake/Platform/Kandelo.cmake",
 ]

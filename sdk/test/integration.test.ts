@@ -666,7 +666,15 @@ describe('integration: compile C program', () => {
       expect(compile.exitCode, compile.stderr).toBe(0);
       const pack = sdk(AR, ['rcs', archive, object]);
       expect(pack.exitCode, pack.stderr).toBe(0);
-      for (const [used, threaded] of [[false, false], [true, false], [false, true], [true, true]]) {
+      const cases = [
+        { used: false, threaded: false, flags: [] },
+        { used: true, threaded: false, flags: [] },
+        { used: false, threaded: true, flags: [] },
+        { used: true, threaded: true, flags: [] },
+        { used: false, threaded: false, flags: ['-ldl'] },
+        { used: true, threaded: false, flags: ['-ldl'] },
+      ];
+      for (const { used, threaded, flags } of cases) {
         writeFileSync(main, `
           #include <pthread.h>
           void *open_plugin(const char *);
@@ -677,17 +685,41 @@ describe('integration: compile C program', () => {
             return ${used ? 'open_plugin(argv[argc - 1]) == 0' : '0'};
           }
         `);
-        const link = sdk(CC, ['-flto', '-O2', main, archive, '-o', output]);
+        const link = sdk(CC, ['-flto', '-O2', main, archive, ...flags, '-o', output]);
         expect(link.exitCode, link.stderr).toBe(0);
         const module = new WebAssembly.Module(readFileSync(output));
         const imports = WebAssembly.Module.imports(module);
         expect(imports.some(({ module }) => module === 'kandelo.loader.v1')).toBe(used);
         expect(imports.some(({ name }) => name === 'kernel_clone')).toBe(threaded);
-        expect(imports.some(({ name }) => name === 'kernel_fork')).toBe(used && threaded);
-        expect(WebAssembly.Module.exports(module).some(({ name }) => name === 'fork')).toBe(used && threaded);
+        const needsFork = used && (threaded || flags.includes('-ldl'));
+        expect(imports.some(({ name }) => name === 'kernel_fork')).toBe(needsFork);
+        expect(WebAssembly.Module.exports(module).some(({ name }) => name === 'fork')).toBe(needsFork);
       }
     } finally {
       for (const file of [member, object, archive, main, output]) {
+        if (existsSync(file)) unlinkSync(file);
+      }
+    }
+  }, 60_000);
+
+  it('keeps lookup-only -ldl executables free of the mapping and fork imports', () => {
+    mkdirSync(TMP_DIR, { recursive: true });
+    const main = join(TMP_DIR, 'loader-lookup-main.c');
+    const output = join(TMP_DIR, 'loader-lookup-main.wasm');
+    try {
+      writeFileSync(main, `
+        #include <dlfcn.h>
+        int main(void) { return dlsym(RTLD_DEFAULT, "main") == 0; }
+      `);
+      const result = sdk(CC, ['-O2', '-rdynamic', main, '-ldl', '-o', output]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const module = new WebAssembly.Module(readFileSync(output));
+      const imports = WebAssembly.Module.imports(module);
+      expect(imports.some(({ module }) => module === 'kandelo.loader.v1')).toBe(false);
+      expect(imports.some(({ name }) => name === 'kernel_fork')).toBe(false);
+      expect(WebAssembly.Module.exports(module).some(({ name }) => name === 'fork')).toBe(false);
+    } finally {
+      for (const file of [main, output]) {
         if (existsSync(file)) unlinkSync(file);
       }
     }

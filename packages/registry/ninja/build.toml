@@ -2,6 +2,7 @@ script_path = "packages/registry/ninja/build-ninja.sh"
 inputs = [
   "packages/registry/ninja/build-ninja.sh",
   "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/kandelo-toolchain-common.cmake",
   "sdk/cmake/Platform/Kandelo.cmake",
   "scripts/package-build-roots.sh",
   "scripts/install-local-binary.sh",

@@ -3,6 +3,7 @@ inputs = [
   "packages/registry/json-c/build-json-c.sh",
   "packages/registry/json-c/patches",
   "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/kandelo-toolchain-common.cmake",
   "sdk/cmake/Platform/Kandelo.cmake",
   "scripts/package-build-roots.sh",
 ]

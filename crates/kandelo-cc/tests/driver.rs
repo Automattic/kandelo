@@ -103,12 +103,19 @@ fn compile_and_link_adds_compile_and_link_flags_plus_glue() {
 }
 
 #[test]
-fn ldl_selects_the_functional_dynamic_loading_glue() {
+fn ldl_requests_fork_support_for_named_loading() {
     let args = build(&["foo.c", "-ldl", "-o", "foo.wasm"]);
     assert!(!has(&args, "-ldl"));
     assert!(has(&args, "/tmp/glue/dlopen.c"));
     assert!(has(&args, "/tmp/glue/dynsym.c"));
+    assert!(has(&args, "-Wl,--kandelo-fork-for-plugins"));
     assert!(!has(&args, "-Wl,--export=fork"));
+
+    let automatic = build(&["foo.c", "-o", "foo.wasm"]);
+    assert!(!has(&automatic, "-Wl,--kandelo-fork-for-plugins"));
+
+    let side = build(&["-shared", "plugin.c", "-ldl", "-o", "plugin.so"]);
+    assert!(!has(&side, "-Wl,--kandelo-fork-for-plugins"));
 }
 
 #[test]
@@ -310,6 +317,7 @@ fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
         leading: strings(&["/tmp/g/channel_syscall.o", "/tmp/g/compiler_rt.o"]),
         loader: strings(&["/tmp/g/dlopen.o"]),
         fallback: strings(&["/tmp/g/cxxrt.o"]),
+        ..Glue::default()
     };
     let args = build_clang_args(
         &strings(&["main.o", "-o", "out.wasm"]),
@@ -339,6 +347,57 @@ fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
 }
 
 #[test]
+fn links_declared_fictions_lazily_ahead_of_the_callers_inputs() {
+    let objects = Glue {
+        leading: strings(&["/tmp/g/channel_syscall.o", "/tmp/g/compiler_rt.o"]),
+        fallback: strings(&["/tmp/g/cxxrt.o"]),
+        fictions: strings(&["/tmp/g/kandelo_fiction_mprotect.o"]),
+        fiction_libraries: strings(&["-lkandelo-mprotect"]),
+        ..Glue::default()
+    };
+    let args = build_clang_args(
+        &strings(&["main.o", "-lkandelo-mprotect", "-o", "out.wasm"]),
+        &toolchain(),
+        WasmArch::Wasm32,
+        Language::C,
+        executable_link(8 * MIB),
+        Some(&objects),
+    )
+    .unwrap();
+    let fiction = index_of(&args, "/tmp/g/kandelo_fiction_mprotect.o").unwrap();
+    assert_eq!(
+        args[fiction - 1..=fiction + 1],
+        strings(&["-Wl,--start-lib", "/tmp/g/kandelo_fiction_mprotect.o", "-Wl,--end-lib"])[..]
+    );
+    // Ahead of everything that could define mprotect, including a caller's
+    // own -lkandelo-mprotect, so its lazy definition is the one lld keeps.
+    assert!(fiction < index_of(&args, "/tmp/sysroot/lib/crt1.o").unwrap());
+    assert!(fiction < index_of(&args, "main.o").unwrap());
+    let caller_library = index_of(&args, "-lkandelo-mprotect").unwrap();
+    assert!(fiction < caller_library);
+    // The support library follows the caller's inputs.
+    let support = args.iter().rposition(|a| a == "-lkandelo-mprotect").unwrap();
+    assert!(support > caller_library);
+    assert!(support < index_of(&args, "/tmp/sysroot/lib/libc.a").unwrap());
+}
+
+#[test]
+fn consumes_the_fiction_flag_instead_of_forwarding_it() {
+    let parsed = kandelo_cc::flags::parse_args(&strings(&[
+        "--kandelo-fiction=mprotect:prot_none=accept-unenforced",
+        "--kandelo-fiction",
+        "mprotect:read_only=accept-unenforced",
+        "main.c",
+    ]))
+    .unwrap();
+    assert_eq!(
+        parsed.fictions,
+        strings(&["mprotect:prot_none=accept-unenforced", "mprotect:read_only=accept-unenforced"])
+    );
+    assert_eq!(parsed.forwarded_args, strings(&["main.c"]));
+}
+
+#[test]
 fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
     let toolchain = toolchain();
     assert_eq!(
@@ -347,6 +406,7 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
             leading: strings(&["/tmp/glue/channel_syscall.c", "/tmp/glue/compiler_rt.c"]),
             loader: strings(&["/tmp/glue/dynsym.c", "/tmp/glue/dlopen.c"]),
             fallback: strings(&["/tmp/glue/cxxrt.c"]),
+            ..Glue::default()
         }
     );
     let args = build_glue_compile_args(

@@ -4,7 +4,9 @@
 
 use crate::Result;
 use crate::arch::{Language, WasmArch, target_triple};
-use crate::exec::{RunResult, run, run_passthrough, run_without_env};
+use crate::exec::{
+    RunResult, run, run_passthrough, run_passthrough_capturing_stderr, run_without_env,
+};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
     calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags,
@@ -374,6 +376,15 @@ pub struct Glue {
     /// of libc.a: the minimal C++ runtime fallback (`cxxrt.c`), used only
     /// for what libc++ and libc++abi did not define.
     pub fallback: Vec<String>,
+    /// The generated definitions of the declared fictions
+    /// (`crate::fictions`), linked lazily ahead of crt1.o and the caller's
+    /// inputs: a member is used only when the program refers to what it
+    /// defines, and then in place of the SDK library's truthful definition
+    /// (lld keeps the first lazy definition of a symbol).
+    pub fictions: Vec<String>,
+    /// The SDK libraries the fictions' definitions call, linked after the
+    /// caller's inputs.
+    pub fiction_libraries: Vec<String>,
 }
 
 /// The glue source that installs the C++ runtime's language entries.
@@ -390,6 +401,7 @@ pub fn glue_sources(toolchain: &Toolchain, cxx_runtime: bool) -> Glue {
         leading: leading.iter().map(path).collect(),
         loader: ["dynsym.c", "dlopen.c"].iter().map(path).collect(),
         fallback: ["cxxrt.c"].iter().map(path).collect(),
+        ..Glue::default()
     }
 }
 
@@ -707,6 +719,14 @@ fn build_clang_args_internal(
                 None => glue_sources(toolchain, links_cxx_runtime(language, &filtered)),
             };
             args.extend(glue.leading);
+            if parsed.link_dl {
+                args.push("-Wl,--kandelo-fork-for-plugins".into());
+            }
+            if !glue.fictions.is_empty() {
+                args.push("-Wl,--start-lib".into());
+                args.extend(glue.fictions);
+                args.push("-Wl,--end-lib".into());
+            }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
             let lazy_group = |members: Vec<String>| -> Vec<String> {
@@ -739,6 +759,7 @@ fn build_clang_args_internal(
             if links_cxx_stdlib(language, &filtered) {
                 args.extend(["-lc++", "-lc++abi"].map(String::from));
             }
+            args.extend(glue.fiction_libraries);
             // The minimal C++ runtime is a fallback for C++ code linked
             // without libc++ and libc++abi. As a lazy member after them it
             // supplies only what they did not: libc++'s operator new, which
@@ -857,6 +878,16 @@ fn run_compiler_passthrough(compiler: &str, args: &[String]) -> Result<i32> {
     Ok(run_passthrough(compiler, &args))
 }
 
+/// Like `run_compiler_passthrough`, but also returns the compiler's stderr
+/// (still shown to the caller) so a link failure can be explained.
+fn run_compiler_passthrough_capturing_stderr(
+    compiler: &str,
+    args: &[String],
+) -> Result<(i32, String)> {
+    let (args, _directory) = compiler_command_args(args)?;
+    Ok(run_passthrough_capturing_stderr(compiler, &args))
+}
+
 /// Compile the link-time glue for an executable link into a temporary
 /// directory. Returns the objects (in link order) and the directory holding
 /// them, or `None` when this invocation is not an executable link.
@@ -866,6 +897,7 @@ pub fn compile_executable_glue(
     arch: WasmArch,
     language: Language,
     executable_linker: Option<LinkerPreparation>,
+    fiction_selections: &[crate::fictions::Selection],
 ) -> Result<Option<(Glue, TempDir)>> {
     if !matches!(
         executable_linker,
@@ -931,11 +963,42 @@ pub fn compile_executable_glue(
         };
         node_path::join(&[&dir_text, &object])
     };
-    let objects = Glue {
+    let mut objects = Glue {
         leading: sources.leading.iter().map(object).collect(),
         loader: sources.loader.iter().map(object).collect(),
         fallback: sources.fallback.iter().map(object).collect(),
+        ..Glue::default()
     };
+    for selection in fiction_selections {
+        let name = crate::fictions::source_name(selection);
+        let source = dir.path().join(&name);
+        std::fs::write(&source, crate::fictions::source(selection))
+            .map_err(|error| format!("cannot write {}: {error}", source.display()))?;
+        let source_text = source.to_string_lossy().into_owned();
+        let mut args = glue_compile_base(toolchain, arch);
+        args.push("-iquote".into());
+        args.push(toolchain.glue_dir.clone());
+        args.extend(["-O2", "-x", "c", "-c"].map(String::from));
+        args.push(source_text.clone());
+        let result = run_without_env(
+            &toolchain.cc,
+            &args,
+            Some(dir.path()),
+            &["CCC_OVERRIDE_OPTIONS"],
+        );
+        if result.exit_code != 0 {
+            return Err(format!(
+                "compiling the declared fiction {} failed:\n{}",
+                selection.fiction.name,
+                result.stderr.trim()
+            ));
+        }
+        objects.fictions.push(object(&source_text));
+        let library = crate::fictions::support_library(selection).to_string();
+        if !objects.fiction_libraries.contains(&library) {
+            objects.fiction_libraries.push(library);
+        }
+    }
     Ok(Some((objects, dir)))
 }
 
@@ -1172,8 +1235,11 @@ pub fn run_compiler_driver(
             );
         }
     }
-    let exit_code = run_compiler_passthrough(compiler, &link_args)?;
+    let (exit_code, link_stderr) = run_compiler_passthrough_capturing_stderr(compiler, &link_args)?;
     if exit_code != 0 {
+        if let Some(hint) = link_failure_hint(&link_stderr) {
+            eprintln!("{hint}");
+        }
         return Ok(exit_code);
     }
 
@@ -1212,6 +1278,60 @@ pub fn run_compiler_driver(
     }
     stamp_abi_contract(&output, abi_contract)?;
     Ok(0)
+}
+
+/// Guidance for a link that failed on a symbol Kandelo deliberately leaves
+/// out of libc.a, naming the opt-in library and why it is not the default.
+pub fn link_failure_hint(linker_stderr: &str) -> Option<&'static str> {
+    let undefined = |symbol: &str| {
+        linker_stderr.lines().any(|line| {
+            line.split("undefined symbol: ").skip(1).any(|rest| {
+                rest.strip_prefix(symbol).is_some_and(|after| {
+                    !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+        })
+    };
+    undefined("mprotect").then_some(MPROTECT_LINK_HINT)
+}
+
+const MPROTECT_LINK_HINT: &str = "kandelo: mprotect() is not linked by default. \
+WebAssembly memory has no page protection, so Kandelo cannot make memory read-only, \
+inaccessible or executable. If this program only uses mprotect() to make memory \
+readable and writable (for example to commit a PROT_NONE reservation), link \
+-lkandelo-mprotect: its mprotect() accepts PROT_READ|PROT_WRITE (with or without \
+PROT_EXEC) and fails with ENOTSUP for a request that would remove read or write \
+access. See \"Opt-in libraries for unsupported APIs\" in docs/sdk-guide.md.";
+
+#[cfg(test)]
+mod link_hint_tests {
+    use super::link_failure_hint;
+
+    #[test]
+    fn names_the_mprotect_opt_in_for_an_undefined_mprotect() {
+        let stderr = "wasm-ld: error: /tmp/a.o: undefined symbol: mprotect\n\
+            clang: error: linker command failed with exit code 1\n";
+        let hint = link_failure_hint(stderr).expect("hint");
+        assert!(hint.contains("-lkandelo-mprotect"));
+        assert!(hint.contains("ENOTSUP"));
+    }
+
+    #[test]
+    fn stays_quiet_for_other_symbols() {
+        assert_eq!(
+            link_failure_hint("wasm-ld: error: a.o: undefined symbol: mprotect_all\n"),
+            None
+        );
+        assert_eq!(
+            link_failure_hint("wasm-ld: error: a.o: undefined symbol: __mprotect\n"),
+            None
+        );
+        assert_eq!(
+            link_failure_hint("wasm-ld: error: a.o: undefined symbol: getcontext\n"),
+            None
+        );
+        assert_eq!(link_failure_hint(""), None);
+    }
 }
 
 /// Append the SDK's `kandelo.abi.contract` digest to a linked program, after
@@ -1280,7 +1400,18 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     }
     let executable_linker =
         prepare_executable_linker(user_args, &mut toolchain, arch, language, &compiler)?;
-    let glue = compile_executable_glue(user_args, &toolchain, arch, language, executable_linker)?;
+    // Validated for every invocation, so a bad selection fails at the first
+    // compile rather than at a configure test's link.
+    let fiction_flags = parse_args(&filter_args(user_args, arch).filtered)?.fictions;
+    let fiction_selections = crate::fictions::selections_from_environment(&fiction_flags)?;
+    let glue = compile_executable_glue(
+        user_args,
+        &toolchain,
+        arch,
+        language,
+        executable_linker,
+        &fiction_selections,
+    )?;
     // An executable link links the glue, and carries the glue's digest.
     let abi_contract = glue
         .as_ref()

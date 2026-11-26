@@ -20,7 +20,7 @@
 # Qt through QT_HOST_PATH; CMake rejects a host/target version mismatch,
 # so the two versions move together.
 #
-# Three target adaptations, each for a stated reason:
+# Four target adaptations, each for a stated reason:
 #
 #   -D__linux__=1   qsystemdetection.h:138 has no wasm branch and errors
 #                   out. CMAKE_SYSTEM_NAME only settles the build
@@ -41,6 +41,15 @@
 #                   the thread-name guard Qt 6.12 dropped.
 #
 #   src/include     supplies the empty <linux/fs.h> QtCore includes.
+#
+#   -lkandelo-mprotect  QtCore's resource engine makes a remapped resource
+#                   writable with mprotect(PROT_READ|PROT_WRITE), and
+#                   libc.a has no mprotect(). The SDK's opt-in library
+#                   carries out such requests (it refuses only those that
+#                   remove read or write access, which QtCore never
+#                   makes). src/qtcore-link-kandelo-mprotect-on-wasm.patch
+#                   puts it in Qt6Core's link interface so consumers
+#                   link it through Qt6CoreTargets.cmake.
 #
 # OpenGL is off, so the Wayland client runs on wl_shm alone. Qt refuses
 # that through INPUT_opengl rather than FEATURE_opengl: gui/configure.cmake
@@ -150,6 +159,7 @@ if [ ! -d "$SRC_DIR" ]; then
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/forkfd-generic-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-fd-notifier-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/dbus-manager-on-thread-on-wasm.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qtcore-link-kandelo-mprotect-on-wasm.patch"
 fi
 
 rm -rf "$BUILD_DIR"

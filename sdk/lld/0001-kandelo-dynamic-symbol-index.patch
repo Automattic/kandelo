@@ -1,15 +1,17 @@
 --- a/lld/wasm/Config.h
 +++ b/lld/wasm/Config.h
-@@ -62,0 +63 @@
+@@ -62,0 +63,2 @@
 +  bool kandeloSideDynsym;
++  bool kandeloForkForPlugins;
 --- a/lld/wasm/Driver.cpp
 +++ b/lld/wasm/Driver.cpp
-@@ -540,0 +541 @@
+@@ -540,0 +541,2 @@
 +  ctx.arg.kandeloSideDynsym = args.hasArg(OPT_kandelo_side_dynsym);
-@@ -594,0 +596,2 @@
++  ctx.arg.kandeloForkForPlugins = args.hasArg(OPT_kandelo_fork_for_plugins);
+@@ -594,0 +597,2 @@
 +  if (ctx.arg.kandeloSideDynsym && !ctx.arg.shared)
 +    error("--kandelo-side-dynsym requires --shared");
-@@ -1520,1 +1523,10 @@
+@@ -1520,1 +1524,10 @@
    markLive();
 +
 +  // Side modules can bind the process fork entry when the main program
@@ -24,18 +26,19 @@
 +++ b/lld/wasm/MarkLive.cpp
 @@ -26,0 +27 @@
 +#include "lld/Common/ErrorHandler.h"
-@@ -143,0 +145,16 @@
+@@ -143,0 +145,17 @@
 +
-+  // A pthread Worker has its own WebAssembly table. A program that can both
-+  // load modules and start threads needs the continuation instrumenter's
-+  // table reconciliation points, even when no C caller names fork.
++  // A pthread Worker's table needs reconciliation after a module is
++  // mapped. Explicit SDK -ldl also requests activation support for
++  // instrumented plugins when named loading survives the final link.
 +  Symbol *map = symtab->find("__kandelo_map_module_v1");
 +  Symbol *clone = symtab->find("kernel_clone");
 +  if (!ctx.arg.shared && map && map->isLive() && isa<UndefinedFunction>(map) &&
-+      clone && clone->isLive() && isa<UndefinedFunction>(clone)) {
++      (ctx.arg.kandeloForkForPlugins ||
++       (clone && clone->isLive() && isa<UndefinedFunction>(clone)))) {
 +    auto *fork = dyn_cast_or_null<DefinedFunction>(symtab->find("fork"));
 +    if (!fork) {
-+      error("Kandelo threaded dynamic loading requires the SDK fork entry");
++      error("Kandelo plugin fork support requires the SDK fork entry");
 +      return;
 +    }
 +    enqueue(fork);
@@ -43,9 +46,11 @@
 +  }
 --- a/lld/wasm/Options.td
 +++ b/lld/wasm/Options.td
-@@ -72,0 +73,3 @@
+@@ -72,0 +73,5 @@
 +def kandelo_side_dynsym: F<"kandelo-side-dynsym">,
 +  HelpText<"Emit Kandelo's module-relative dynamic symbol index for a shared object">;
++def kandelo_fork_for_plugins: F<"kandelo-fork-for-plugins">,
++  HelpText<"Retain fork support when the executable uses named module loading">;
 +
 --- a/lld/wasm/Writer.cpp
 +++ b/lld/wasm/Writer.cpp

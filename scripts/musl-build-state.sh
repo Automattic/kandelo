@@ -10,7 +10,7 @@ kandelo_musl_input_hash() {
 kandelo_musl_is_current() {
     local sysroot="$1" hash="$2" output
     for output in lib/libc.a lib/crt1.o lib/crti.o lib/crtn.o \
-        lib/libkandelo-ucontext-unsupported.a include/stdio.h \
+        lib/libkandelo-ucontext-unsupported.a lib/libkandelo-mprotect.a include/stdio.h \
         include/bits/alltypes.h include/bits/kandelo_thread_syscalls.h; do
         [ -s "$sysroot/$output" ] || return 1
     done

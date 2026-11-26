@@ -121,20 +121,18 @@ function buildSharedLibrary(
   return libraryPath;
 }
 
-function buildMainProgram(source: string): string {
+function buildMainProgram(source: string, exportFlag = "-Wl,--export-all"): string {
   const sourcePath = join(buildDir, "fork-from-side-main.c");
   const wasmPath = join(buildDir, "fork-from-side-main.wasm");
   writeFileSync(sourcePath, source);
   // The driver supplies the target, the sysroot, -nostdlib, the codegen
-  // flags, the syscall glue, compiler_rt.c, cxxrt.c, crt1.o, libc.a and every
-  // -Wl, flag. `-ldl` is how it spells the dlopen glue this program needs
-  // (parse_args/link_dl, crates/kandelo-cc/src/driver.rs). `-Wl,--export-all` stays: it is
-  // this fixture's own requirement, not part of the platform contract.
+  // flags, the syscall glue, compiler_rt.c, cxxrt.c, crt1.o, and libc.a.
+  // With `-rdynamic`, `-ldl` retains the fork entry for the plugin.
   execFileSync(cc, [
     "-O2",
     "-ldl",
     sourcePath,
-    "-Wl,--export-all",
+    exportFlag,
     "-o",
     wasmPath,
   ], { stdio: "pipe" });
@@ -145,7 +143,7 @@ function buildMainProgram(source: string): string {
 describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
   beforeAll(() => mkdirSync(buildDir, { recursive: true }));
 
-  it("preserves the side frame and returns in both parent and child", async () => {
+  it("preserves the side frame in both processes when -ldl supplies the fork entry", async () => {
     const libraryPath = buildSharedLibrary(`
       extern int fork(void);
       extern void exit(int);
@@ -187,7 +185,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
         puts("side fork ok");
         return 0;
       }
-    `);
+    `, "-rdynamic");
 
     // Ensure the compiler actually produced a side module with fork state;
     // a stale/inert fixture must never turn this into a false-positive run.
@@ -204,14 +202,17 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     expect(readForkInstrumentCapabilities(programModule) & FORK_CAP_DYLINK_MAIN)
       .toBe(FORK_CAP_DYLINK_MAIN);
 
+    const pluginPath = "/lib/libforkinside.so";
     const result = await runCentralizedProgram({
       programPath,
-      argv: ["fork-from-side-main", libraryPath],
+      argv: ["fork-from-side-main", pluginPath],
+      execPrograms: new Map([[pluginPath, libraryPath]]),
+      useDefaultRootfs: false,
       timeout: 30_000,
-      io: new NodePlatformIO(),
     });
     expect(result.exitCode, `stderr:\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("side fork ok");
+    expect(result.hostDiagnostics).toEqual([]);
   }, 30_000);
 
   it("runs mode-1 vfork from a real side-module frame in the production worker path", async () => {

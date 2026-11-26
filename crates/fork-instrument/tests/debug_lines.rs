@@ -89,6 +89,8 @@ fn linked_dwarf4_and_dwarf5_resolve_executed_frame_locations() {
     )
     .unwrap();
     let module = directory.path().join("linked.wasm");
+    // The DWARF harness instantiates a freestanding module with its own
+    // env.capture import and calls outer directly.
     for version in [4, 5] {
         output(
             Command::new(llvm.join("clang"))
@@ -108,7 +110,6 @@ fn linked_dwarf4_and_dwarf5_resolve_executed_frame_locations() {
                 .args([
                     "-Wl,--export=outer",
                     "-Wl,--no-entry",
-                    "-Wl,--allow-undefined",
                     "inner.c",
                     "outer.c",
                     "-o",
@@ -355,6 +356,7 @@ fn rust_source_locations_survive_the_full_optimized_cli() {
     let source_root = directory.path().canonicalize().unwrap();
     let source = directory.path().join("frames.rs");
     fs::write(&source, include_str!("fixtures/debug-lines/frames.rs")).unwrap();
+    // Build a freestanding cdylib for the same direct-call DWARF harness.
     let module = directory.path().join("rust.wasm");
     output(
         Command::new("rustc")
@@ -366,7 +368,6 @@ fn rust_source_locations_survive_the_full_optimized_cli() {
                 "-g",
                 "-Cpanic=abort",
                 "-Copt-level=0",
-                "-Clink-arg=--allow-undefined",
             ])
             .arg(format!(
                 "--remap-path-prefix={}=/kandelo-debug-fixture",
