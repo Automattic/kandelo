@@ -65,8 +65,10 @@ def main(args):
         env.update(CC='wasm32posix-cc', CXX='wasm32posix-c++',
                    AR='wasm32posix-ar', RANLIB='wasm32posix-ranlib')
         commands = []
+        # Like standalone OpenSSL, disable the secure heap because Wasm
+        # linear memory cannot enforce its PROT_NONE guard pages.
         commands.append(run(['perl', 'Configure', *make_value(makefile, 'COPTS'),
-                             'no-asm', 'no-docs', 'kandelo-wasm32'], upstream,
+                             'no-asm', 'no-docs', 'no-secure-memory', 'kandelo-wasm32'], upstream,
                             work / 'openssl-configure.log', env))
         commands.append(run(['perl', '-w', '-I' + str(upstream), './generate_gypi.pl',
                              'no-asm', 'kandelo-wasm32', *[' '.join(group) for group in groups]],
@@ -77,6 +79,9 @@ def main(args):
         commands.append(run(['perl', '-I' + str(templates[0]), './generate_headers.pl',
                              *[' '.join(group) for group in groups]], config,
                             work / 'openssl-headers.log', env))
+        configuration = (generated / 'include/openssl/configuration.h').read_text()
+        if not re.search(r'^#\s*define OPENSSL_NO_SECURE_MEMORY\b', configuration, re.M):
+            raise ValueError('Generated Kandelo OpenSSL configuration must disable the secure heap')
         for name in ('openssl.gypi', 'openssl-cl.gypi', 'openssl-fips.gypi'):
             text = (generated / name).read_text()
             for forbidden in ('-m64', '-m32', '-D__linux__'):
