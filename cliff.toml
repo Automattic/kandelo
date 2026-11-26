@@ -1,0 +1,30 @@
+# An editorial inventory, not the published changelog. Include old and current
+# subject conventions, and retain unmatched changes for a human to review.
+[changelog]
+header = "# Kandelo history inventory\n\nReview against current documentation before publishing any claims.\n"
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+## {{ group }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first }} ([{{ commit.id | truncate(length=10, end="") }}](https://github.com/Automattic/kandelo/commit/{{ commit.id }}))
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+filter_commits = false
+tag_pattern = "^kandelo-update-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+sort_commits = "oldest"
+commit_parsers = [
+  { message = "^Browser:", group = "Browser" },
+  { message = "^(Agents?|Tools):", group = "Contributor and agent workflows" },
+  { message = "^(Packages?|Ports?):", group = "Ports and packages" },
+  { message = "^POSIX:", group = "POSIX" },
+  { message = "^(SDK|Rust|Libc):", group = "SDK and languages" },
+  { message = "^(ABI|Kernel|Host|Graphics):", group = "Platform" },
+  { message = "^(CI|Build|Tests?|Docs):", group = "Development and documentation" },
+  { message = ".*", group = "Other history to review" },
+]

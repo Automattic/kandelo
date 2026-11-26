@@ -1,0 +1,35 @@
+[tool.towncrier]
+name = "Kandelo"
+directory = "changelog.d"
+filename = "CHANGELOG.md"
+title_format = "## {version}"
+issue_format = "[#{issue}](https://github.com/Automattic/kandelo/pull/{issue})"
+wrap = true
+
+[[tool.towncrier.type]]
+directory = "breaking"
+name = "Breaking Changes & Migration"
+
+[[tool.towncrier.type]]
+directory = "ui"
+name = "User Interface"
+
+[[tool.towncrier.type]]
+directory = "agentic"
+name = "Agentic Workflows"
+
+[[tool.towncrier.type]]
+directory = "ports"
+name = "Ports & Packages"
+
+[[tool.towncrier.type]]
+directory = "correctness"
+name = "Correctness"
+
+[[tool.towncrier.type]]
+directory = "completeness"
+name = "POSIX Completeness"
+
+[[tool.towncrier.type]]
+directory = "features"
+name = "New Capabilities"

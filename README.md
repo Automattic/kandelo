@@ -11,6 +11,9 @@ to create a computer. Nothing to install.
 Kandelo is experimental. POSIX conformance is the goal; some interfaces are
 incomplete or limited by WebAssembly and browser security rules.
 
+See the [changelog](CHANGELOG.md) for dated progress updates and compatibility
+notes.
+
 ## What runs on it
 
 | Examples | What you can do |
