@@ -340,6 +340,7 @@ impl Storage {
             // lock. Read its stable PTEs in bounded chunks, as mapping setup
             // does, instead of crossing into the host for every unused word.
             // Peer tables below remain atomic: their locks are not held here.
+            let physical_pages = memory.current_pages()?;
             let mut entries = [0; 4096];
             for first in (0..image.layout.maximum_pages).step_by(entries.len() / 4) {
                 let count = (image.layout.maximum_pages - first).min(1024) as usize;
@@ -356,7 +357,7 @@ impl Storage {
                     if entry & 0xfffc != 0
                         || page == 0
                         || page >= self.maximum_pages
-                        || page >= memory.current_pages()?
+                        || page >= physical_pages
                     {
                         return Err(Errno::EIO);
                     }

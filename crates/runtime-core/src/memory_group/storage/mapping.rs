@@ -123,6 +123,8 @@ impl Storage {
             }
             mapping.new_extent = mapping.old_extent;
             read_table(memory, root, &mut mapping.before)?;
+            // The root lock keeps these entries stable and the backing can only grow.
+            let physical_pages = memory.current_pages()?;
             for (at, entry) in mapping.before.iter().copied().enumerate() {
                 if entry == 0 {
                     continue;
@@ -130,7 +132,7 @@ impl Storage {
                 if entry & 0xfffc != 0
                     || entry >> 16 == 0
                     || at >= mapping.old_extent as usize
-                    || entry >> 16 >= memory.current_pages()?
+                    || entry >> 16 >= physical_pages
                     || entry >> 16 >= self.maximum_pages
                 {
                     return Err(Errno::EIO);
@@ -653,6 +655,31 @@ mod tests {
         memory
             .atomic_load(root + layout::ROOT_HEADER_BYTES + virtual_page * 4)
             .unwrap()
+    }
+
+    #[test]
+    fn mapping_and_reclaim_refuse_the_first_frame_past_the_backing() {
+        let (_groups, mut storage, mut memory, admission) = running();
+        let root = storage.descriptor(admission).unwrap().root;
+        let slot = root + layout::ROOT_HEADER_BYTES + 4;
+        let original = memory.atomic_load(slot).unwrap();
+        let past_end = memory.current_pages().unwrap() * PAGE;
+        let before = storage.snapshot(&mut memory).unwrap()[5];
+        let epoch = pause(&mut storage, &mut memory, admission);
+        memory.atomic_store(slot, past_end | 3).unwrap();
+        let change = description(admission, 1, Effect::Unmap {
+            addr: PAGE as usize,
+            len: PAGE as usize,
+        });
+        assert_eq!(
+            storage.stage_mapping(&mut memory, admission, epoch, change, None),
+            Err(Errno::EIO)
+        );
+        assert_eq!(storage.reclaim_removed_pages(&mut memory, admission), Err(Errno::EIO));
+        assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+        assert_eq!(memory.atomic_load(root + layout::ROOT_GROW_LOCK).unwrap(), 0);
+        memory.atomic_store(slot, original).unwrap();
+        storage.resume_image(&mut memory, admission, epoch).unwrap();
     }
 
     #[test]
