@@ -1,5 +1,5 @@
 use super::{Budget, add_reference};
-use crate::streaming::{FrameBuilder, FrameLayout, FunctionIr, LocalKey};
+use crate::streaming::{CallPoolCursor, FrameBuilder, FrameLayout, FunctionIr, LocalKey};
 use anyhow::{Context, Result, ensure};
 use std::ops::Range;
 use wasm_encoder::{Function, ValType, reencode::Reencode};
@@ -88,6 +88,7 @@ pub(super) fn plan(
     pure_allowed: bool,
     frame: &mut FrameBuilder,
     budget: &mut Budget,
+    mut call_pool: Option<&mut CallPoolCursor>,
 ) -> Result<OperandMaterialization> {
     if types.is_empty() {
         return Ok(OperandMaterialization::Empty);
@@ -100,7 +101,10 @@ pub(super) fn plan(
     Ok(OperandMaterialization::Spill(
         types
             .iter()
-            .map(|&ty| frame.saved(ty))
+            .map(|&ty| match call_pool.as_deref_mut() {
+                Some(cursor) => frame.saved_call_operand(ty, cursor),
+                None => frame.saved(ty),
+            })
             .collect::<Result<_>>()?,
     ))
 }

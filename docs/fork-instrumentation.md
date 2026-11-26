@@ -1605,7 +1605,17 @@ so these historical measurements are constraints on generated shape, not a
 current performance claim.
 
 Synthetic scalar locals include only call arguments and operand-stack
-carryovers that cannot be replayed directly. Catch code uses one exact-arm
+carryovers that cannot be replayed directly. Call sites share them: a call's
+saved arguments and carryovers are written just before that call and read
+only while it is in flight (to re-push them after it returns, to capture
+them when it unwinds, or to replay that one landing), and an activation has
+at most one call in flight. So the n-th saved operand of a given scalar type
+uses the same local at every call site (`FrameBuilder::saved_call_operand`),
+and a function declares as many of them per type as its busiest call site
+needs rather than one per site. Reference operands keep a local per site,
+because each one is typed by what it refers to and feeds the reference
+recipe; region inputs keep their own locals, because they stay live across a
+whole region rather than one call. Catch code uses one exact-arm
 selector per function and one typed operand-scratch union sized to the maximum
 simultaneously selected payload, not one tuple per static arm or region.
 Reference-bearing and untagged exceptions are retained through the complete
@@ -1653,16 +1663,19 @@ decoded value on entry.
 ## Scratch-frame spill storage
 
 Synthetic scalar spills (per-call arguments, operand-stack carryovers,
-SubRegion/IfElse carryovers) are structurally co-live as Wasm locals: each
-spill's `local.set`→`local.get` straddles its call's state-gate region, and
-the regions chain across every fork-reaching call site. Baseline-tier
+SubRegion/IfElse carryovers) are structurally co-live as Wasm locals: the
+one unwind handler per function reads every saved local, so no optimizer can
+prove two of them disjoint. Call operands are shared between call sites by
+construction (see [Frame format](#frame-format)); region carryovers are not.
+Baseline-tier
 engines (V8 Liftoff) reserve one native stack slot per *declared* local, so
 a call-site-heavy function pays that co-liveness in native frame bytes.
 CPython's `_PyEval_EvalFrameDefault` (~583 sites) gained ~2,676 spill
 locals and a ~21.6 KB Liftoff frame; its ~26-deep import recursion needed
 ~0.82 MB of worker stack, overflowing browser Web Worker stacks.
 `wasm-opt --coalesce-locals` cannot help (measured: ~2,705 co-live locals
-remain either way).
+remain either way). That measurement predates shared call-operand locals,
+which leave fewer functions above the threshold below.
 
 A function whose scalar spill region is at least
 `SCRATCH_SPILL_THRESHOLD_BYTES` (256) therefore stores those spills in a
@@ -2681,6 +2694,23 @@ measured costs), so every local the instrumenter adds to a recursive
 function costs depth on every activation. Only functions that a fork can
 return or unwind through get those locals. A program with no fork path,
 such as the guest D compiler (`sdk/d/README.md`), is left unchanged.
+
+Sharing call operands between call sites ([Frame format](#frame-format))
+matters most where the instrumented set is large. Measured on 16 programs
+built from their packages on 2026-11-26 (tcl, nginx, vim, bash, git and
+`git-remote-http`, sqlite, PHP, php-fpm and five PHP extension modules,
+CPython, Ruby), it removed 21% of all declared locals and 4.4% of code
+bytes. Programs whose compiler facts narrow the instrumented set to a
+handful of functions (git, nginx, tclsh, sqlite) were unchanged. In the
+rest, locals fell 15–45%, the 99th-percentile locals per function fell by
+about a third, and functions declaring more than 64 locals roughly halved.
+A few functions gained locals: their spill had been at least 256 bytes and
+went to shadow-stack scratch (see
+[Scratch-frame spill storage](#scratch-frame-spill-storage)); smaller
+shared spills now fall under that threshold and stay in Wasm locals, as in
+vim, where the largest function grew from 100 to 140. On an earlier guest
+D compiler instrumented through nearly all of its code, the smallest Node
+worker stack that one compile passed with fell from 0.44 MB to 0.36 MB.
 
 ### Possible future work: spilling activations off the engine stack
 

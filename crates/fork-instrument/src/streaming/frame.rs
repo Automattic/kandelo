@@ -160,7 +160,16 @@ pub struct FrameBuilder {
     estimated: usize,
     catch: Vec<PendingCatch>,
     catch_selectors: BTreeSet<u32>,
+    /// Saved call operands by scalar type. A call's arguments and carryovers
+    /// are written just before that call and read only while it is in flight
+    /// (re-push, capture, or replay of that one landing). At most one call per
+    /// activation is in flight, so call sites can share these locals.
+    call_pool: Vec<(ValType, Vec<LocalKey>)>,
 }
+
+/// Per-call ordinals into the shared call-operand pool.
+#[derive(Default)]
+pub struct CallPoolCursor(Vec<(ValType, usize)>);
 
 impl FrameBuilder {
     pub fn new<T: Reencode>(
@@ -211,6 +220,7 @@ impl FrameBuilder {
             estimated: 0,
             catch: Vec::new(),
             catch_selectors: BTreeSet::new(),
+            call_pool: Vec::new(),
         };
         for index in 0..parameters as u32 {
             builder.user(
@@ -285,6 +295,41 @@ impl FrameBuilder {
     }
     pub fn saved(&mut self, ty: ValType) -> Result<LocalKey> {
         self.allocate(ty, Role::Saved)
+    }
+    /// A saved local for one operand of one call. Scalars reuse the pool;
+    /// references keep per-site locals because their recipes are per landing.
+    pub fn saved_call_operand(
+        &mut self,
+        ty: ValType,
+        cursor: &mut CallPoolCursor,
+    ) -> Result<LocalKey> {
+        if matches!(ty, ValType::Ref(_)) {
+            return self.saved(ty);
+        }
+        let ordinal = match cursor.0.iter_mut().find(|(t, _)| *t == ty) {
+            Some((_, n)) => {
+                *n += 1;
+                *n - 1
+            }
+            None => {
+                cursor.0.push((ty, 1));
+                0
+            }
+        };
+        let existing = self
+            .call_pool
+            .iter()
+            .find(|(t, _)| *t == ty)
+            .and_then(|(_, keys)| keys.get(ordinal).copied());
+        if let Some(key) = existing {
+            return Ok(key);
+        }
+        let key = self.saved(ty)?;
+        match self.call_pool.iter_mut().find(|(t, _)| *t == ty) {
+            Some((_, keys)) => keys.push(key),
+            None => self.call_pool.push((ty, vec![key])),
+        }
+        Ok(key)
     }
     pub fn temporary(&mut self, ty: ValType) -> Result<LocalKey> {
         self.allocate(ty, Role::Temporary)

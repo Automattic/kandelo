@@ -8,7 +8,7 @@ pub use dispatch::*;
 pub use materialize::OperandMaterialization;
 
 use super::{
-    FrameBuilder, FrameEnvironment, FrameLayout, FrameLimits, FrameReferencePlan, FunctionIr,
+    CallPoolCursor, FrameBuilder, FrameEnvironment, FrameLayout, FrameLimits, FrameReferencePlan, FunctionIr,
     LocalKey, ProgramPoint, ReferenceCallKind, ReferenceLimits, RegionId, RegionKind, Scan,
     SourceTypes, analyze_references,
 };
@@ -388,8 +388,19 @@ where
     // Allocate all call arguments, then all call carryovers. This preserves the
     // scalar spill-tail grouping used by the oracle and scratch bulk copies.
     let mut calls = Vec::with_capacity(pending.len());
+    let mut cursors = Vec::with_capacity(pending.len());
     for ((i, kind, signature, arguments, _), chunk) in pending.iter().zip(argument_chunks) {
-        let arguments = materialize::plan(body, chunk, arguments, true, &mut frame, &mut budget)?;
+        let mut cursor = CallPoolCursor::default();
+        let arguments = materialize::plan(
+            body,
+            chunk,
+            arguments,
+            true,
+            &mut frame,
+            &mut budget,
+            Some(&mut cursor),
+        )?;
+        cursors.push(cursor);
         calls.push(CallContinuation {
             point: body.instructions[*i].point,
             instruction: *i,
@@ -399,10 +410,12 @@ where
             carryovers: Vec::new(),
         });
     }
-    for (call, (_, _, _, _, carryovers)) in calls.iter_mut().zip(&pending) {
+    for ((call, (_, _, _, _, carryovers)), cursor) in
+        calls.iter_mut().zip(&pending).zip(&mut cursors)
+    {
         call.carryovers = carryovers
             .iter()
-            .map(|&ty| frame.saved(ty))
+            .map(|&ty| frame.saved_call_operand(ty, cursor))
             .collect::<Result<_>>()?;
     }
     drop(pending);
@@ -447,6 +460,7 @@ where
                 pure_allowed,
                 &mut frame,
                 &mut budget,
+                None,
             )?;
             chunk.end = inputs.chunk_end(chunk.end);
             let mut references = Vec::new();

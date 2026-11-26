@@ -69,7 +69,7 @@ impl FunctionTransform for MaterializedCalls {
 }
 
 #[test]
-fn planned_call_argument_and_carryover_storage_executes_with_compaction_references_and_scratch() {
+fn planned_call_argument_and_carryover_storage_executes_with_compaction_references_and_pooling() {
     for wide in [false, true] {
         for count in [2, 40] {
             let pointer = if wide { "i64" } else { "i32" };
@@ -103,7 +103,9 @@ fn planned_call_argument_and_carryover_storage_executes_with_compaction_referenc
                 Default::default(),
             )
             .unwrap();
-            assert_eq!(plan.frame.scratch.is_some(), count == 40);
+            // Sequential calls share pooled operand locals, so the frame does
+            // not grow with the call count and never needs scratch here.
+            assert!(plan.frame.scratch.is_none());
             assert!(
                 plan.frame.source_local_index(2).is_err(),
                 "unused original local was compacted"
@@ -145,6 +147,75 @@ fn planned_call_argument_and_carryover_storage_executes_with_compaction_referenc
                 String::from_utf8_lossy(&result.stderr)
             );
         }
+    }
+}
+
+#[test]
+fn one_call_with_many_carryovers_uses_scratch() {
+    for wide in [false, true] {
+        let pointer = if wide { "i64" } else { "i32" };
+        let memory = if wide { "i64" } else { "" };
+        let carried = 70;
+        let bytes = wat::parse_str(format!(
+            r#"(module
+              (import "h" "fork" (func $fork (param i32 externref) (result i32)))
+              (memory {memory} 2)
+              (global $__stack_pointer (export "sp") (mut {pointer}) ({pointer}.const 65536))
+              (global (export "value") (mut i32) (i32.const 3))
+              (func (export "work") (param i32 externref) (result i32)
+                {} global.get 1 local.get 1 call $fork {})
+              )"#,
+            "local.get 0 ".repeat(carried),
+            "i32.add ".repeat(carried)
+        ))
+        .unwrap();
+        let scan = scan(&bytes).unwrap();
+        let body = scan.body_provider(Default::default()).load(1).unwrap();
+        let types = SourceTypes::new(&scan);
+        let mut map = RoundtripReencoder;
+        let env = FrameEnvironment::discover(&scan, &mut map, 1 << 20).unwrap();
+        let plan = plan_continuations(
+            &scan,
+            &body,
+            &types,
+            &mut map,
+            env,
+            &BTreeSet::from([0]),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(plan.frame.scratch.is_some());
+        let mut output = Vec::new();
+        emit_remapped(
+            &scan,
+            &mut MaterializedCalls { plan },
+            &mut output,
+            Default::default(),
+        )
+        .unwrap();
+        wasmparser::Validator::new_with_features(features())
+            .validate_all(&output)
+            .unwrap();
+        let input = tempfile::NamedTempFile::new().unwrap();
+        let transformed = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(input.path(), &bytes).unwrap();
+        std::fs::write(transformed.path(), &output).unwrap();
+        let result = std::process::Command::new("node").arg("-e").arg(r#"
+          const fs=require('fs'),assert=require('node:assert/strict'),carried=Number(process.argv[3]);
+          const run=path=>{let calls=0;const value={activation:42};
+            const instance=new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path)),{h:{fork:(n,r)=>{
+              assert.equal(r,value);assert.equal(n,3);calls++;return n;
+            }}});
+            const result=instance.exports.work(7,value);assert.equal(calls,1);
+            assert.equal(result,7*carried+3);assert.equal(Number(instance.exports.sp.value),65536);
+            return result;};
+          assert.deepEqual(run(process.argv[1]),run(process.argv[2]));
+        "#).arg(input.path()).arg(transformed.path()).arg(carried.to_string()).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
 }
 
