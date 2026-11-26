@@ -77,9 +77,15 @@ describe("espeak-ng package contract", () => {
 
   it("builds through the worktree SDK and publishes one wasm output", () => {
     const manifest = source("packages/registry/espeak-ng/package.toml");
+    const provenance = source("packages/registry/espeak-ng/build.toml");
     const build = source("packages/registry/espeak-ng/build-espeak-ng.sh");
 
     expect(build).toContain('source "$REPO_ROOT/sdk/activate.sh"');
+    expect(build).toContain(
+      '-DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-toolchain.cmake"',
+    );
+    expect(build).toContain('cp "$CROSS_BUILD_DIR/src/espeak-ng.wasm"');
+    expect(provenance).toContain('"sdk/cmake/kandelo-toolchain-common.cmake"');
     expect(build).toContain("WASM_POSIX_DEP_OUT_DIR");
     expect(manifest).toContain('wasm = "espeak-ng.wasm"');
   });

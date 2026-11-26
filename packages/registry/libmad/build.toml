@@ -3,6 +3,7 @@ inputs = [
   "packages/registry/libmad/build-libmad.sh",
   "scripts/package-build-roots.sh",
   "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/kandelo-toolchain-common.cmake",
   "sdk/cmake/Platform/Kandelo.cmake",
   "sdk/activate.sh",
 ]

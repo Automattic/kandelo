@@ -2,11 +2,8 @@
  * Fork after calls through dlsym() pointers in a main program that
  * wasm-fork-instrument plans from compiler facts.
  *
- * The other dlopen/fork suites link their main programs with bare clang, so
- * they carry no facts and the instrumenter falls back to the conservative
- * full closure. These programs are built through the SDK driver (which
- * embeds the facts) with the default `--side-modules=traced-entries`, and
- * each case first checks that the facts analysis really chose the plan.
+ * Each case checks that wasm-fork-instrument chose the SDK compiler facts
+ * with the default `--side-modules=traced-entries` plan.
  *
  * A call through a pointer the host's dynamic linker installed at run time
  * once had no targets in that plan, so it was treated as never returning
@@ -34,16 +31,6 @@ const SOURCE = new URL("./fixtures/dlsym-fork-facts.c", import.meta.url);
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = tryResolveBinary("kernel.wasm") !== null;
 
-function llvmTool(name: "clang" | "wasm-ld"): string {
-  try {
-    return execFileSync(process.env.CLANG ?? "clang", [`-print-prog-name=${name}`], {
-      encoding: "utf8",
-    }).trim() || name;
-  } catch {
-    return name;
-  }
-}
-
 const cleanups: Array<() => void> = [];
 afterAll(() => {
   for (const cleanup of cleanups) cleanup();
@@ -70,7 +57,6 @@ function buildSideModule(): string {
   const dir = makeHostScratchTempRoot("dlsym-fork-facts-side-");
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const src = join(dir, "side.c");
-  const obj = join(dir, "side.o");
   const so = join(dir, "libside.so");
   writeFileSync(src, `
     long long side_scale(int value) { return (long long)value * 3; }
@@ -78,13 +64,8 @@ function buildSideModule(): string {
     __attribute__((export_name("__abi_version")))
     unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
   `);
-  execFileSync(llvmTool("clang"), [
-    "--target=wasm32-unknown-unknown", "-fPIC", "-O2", "-matomics",
-    "-mbulk-memory", `-I${GLUE_DIR}`, "-c", src, "-o", obj,
-  ], { stdio: "pipe" });
-  execFileSync(llvmTool("wasm-ld"), [
-    "--experimental-pic", "--shared", "--shared-memory", "--export-all",
-    "--allow-undefined", "-o", so, obj,
+  execFileSync(join(REPO_ROOT, "sdk", "bin", "wasm32posix-cc"), [
+    "-shared", "-fPIC", "-O2", `-I${GLUE_DIR}`, src, "-o", so,
   ], { stdio: "pipe" });
   execFileSync("bash", [FORK_INSTRUMENT, so, "-o", so], { stdio: "pipe" });
   return so;

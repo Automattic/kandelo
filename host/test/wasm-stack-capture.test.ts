@@ -85,7 +85,8 @@ describe("versioned stack capture", () => {
     const original = join(directory, "linked.wasm"), prepared = join(directory, "prepared.wasm");
     for (const file of ["inner.c", "outer.c"]) writeFileSync(join(directory, file), readFileSync(join(repo, "crates/fork-instrument/tests/fixtures/debug-lines", file)));
     const sourceRoot = execFileSync("pwd", ["-P"], { cwd: directory, encoding: "utf8" }).trim();
-    execFileSync(join(llvm, "clang"), ["--target=wasm32-unknown-unknown", "-g", "-O0", "-nostdlib", `-fuse-ld=${join(llvm,"wasm-ld")}`, `-fdebug-prefix-map=${sourceRoot}=/kandelo-debug-fixture`, "-Wl,--no-entry", "-Wl,--export=outer", "-Wl,--allow-undefined", "-Wl,--import-memory", "inner.c", "outer.c", "-o", original], { cwd: sourceRoot });
+    // The test instantiates a freestanding module and supplies its capture import.
+    execFileSync(join(llvm, "clang"), ["--target=wasm32-unknown-unknown", "-g", "-O0", "-nostdlib", `-fuse-ld=${join(llvm,"wasm-ld")}`, `-fdebug-prefix-map=${sourceRoot}=/kandelo-debug-fixture`, "-Wl,--no-entry", "-Wl,--export=outer", "-Wl,--import-memory", "inner.c", "outer.c", "-o", original], { cwd: sourceRoot });
     const host = /^host: (.+)$/m.exec(execFileSync("rustc", ["-vV"], { encoding: "utf8" }))![1];
     execFileSync("cargo", ["run", "--quiet", "-p", "fork-instrument", "--target", host, "--bin", "wasm-fork-instrument", "--", original, "-o", prepared, "--entry", "env.capture", "--no-sinks", "--keep-names", "--debug-map"], { cwd: repo, timeout: 300000 });
     const program = Uint8Array.from(readFileSync(prepared)).buffer;

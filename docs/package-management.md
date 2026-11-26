@@ -2182,17 +2182,12 @@ fi
 [ -f "$PCRE2_SOURCE_DIR/CMakeLists.txt" ] || {
     echo "ERROR: pcre2-source missing CMakeLists.txt" >&2; exit 1; }
 
-# Build PCRE2 statically into a script-local tree (NOT cached as
-# a library — the build is mariadb-specific by configuration).
-PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
-if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
-    cmake "$PCRE2_SOURCE_DIR" \
-        -DCMAKE_C_COMPILER="$LLVM_CLANG" \
-        -DCMAKE_C_FLAGS="--target=$WASM_TARGET … --sysroot=$SYSROOT -O2 -DNDEBUG" \
-        -DCMAKE_SIZEOF_VOID_P=$PCRE2_SIZEOF_VOID_P \
-        -DPCRE2_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF …
-    make -j"$NPROC" pcre2-8-static pcre2-posix-static
-fi
+# Build PCRE2 in the consumer's work root with the same SDK toolchain
+# selected for MariaDB's target architecture.
+cmake -S "$PCRE2_SOURCE_DIR" -B "$PCRE2_BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+    -DPCRE2_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF …
+cmake --build "$PCRE2_BUILD" --target pcre2-8-static pcre2-posix-static
 
 # Install into sysroot for mariadb's main cmake to link against.
 cp "$PCRE2_BUILD/libpcre2-8.a"     "$SYSROOT/lib/"

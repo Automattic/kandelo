@@ -1,10 +1,12 @@
 script_path = "packages/registry/mariadb/build-mariadb.sh"
 inputs = [
+  "sdk/activate.sh",
+  "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/kandelo-toolchain-common.cmake",
+  "sdk/cmake/Platform/Kandelo.cmake",
+  "sdk/cmake/kandelo-wasm64-toolchain.cmake",
   "packages/registry/mariadb/build-mariadb.sh",
   "packages/registry/mariadb/package.toml",
-  "packages/registry/mariadb/mariadb-glue-object-contract.cmake",
-  "packages/registry/mariadb/wasm32-posix-toolchain.cmake",
-  "packages/registry/mariadb/wasm64-posix-toolchain.cmake",
   "packages/registry/mariadb/patches",
   "scripts/package-build-roots.sh",
   "scripts/install-local-binary.sh",
@@ -14,4 +16,5 @@ commit      = "UNPUBLISHED"
 # Revision 5 ships the interactive client with real target terminfo and a
 # consistent function signature in its bundled line editor's history search.
 # Revision 8 uses guest runtime paths and remaps build paths in diagnostics.
-revision    = 8
+# Revision 9: SDK link flags change the executable bytes.
+revision    = 9
