@@ -294,7 +294,9 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     // Send the first unpressed mouse position before the next browser frame.
     // Keep the regular move for the final coalesced position and limit the
     // early path to one delivery per move, even at high hardware report rates.
-    const onPointerRawUpdate = (e: PointerEvent) => {
+    const onPointerRawUpdate = (event: Event) => {
+      if (!(event instanceof PointerEvent)) return;
+      const e = event;
       if (earlyHover || !e.isTrusted || e.pointerType !== "mouse" || e.buttons !== 0
           || buttons !== 0 || activePointerId !== null || locked()) return;
       if (updatePointer(e, "move", false)) {
