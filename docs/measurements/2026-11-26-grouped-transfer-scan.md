@@ -32,3 +32,14 @@ The clean develop-based change passed the host build, 38 focused process address
 On the pinned ABI 41 kernel, 54 of 55 real-kernel, Worker-boundary and public-session tests passed together. The public read-only-file bytes launch exceeded its 90-second deadline on the first run and passed in 7.0 seconds on an isolated retry with the same deadline. The SDK tests passed ordinary and grouped 256-thread churn, forty native-wait exit cohorts and forty fork cohorts with backing reuse. The public SDK and fork fixtures used their explicit read-only mprotect opt-in. Three rounds each of syscall I/O, process lifecycle and empty-filesystem spawn ran on Node and browser. Ordinary workloads moved in both directions on this shared host (Node file reads 35.16 → 28.61 MB/s, browser 71.05 → 74.60 MB/s). The MariaDB and WordPress application comparison is separate.
 
 A native Safari 27.2 WebDriver session reported a running machine with one scanout flip at 2634 × 1806. The automation window reported hidden on a locked macOS session and the first terminal never met the pixel predicate. This supplies no foreground native Safari latency measurement. The WebKit numbers above use Playwright.
+
+## Ordinary database and stdin workloads
+
+Three rounds of the ordinary wasm32 and wasm64 MariaDB Aria and InnoDB suites and stdin throughput ran on Node and Chromium against pinned develop `dffcfca532`. The database table below shows the largest time increase and decrease on each host. Concurrent builds affected both arms. These workloads exercise ordinary processes, so the differences do not measure grouped desktop latency. [All 42 comparisons](2026-11-26-grouped-transfer-scan-ordinary-apps.csv).
+
+| Host | Largest elapsed time decrease | Largest elapsed time increase |
+| --- | --- | --- |
+| Node | mariadb-aria-64/query_select_ms 632.18 → 237.92 ms (-62.4%) | mariadb-aria/query_join_ms 213.56 → 662.99 ms (+210.4%) |
+| Chromium | mariadb-innodb/bootstrap_ms 3968.6 → 2274.58 ms (-42.7%) | mariadb-innodb-64/bootstrap_ms 2215.85 → 2635.98 ms (+19.0%) |
+
+The full browser WordPress comparison remains unmeasured. Provisioning the standard WordPress image reached an unresolved `mprotect` symbol while linking its SpiderMonkey Node dependency. The browser benchmark needs that image.
