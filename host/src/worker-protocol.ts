@@ -1,5 +1,6 @@
 import type { MemoryGroupTaskReceipt } from "./memory-group-protocol";
 import type { ThreadTlsAllocation } from "./thread-allocator";
+import type { WasmIndirectCallTrap } from "./trap-signals";
 import type {
   ForkHostImportWorkerInit,
 } from "./fork-host-import-runtime";
@@ -241,6 +242,7 @@ export interface WorkerErrorMessage {
   type: "error";
   pid: number;
   message: string;
+  wasmIndirectCallTrap?: WasmIndirectCallTrap;
 }
 
 export interface ExecRequestMessage {

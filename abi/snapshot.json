@@ -2501,7 +2501,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 40,
+      "required_host_adapter_version": 41,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2733,7 +2733,11 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 40,
+    "version": 41,
+    "wasm_indirect_call_traps": {
+      "nullOrSignatureMismatch": 2,
+      "signatureMismatch": 1
+    },
     "worker_features": [
       {
         "bit": 2,
@@ -4771,7 +4775,7 @@
     {
       "kind": "func",
       "name": "kernel_mark_process_signaled",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

@@ -98,7 +98,7 @@ const removed = (h: ReturnType<typeof makeHarness>) =>
 
 async function expectFatalParentRetirement(h: ReturnType<typeof makeHarness>) {
   await vi.waitFor(() => expect(h.onExit).toHaveBeenCalledExactlyOnceWith(PARENT, 128 + 11));
-  expect(h.signaled).toHaveBeenCalledExactlyOnceWith(PARENT, 11);
+  expect(h.signaled).toHaveBeenCalledExactlyOnceWith(PARENT, 11, 0);
   // Rust records signal death; the old mailbox wakes with the terminal
   // retirement marker so its parked Worker can unwind.
   expect(h.completion()).toEqual({status: CHANNEL_STATUS_COMPLETE, result: -1, errno: 4});

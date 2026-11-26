@@ -543,7 +543,7 @@ describe("stopped process Worker launch gate", () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(laterStart).not.toHaveBeenCalled();
     expect(laterCancel).toHaveBeenCalledOnce();
-    expect(markSignaled).toHaveBeenCalledWith(41, 11);
+    expect(markSignaled).toHaveBeenCalledWith(41, 11, 0);
     expect(onExit).toHaveBeenCalledWith(41, 139);
   });
 

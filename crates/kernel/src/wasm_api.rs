@@ -5025,13 +5025,24 @@ pub extern "C" fn kernel_take_process_timer_cleanup(
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
 /// The process remains as an Exited zombie until a parent wait consumes it.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
+pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32, trap: u32) -> i32 {
+    use abi::WasmIndirectCallTrap;
+    let trap = match trap {
+        0 => None,
+        value if value == WasmIndirectCallTrap::SignatureMismatch as u32 => {
+            Some(WasmIndirectCallTrap::SignatureMismatch)
+        }
+        value if value == WasmIndirectCallTrap::NullOrSignatureMismatch as u32 => {
+            Some(WasmIndirectCallTrap::NullOrSignatureMismatch)
+        }
+        _ => return -(Errno::EINVAL as i32),
+    };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match lifecycle::run(
         table,
         &mut WasmHostIO,
-        LifecycleRequest::SignalExit { pid, signum },
+        LifecycleRequest::SignalExit { pid, signum, trap },
     ) {
         Ok(LifecycleCompletion::Signaled) => 0,
         Ok(_) => unreachable!("signal exit lifecycle completion"),

@@ -27,6 +27,9 @@ pub fn compile_flags(arch: WasmArch) -> Vec<String> {
             "-mllvm",
             "-wasm-use-legacy-eh=false",
             "-fno-trapping-math",
+            // An upstream -Werror build still gets a diagnostic for this cast.
+            "-Wcast-function-type-strict",
+            "-Wno-error=cast-function-type-strict",
         ]
         .map(String::from),
     );

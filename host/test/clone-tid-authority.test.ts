@@ -997,7 +997,7 @@ describe("clone teardown ownership", () => {
     try {
       h.dispatch(cloneArgs());
       await vi.waitFor(() => expect(h.onExit).toHaveBeenCalledOnce());
-      expect(h.markProcessSignaled).toHaveBeenCalledExactlyOnceWith(PID, 11);
+      expect(h.markProcessSignaled).toHaveBeenCalledExactlyOnceWith(PID, 11, 0);
       expect(h.onExit).toHaveBeenCalledExactlyOnceWith(PID, 139);
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("FATAL could not roll back allocated tid"));
       // The dead caller is woken only with EINTR and the private SIGKILL

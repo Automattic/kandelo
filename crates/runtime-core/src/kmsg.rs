@@ -624,14 +624,16 @@ pub enum KlogSite {
     MmapKernelMemoryExhausted,
     /// The host reported that it lacks a capability the guest asked for.
     HostCapabilityUnavailable,
+    /// The Wasm engine reported an indirect call signature mismatch or null target.
+    WasmIndirectCallTrap,
 }
 
-const _: () = assert!((KlogSite::HostCapabilityUnavailable as u32) < KMSG_EVENT_CALLSITES);
+const _: () = assert!((KlogSite::WasmIndirectCallTrap as u32) < KMSG_EVENT_CALLSITES);
 
 impl KlogSite {
     /// Every site, for tests that must hold for all of them.
     #[cfg(test)]
-    pub(crate) const ALL: [KlogSite; 8] = [
+    pub(crate) const ALL: [KlogSite; 9] = [
         KlogSite::BootIdentity,
         KlogSite::RootImageMounted,
         KlogSite::DeviceFirstOpen,
@@ -640,6 +642,7 @@ impl KlogSite {
         KlogSite::MmapAddressSpaceExhausted,
         KlogSite::MmapKernelMemoryExhausted,
         KlogSite::HostCapabilityUnavailable,
+        KlogSite::WasmIndirectCallTrap,
     ];
 
     /// The limiter slot this site owns.
@@ -655,6 +658,7 @@ impl KlogSite {
             | KlogSite::DeviceFirstOpen
             | KlogSite::ProcessKilledBySignal => LOG_INFO,
             KlogSite::ProcessKilledByFault
+            | KlogSite::WasmIndirectCallTrap
             | KlogSite::MmapAddressSpaceExhausted
             | KlogSite::MmapKernelMemoryExhausted
             | KlogSite::HostCapabilityUnavailable => LOG_WARNING,
