@@ -13,6 +13,16 @@ a program that links Qt6Qml declares the mprotect fiction for that
 call in its own package.toml (quickshell does). Library packages cannot
 declare fictions.
 
+Justification: mprotect() is an explicit opt-in on Kandelo because
+WebAssembly memory has no page protection (docs/sdk-guide.md, "Opt-in
+libraries for unsupported APIs"). Committing heap pages read/write is
+carried out truthfully by -lkandelo-mprotect, so linking it is the
+platform's intended path. The PROT_NONE decommit stays a declared
+fiction in the program's package, not a library default.
+
+Exit: drop when Qt6Qml no longer calls mprotect() on this path, or when
+Kandelo's libc.a provides mprotect() by default.
+
 --- a/src/qml/CMakeLists.txt
 +++ b/src/qml/CMakeLists.txt
 @@ -762,6 +762,18 @@
