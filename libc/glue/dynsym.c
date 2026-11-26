@@ -11,6 +11,7 @@
 #ifdef KANDELO_DYNSYM_MAP
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -108,9 +109,12 @@ static int find_executable_symbol(const char *name, uintptr_t *address,
 #ifdef KANDELO_DYNSYM_MAP
 _Static_assert(sizeof(void *) == 4, "the mapping prototype requires wasm32");
 
-__attribute__((import_module("kandelo.loader.prototype.v2"), import_name("__kandelo_map_module_v2")))
-extern int __kandelo_map_module_v2(uint32_t *, uint32_t, int);
+__attribute__((import_module("kandelo.loader.prototype.v3"), import_name("__kandelo_map_module_v3")))
+extern int __kandelo_map_module_v3(uint32_t *, uint32_t, int);
 extern void __wasm_posix_signal_checkpoint(void);
+extern void __cxa_finalize(void *);
+
+enum module_state { LOADING, ACTIVE, FINALIZING };
 
 struct guest_module;
 
@@ -119,7 +123,7 @@ struct guest_module;
 struct guest_binding {
     uint32_t address;
     const char *export_name;
-    const struct guest_module *provider;
+    struct guest_module *provider;
 };
 
 struct guest_module {
@@ -127,35 +131,128 @@ struct guest_module {
     uint32_t binding_count;
     struct guest_module **dependencies;
     uint32_t dependency_count;
+    uint32_t generation;
     const unsigned char *index;
     size_t index_size;
     char *path;
     uint32_t table_base;
     uint32_t memory_base;
-    unsigned references;
     int global;
-    int mapped;
+    int reachable;
+    enum module_state state;
+    void *handle;
+    unsigned references;
     struct guest_module *next;
 };
 _Static_assert(sizeof(struct guest_binding) == 12, "binding vector row size");
-_Static_assert(offsetof(struct guest_module, index) == 16, "mapping descriptor size");
+_Static_assert(offsetof(struct guest_module, index) == 20, "mapping descriptor size");
 
 static struct guest_module *modules;
 static size_t module_count;
-static int side_busy;
+static uint32_t generation;
+static uint32_t table_high_water;
+static uintptr_t next_handle = 1;
+static pthread_mutex_t modules_mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local unsigned lock_depth;
 
 static int lock_modules(void)
 {
-    if (__atomic_exchange_n(&side_busy, 1, __ATOMIC_ACQUIRE)) {
-        set_error("guest module mapping is already active", 0);
-        return 0;
+    if (lock_depth == 0) {
+        if (pthread_mutex_lock(&modules_mutex)) {
+            set_error("cannot lock the dynamic loader", 0);
+            return 0;
+        }
     }
+    ++lock_depth;
     return 1;
 }
 
 static void unlock_modules(void)
 {
-    __atomic_store_n(&side_busy, 0, __ATOMIC_RELEASE);
+    if (--lock_depth == 0) pthread_mutex_unlock(&modules_mutex);
+}
+
+/* The calling pthread's loader nesting survives a fork from an initializer.
+ * Other threads' mutex waiters belong to the parent. */
+__attribute__((visibility("hidden")))
+void __kandelo_loader_atfork(int phase)
+{
+    if (phase < 0) {
+        lock_modules();
+    } else if (phase == 0) {
+        unlock_modules();
+    } else {
+        pthread_mutex_t unlocked = PTHREAD_MUTEX_INITIALIZER;
+        modules_mutex = unlocked;
+        if (--lock_depth) pthread_mutex_lock(&modules_mutex);
+    }
+}
+
+static void unlink_module(struct guest_module *module)
+{
+    struct guest_module **link = &modules;
+    while (*link != module) link = &(*link)->next;
+    *link = module->next;
+    module->next = 0;
+    --module_count;
+}
+
+static void append_module(struct guest_module *module)
+{
+    struct guest_module **link = &modules;
+    while (*link) link = &(*link)->next;
+    *link = module;
+    ++module_count;
+}
+
+static void destroy_module_record(struct guest_module *module)
+{
+    free((void *)module->index);
+    free(module->bindings);
+    free(module->dependencies);
+    free(module->path);
+    free(module);
+}
+
+static void retain_module(struct guest_module *module)
+{
+    if (!module || module->reachable) return;
+    module->reachable = 1;
+    if (module->dependencies) {
+        for (uint32_t i = 0; i < module->dependency_count; ++i)
+            retain_module(module->dependencies[i]);
+    }
+    if (module->bindings) {
+        for (uint32_t i = 0; i < module->binding_count; ++i)
+            retain_module(module->bindings[i].provider);
+    }
+}
+
+/* The guest chooses retirement from explicit references and recorded edges.
+ * Newest first keeps each consumer alive through its own finalizer. */
+static int collect_modules(void)
+{
+    for (;;) {
+        for (struct guest_module *module = modules; module; module = module->next)
+            module->reachable = 0;
+        for (struct guest_module *module = modules; module; module = module->next)
+            if (module->references || module->state != ACTIVE)
+                retain_module(module);
+        struct guest_module *dead = 0;
+        for (struct guest_module *module = modules; module; module = module->next)
+            if (!module->reachable) dead = module;
+        if (!dead) return 0;
+
+        dead->state = FINALIZING;
+        if (dead->memory_base) __cxa_finalize((void *)(uintptr_t)dead->memory_base);
+        uint32_t packet[] = {(uintptr_t)dead, 0, 0, 0};
+        if (__kandelo_map_module_v3(packet, sizeof(packet), KANDELO_LOADER_RETIRE) < 0) {
+            set_error("cannot retire side module: ", dead->path);
+            return -1;
+        }
+        unlink_module(dead);
+        destroy_module_record(dead);
+    }
 }
 
 static int find_module_symbol(const struct guest_module *module, const char *name,
@@ -177,7 +274,7 @@ static int find_module_symbol(const struct guest_module *module, const char *nam
 static int find_in_scope(struct guest_module *const *roots, size_t root_count,
                          const char *name, uintptr_t *address, uint32_t *kind,
                          const char **definition,
-                         const struct guest_module **provider)
+                         struct guest_module **provider)
 {
     if (!root_count) return 0;
     struct guest_module **queue = calloc(module_count, sizeof(*queue));
@@ -207,12 +304,12 @@ static int find_in_scope(struct guest_module *const *roots, size_t root_count,
 
 static int find_global_symbol(const char *name, uintptr_t *address, uint32_t *kind,
                               const char **definition,
-                              const struct guest_module **provider)
+                              struct guest_module **provider)
 {
     int found = find_executable_symbol(name, address, kind, definition);
     if (found) return found;
     for (struct guest_module *module = modules; module; module = module->next) {
-        if (module->mapped && module->global) {
+        if (module->state == ACTIVE && module->global) {
             found = find_module_symbol(module, name, address, kind, definition);
             if (found) {
                 *provider = module;
@@ -288,7 +385,7 @@ static int bind_imports(struct guest_module *module, const unsigned char *metada
         uint32_t binding_kind, kind;
         uintptr_t address;
         const char *definition;
-        const struct guest_module *provider = 0;
+        struct guest_module *provider = 0;
         if (!read_word(metadata, end, &imports, &binding_kind)) return 0;
         const char *name = read_name(metadata, end, &imports);
         if (!name || binding_kind < KANDELO_LOADER_BIND_DIRECT ||
@@ -309,11 +406,10 @@ static int bind_imports(struct guest_module *module, const unsigned char *metada
 
 static struct guest_module *load_side(const char *path)
 {
-    struct guest_module **link = &modules;
-    for (; *link; link = &(*link)->next) {
-        if (!strcmp((*link)->path, path)) {
-            if ((*link)->mapped) return *link;
-            set_error("cyclic side module dependency: ", path);
+    for (struct guest_module *module = modules; module; module = module->next) {
+        if (!strcmp(module->path, path)) {
+            if (module->state == ACTIVE) return module;
+            set_error("cyclic or reentrant side module dependency: ", path);
             return 0;
         }
     }
@@ -321,12 +417,13 @@ static struct guest_module *load_side(const char *path)
     struct guest_module *module = calloc(1, sizeof(*module));
     unsigned char *bytes = 0, *metadata = 0;
     int fd = -1;
+    int linked = 0;
     if (!module || !(module->path = strdup(path))) {
         set_error("cannot allocate side module: ", path);
         goto fail;
     }
-    *link = module;
-    ++module_count;
+    append_module(module);
+    linked = 1;
 
     fd = open(path, O_RDONLY);
     struct stat file;
@@ -358,7 +455,7 @@ static struct guest_module *load_side(const char *path)
     fd = -1;
 
     uint32_t packet[] = {(uintptr_t)bytes, byte_count, (uintptr_t)metadata, metadata_limit};
-    int size = __kandelo_map_module_v2(packet, sizeof(packet), KANDELO_LOADER_INSPECT);
+    int size = __kandelo_map_module_v3(packet, sizeof(packet), KANDELO_LOADER_INSPECT);
     if (size < 12 || (uint32_t)size > metadata_limit) {
         set_error("side module inspection failed: ", path);
         goto fail;
@@ -400,9 +497,15 @@ static struct guest_module *load_side(const char *path)
     module->index = index;
     module->index_size = index_size;
 
+    /* Provider activations precede their consumer in the fork archive. */
+    if (generation == UINT32_MAX) {
+        set_error("side module generation exhausted", 0);
+        goto fail;
+    }
+    module->generation = ++generation;
     packet[2] = (uintptr_t)module;
-    packet[3] = 0;
-    int transaction = __kandelo_map_module_v2(packet, sizeof(packet), KANDELO_LOADER_MAP);
+    packet[3] = table_high_water;
+    int transaction = __kandelo_map_module_v3(packet, sizeof(packet), KANDELO_LOADER_MAP);
     if (transaction <= 0) {
         set_error("side module mapping failed: ", path);
         goto fail;
@@ -413,7 +516,8 @@ static struct guest_module *load_side(const char *path)
     metadata = 0;
     packet[0] = transaction;
     for (;;) {
-        int entry = __kandelo_map_module_v2(packet, sizeof(packet), KANDELO_LOADER_ADVANCE);
+        int entry = __kandelo_map_module_v3(packet, sizeof(packet), KANDELO_LOADER_ADVANCE);
+        if (packet[3] > table_high_water) table_high_water = packet[3];
         __wasm_posix_signal_checkpoint();
         if (entry < 0) {
             set_error("side module activation failed: ", path);
@@ -424,7 +528,9 @@ static struct guest_module *load_side(const char *path)
     }
     module->table_base = packet[1];
     module->memory_base = packet[2];
-    module->mapped = 1;
+    module->state = ACTIVE;
+    unlink_module(module);
+    append_module(module);
     return module;
 
 invalid:
@@ -437,15 +543,8 @@ fail:
     free(bytes);
     free(metadata);
     if (module) {
-        if (*link == module) {
-            *link = module->next;
-            --module_count;
-        }
-        free((void *)module->index);
-        free(module->bindings);
-        free(module->dependencies);
-        free(module->path);
-        free(module);
+        if (linked) unlink_module(module);
+        destroy_module_record(module);
     }
     return 0;
 }
@@ -462,23 +561,40 @@ static void *open_side(const char *path, int flags)
 {
     if (!lock_modules()) return 0;
     struct guest_module *module = load_side(path);
+    void *handle = 0;
     if (module) {
         if (module->references == UINT32_MAX) {
             set_error("side module reference count exhausted: ", path);
-            module = 0;
         } else {
+            if (!module->references) {
+                if (next_handle == (uintptr_t)&main_handle) ++next_handle;
+                if (next_handle == UINTPTR_MAX) {
+                    set_error("dynamic loader handle space exhausted", 0);
+                    goto finish;
+                }
+                module->handle = (void *)next_handle++;
+            }
             if (flags & RTLD_GLOBAL) promote_global(module);
             ++module->references;
+            handle = module->handle;
         }
     }
+finish:
+    if (!handle) {
+        char failure[sizeof(error_buffer)];
+        memcpy(failure, error_buffer, sizeof(failure));
+        collect_modules();
+        memcpy(error_buffer, failure, sizeof(failure));
+        error_pending = 1;
+    }
     unlock_modules();
-    return module;
+    return handle;
 }
 
 static struct guest_module *resolve_handle(const void *handle)
 {
     for (struct guest_module *module = modules; module; module = module->next)
-        if (module == handle && module->mapped && module->references) return module;
+        if (module->handle == handle && module->state == ACTIVE && module->references) return module;
     return 0;
 }
 #endif
@@ -526,7 +642,7 @@ void *dlsym(void *handle, const char *name)
     }
 #ifdef KANDELO_DYNSYM_MAP
     if (!lock_modules()) return 0;
-    const struct guest_module *provider = 0;
+    struct guest_module *provider = 0;
     if (global_scope) {
         found = find_global_symbol(name, &address, &kind, 0, &provider);
     } else {
@@ -563,9 +679,13 @@ int dlclose(void *handle)
     if (handle != &main_handle) {
         if (!lock_modules()) return -1;
         struct guest_module *module = resolve_handle(handle);
-        if (module) --module->references;
+        if (module) {
+            --module->references;
+            int status = collect_modules();
+            unlock_modules();
+            return status;
+        }
         unlock_modules();
-        if (module) return 0;
     }
 #endif
     if (handle == &main_handle) {

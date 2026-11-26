@@ -21,9 +21,18 @@ sdk/bin/wasm32posix-cc -O2 -fPIC -shared -Wl,--kandelo-side-dynsym -Ilibc/glue \
 sdk/bin/wasm32posix-cc -O2 -fPIC -shared -Wl,--kandelo-side-dynsym -Ilibc/glue \
     -DPROCESS_DYNSYM_NEEDED host/test/fixtures/process-dynsym-side.c \
     .scratch/dynsym-needed/dynsym-dependency.so -o .scratch/dynsym-needed-consumer.linked.so
+sdk/bin/wasm32posix-cc -O2 -fPIC -shared -Wl,--kandelo-side-dynsym -Ilibc/glue \
+    host/test/fixtures/process-dynsym-lifecycle-side.c .scratch/dynsym-needed/dynsym-dependency.so \
+    -o .scratch/dynsym-lifecycle.linked.so
+sdk/bin/wasm32posix-cc -O2 -rdynamic -DKANDELO_DYNSYM_MAP -Wl,--export=fork \
+    host/test/fixtures/process-dynsym-lifecycle.c libc/glue/dynsym.c \
+    -o .scratch/process-dynsym-lifecycle.linked.wasm
 instrument=scripts/run-wasm-fork-instrument.sh
 bash "$instrument" .scratch/dynsym-needed/dynsym-dependency.so -o .scratch/dynsym-dependency.so
 bash "$instrument" .scratch/dynsym-needed-consumer.linked.so --entry env.fork -o .scratch/dynsym-needed-consumer.so
 bash "$instrument" .scratch/process-dynsym.linked.wasm -o .scratch/process-dynsym.wasm
 bash "$instrument" .scratch/process-dynsym-side.linked.so --entry env.fork -o .scratch/process-dynsym-side.so
 bash "$instrument" .scratch/process-dynsym-mapped.linked.wasm --side-modules=assume-all-entries-fork-returning -o .scratch/process-dynsym-mapped.wasm
+bash "$instrument" .scratch/dynsym-lifecycle.linked.so -o .scratch/dynsym-lifecycle.so
+bash "$instrument" .scratch/process-dynsym-lifecycle.linked.wasm --side-modules=assume-all-entries-fork-returning \
+    -o .scratch/process-dynsym-lifecycle.wasm

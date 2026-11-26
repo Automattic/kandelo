@@ -50,8 +50,8 @@ it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1").each([
     const imports = WebAssembly.Module.imports(module);
     expect(imports.filter(({ name }) => /^__wasm_dl/.test(name))).toEqual([]);
     expect(imports).toContainEqual({
-      module: "kandelo.loader.prototype.v2",
-      name: "__kandelo_map_module_v2",
+      module: "kandelo.loader.prototype.v3",
+      name: "__kandelo_map_module_v3",
       kind: "function",
     });
 
@@ -80,7 +80,7 @@ it.skipIf(!process.env.KANDELO_ABI56_LOADER_FIXTURE)(
     const programPath = join(fixture, "plugin-host.wasm");
     const pluginPath = "/lib/scaled-dynsym.so";
     const imports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(programPath)));
-    expect(imports).toContainEqual({ module: "env", kind: "function", name: "__wasm_dlopen" });
+    expect(imports).toContainEqual({ module: "env", kind: "function", name: "__wasm_dlopen_prepare" });
     const result = await runCentralizedProgram({
       programPath,
       argv: ["scaled-dynsym", pluginPath],
@@ -91,6 +91,29 @@ it.skipIf(!process.env.KANDELO_ABI56_LOADER_FIXTURE)(
     });
     expect(result.exitCode, JSON.stringify(result)).toBe(0);
     expect(result.stdout).toMatch(/^\d+ \d+ \d+ \d+\n$/);
+    expect(result.stderr).toBe("");
+    expect(result.hostDiagnostics).toEqual([]);
+  },
+);
+
+it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
+  "serializes named loads and closes, including nested initialization",
+  { timeout: 120_000 },
+  async () => {
+    const scratch = join(root, ".scratch");
+    const plugin = "/lib/dynsym-lifecycle.so";
+    const result = await runCentralizedProgram({
+      programPath: join(scratch, "process-dynsym-lifecycle.wasm"),
+      argv: ["dynsym-lifecycle", plugin],
+      execPrograms: new Map([
+        [plugin, join(scratch, "dynsym-lifecycle.so")],
+        ["/lib/dynsym-dependency.so", join(scratch, "dynsym-dependency.so")],
+      ]),
+      useDefaultRootfs: false,
+      timeout: 45_000,
+    });
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toBe("guest loader lifecycle ok\n");
     expect(result.stderr).toBe("");
     expect(result.hostDiagnostics).toEqual([]);
   },

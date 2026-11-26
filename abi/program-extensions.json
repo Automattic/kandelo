@@ -66,8 +66,8 @@
     },
     {
       "kind": "function",
-      "module": "kandelo.loader.prototype.v2",
-      "name": "__kandelo_map_module_v2",
+      "module": "kandelo.loader.prototype.v3",
+      "name": "__kandelo_map_module_v3",
       "params": [
         "pointer",
         "i32",
@@ -83,7 +83,8 @@
         "BIND_FUNCTION_POINTER": 2,
         "INSPECT": 1,
         "MAP": 2,
-        "MAX_IMPORTS": 8192
+        "MAX_IMPORTS": 8192,
+        "RETIRE": 4
       }
     },
     {

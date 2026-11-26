@@ -88,3 +88,33 @@ test("a previously built ABI-56 plugin is callable in the fork child", async ({ 
   expect(result).toMatchObject({ exitCode: 0, stderr: "", hostDiagnostics: [] });
   expect(result.stdout).toMatch(/^\d+ \d+ \d+ \d+\n$/);
 });
+
+test("guest-owned loader lifecycle is shared by the process's pthreads", async ({ page }) => {
+  test.skip(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1", "requires the prototype linker");
+  await page.goto("/pages/test-runner/?minimal=1");
+  await page.waitForFunction(() => (window as Window & { __testRunnerReady?: boolean }).__testRunnerReady);
+  const read = (name: string) => Array.from(readFileSync(fileURLToPath(new URL(name, fixture))));
+  const plugin = "/lib/dynsym-lifecycle.so";
+  const dataFiles = [
+    { path: plugin, data: read("dynsym-lifecycle.so") },
+    { path: "/lib/dynsym-dependency.so", data: read("dynsym-dependency.so") },
+  ];
+  const result = await page.evaluate(async ({ main, plugin, dataFiles }) => {
+    const runner = window as Window & {
+      __runTest: (wasm: ArrayBuffer, argv: string[], timeout: number, options: {
+        seedEtc: boolean;
+        dataFiles: { path: string; data: number[] }[];
+      }) => Promise<{ exitCode: number; stdout: string; stderr: string; hostDiagnostics: unknown[] }>;
+    };
+    return runner.__runTest(new Uint8Array(main).buffer, ["dynsym-lifecycle", plugin], 45_000, {
+      seedEtc: false,
+      dataFiles,
+    });
+  }, { main: read("process-dynsym-lifecycle.wasm"), plugin, dataFiles });
+  expect(result).toMatchObject({
+    exitCode: 0,
+    stdout: "guest loader lifecycle ok\n",
+    stderr: "",
+    hostDiagnostics: [],
+  });
+});

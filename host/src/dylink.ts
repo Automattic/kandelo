@@ -602,8 +602,10 @@ export interface DylinkForkActivationRequest {
   readonly name: string;
   readonly module: WebAssembly.Module;
   readonly moduleBytes: Uint8Array;
-  /** Exact archived coordinate in a fresh fork child; absent in the parent. */
+  /** Exact coordinate of a replica restored from the process archive. */
   readonly replayActivationId?: number;
+  /** Process-unique coordinate selected by the guest for a new mapping. */
+  readonly guestActivationId?: number;
 }
 
 /**
@@ -801,6 +803,7 @@ export interface LoadSharedLibraryOptions {
   programExtensionImports?: WebAssembly.Imports;
   takeGuestCompiledModule?: (moduleName: string) => WebAssembly.Module | undefined;
   guestModuleDependencies?: (moduleName: string, count: number) => string[] | undefined;
+  guestModuleGeneration?: (moduleName: string) => number | undefined;
   guestModuleBindings?: (
     moduleName: string,
     imports: readonly WebAssembly.ModuleImportDescriptor[],
@@ -1505,6 +1508,7 @@ function* instantiateSharedLibrarySteps(
         module,
         moduleBytes: wasmBytes,
         replayActivationId,
+        guestActivationId: replay ? undefined : options.guestModuleGeneration?.(name),
       });
       if (
         !preparedActivation
@@ -1696,6 +1700,11 @@ function* instantiateSharedLibrarySteps(
       kind: "mem" | "func",
     ): WebAssembly.Global => {
       if (guestBindings) {
+        if (kind === "mem" && symName === "__dso_handle") {
+          // LLD's synthetic DSO identity is the start of the side image.
+          return new WebAssembly.Global({ value: pointerGlobalType, mutable: true },
+            wasmAddress(memoryBase, ptrWidth, `${name}: DSO identity`));
+        }
         const key = `${kind}:${symName}`;
         const value = guestBindings.globals.get(key);
         if (value === undefined)
@@ -3640,6 +3649,32 @@ export class DynamicLinker {
     }
     this.pendingDlopens.delete(token);
     return transaction.loaded;
+  }
+
+  /** A peer that missed earlier retirements still reserves the same slots. */
+  guestTableHighWater(floor = 0): number {
+    const table = this.options.table;
+    const length = tableLength(table);
+    if (floor > length) growTable(table, floor - length);
+    return Math.max(length, floor);
+  }
+
+  /** Release only the module selected by the guest after finalization. */
+  retireGuestMapping(name: string): boolean {
+    const library = this.options.loadedLibraries.get(name);
+    if (!library || library.loadState !== "loaded" || this.libraryHandles.has(name))
+      return false;
+    for (const other of this.options.loadedLibraries.values()) {
+      if (other !== library && runtimeDependencyNames(other).has(name)) return false;
+    }
+    this.clearLibraryTableEntries(library);
+    this.options.loadedLibraries.delete(name);
+    library.unregisterForkActivation?.();
+    for (const allocation of [...(library.allocations ?? [])].reverse())
+      this.options.deallocateMemory?.(allocation.address, allocation.size);
+    library.allocations = [];
+    this.rebuildDependencyBookkeeping();
+    return true;
   }
 
   /** Commit the fully initialized module closure and return its stable handle. */

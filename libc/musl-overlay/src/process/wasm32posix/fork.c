@@ -9,11 +9,14 @@
 
 pid_t _Fork(void);
 void __fork_handler(int);
+weak void __kandelo_loader_atfork(int);
 
 pid_t fork(void)
 {
 	__fork_handler(-1);
+	if (__kandelo_loader_atfork) __kandelo_loader_atfork(-1);
 	pid_t ret = _Fork();
+	if (__kandelo_loader_atfork) __kandelo_loader_atfork(!ret);
 	__fork_handler(!ret);
 	return ret;
 }
