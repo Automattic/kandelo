@@ -71,3 +71,15 @@ script_path = "packages/registry/quickshell/build-quickshell.sh"
 [[outputs]]
 name = "quickshell"
 wasm = "quickshell.wasm"
+
+# Qt QML's V4 engine (qtdeclarative, masm/wtf/OSAllocatorPosix.cpp; Qt is
+# built with __linux__) decommits released JS heap pages with MADV_DONTNEED
+# followed by mprotect(PROT_NONE), and calls CRASH() if mprotect fails.
+# Nothing reads a decommitted page before recommitting it read/write, so the
+# guard only catches engine bugs. Decommit sizes vary with the heap, so no
+# length limit applies. The engine's executable-memory probe
+# (PROT_READ|PROT_EXEC) is left ENOTSUP, which keeps the QML JIT off.
+[[fictions]]
+name = "mprotect"
+reason = "QML V4 OSAllocator::decommit makes released JS heap pages PROT_NONE after MADV_DONTNEED and crashes if refused; nothing touches them until recommit"
+config = { prot_none = "accept-unenforced" }

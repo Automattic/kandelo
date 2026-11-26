@@ -18,6 +18,10 @@
 # users: a static link resolves in one pass. A library the line forgets is
 # a link error naming the symbol (the SDK allows only the host's declared
 # imports to stay undefined).
+
+# -lkandelo-mprotect follows Qt6Core, which makes a remapped resource
+# writable with mprotect(PROT_READ | PROT_WRITE) and lists the library in its
+# CMake link interface and libQt6Core.prl; libc.a has no mprotect().
 #
 # libc++'s headers and archives come from the resolved libcxx package; the
 # shared worktree sysroot does not carry libc++.
@@ -90,6 +94,7 @@ wasm32posix-c++ \
     "$QTBASE/lib/libQt6Gui.a" \
     "$QTBASE/lib/libQt6DBus.a" \
     "$QTBASE/lib/libQt6Core.a" \
+    -lkandelo-mprotect \
     "$QTBASE/lib/libQt6BundledPcre2.a" \
     "$LIBDBUS/lib/libdbus-1.a" \
     "$FONTCONFIG/lib/libfontconfig.a" \

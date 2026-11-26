@@ -560,11 +560,11 @@ ac_cv_func_RAND_egd=${ac_cv_func_RAND_egd=no}
 ac_cv_func__set_invalid_parameter_handler=${ac_cv_func__set_invalid_parameter_handler=no}
 ac_cv_func_posix_spawn_file_actions_addclosefrom_np=${ac_cv_func_posix_spawn_file_actions_addclosefrom_np=no}
 
-# mprotect() links, but Wasm cannot enforce page protection: the kernel
-# accepts a protection change without making later accesses fault
-# (docs/posix-status.md). A configure check finding it would enable guard
-# pages, write barriers or W^X schemes that silently do nothing, so it stays
-# absent until protection is enforced.
+# Wasm cannot enforce page protection, so libc.a defines no public mprotect
+# (docs/posix-status.md). A package that only makes memory accessible links
+# the opt-in -lkandelo-mprotect, whose mprotect() refuses requests that would
+# remove access with ENOTSUP; configure still reports it absent so guard
+# pages, write barriers and W^X schemes are not enabled.
 ac_cv_func_mprotect=${ac_cv_func_mprotect=no}
 
 # xattr — not in musl on wasm32

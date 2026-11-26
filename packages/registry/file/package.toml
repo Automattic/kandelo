@@ -30,3 +30,17 @@ wasm = "file.wasm"
 [[outputs]]
 name = "file-magic"
 wasm = "magic.lite"
+
+# libmagic maps a compiled magic database (.mgc) privately read/write,
+# validates (and if needed byte-swaps) it, then seals it with
+# mprotect(PROT_READ) and refuses to load it if that fails
+# (src/apprentice.c apprentice_map; QUICK is on because the target has
+# mmap). The seal is hardening: nothing writes the map afterwards, so an
+# unenforced seal only stops catching a libmagic bug that writes it.
+# Database sizes vary, so no length limit applies. Text databases such as
+# the shipped magic.lite never reach this call. prot_none requests stay
+# ENOTSUP; file makes none.
+[[fictions]]
+name = "mprotect"
+reason = "apprentice.c apprentice_map seals a loaded compiled magic database (.mgc) read-only as hardening and refuses to load it if mprotect fails; nothing writes it afterwards"
+config = { read_only = "accept-unenforced" }

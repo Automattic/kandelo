@@ -90,32 +90,6 @@ done
 kandelo_package_stage_primary_source espeak-ng "$SRC_DIR" "$WORK_DIR"
 kandelo_package_stage_source_dependency pcaudiolib-source "$PCAUDIO_SRC_DIR" "$WORK_DIR"
 
-# --- Locate host LLVM (for glue obj compile + native build) ---
-LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
-LLVM_CLANG="$LLVM_PREFIX/bin/clang"
-
-# --- Phase 0: kandelo glue objs ----------------------------------------
-# Mirrors mariadb's mariadb-glue-objs/. crt1.o comes from the sysroot;
-# the channel_syscall + compiler_rt objects come from the kandelo libc
-# glue and are linked into every user program at exec time. They are
-# compiled against the read-only SDK seed sysroot. The toolchain file finds
-# them through ESPEAK_GLUE_OBJ_DIR.
-GLUE_OBJ_DIR="$WORK_DIR/glue-objs"
-export ESPEAK_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"
-GLUE_SRC_DIR="$REPO_ROOT/libc/glue"
-mkdir -p "$GLUE_OBJ_DIR"
-# Compile both objects on every build. They are two small files, and a
-# timestamp check on channel_syscall.c alone missed changes to the headers it
-# includes (abi_constants.h carries the ABI version) and to compiler_rt.c.
-{
-    echo "==> Compiling kandelo glue objs..."
-    WASM_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SDK_SYSROOT"
-    # shellcheck disable=SC2086
-    "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
-    # shellcheck disable=SC2086
-    "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
-}
-
 # --- Phase 1: libpcaudio.a (OSS backend only) --------------------------
 # We don't run pcaudiolib's autotools / libtool — for five files we just
 # compile and archive directly. See packages/registry/libxml2/
@@ -281,14 +255,10 @@ rm -rf "$CROSS_BUILD_DIR"
 mkdir -p "$CROSS_BUILD_DIR"
 
 echo "==> Cross-compiling espeak-ng for wasm32..."
-# The toolchain file drives raw clang, so the SDK wrapper's automatic
-# work-root prefix map does not apply. Map the work root (which carries a
-# per-build PID under the resolver) here; CMake folds CFLAGS/CXXFLAGS into
-# the toolchain's *_FLAGS_INIT on first configure.
-CROSS_PREFIX_MAP="-ffile-prefix-map=$WORK_DIR=/usr/src/kandelo-build/espeak-ng"
-CFLAGS="$CROSS_PREFIX_MAP" CXXFLAGS="$CROSS_PREFIX_MAP" \
 cmake -S "$SRC_DIR" -B "$CROSS_BUILD_DIR" \
-    -DCMAKE_TOOLCHAIN_FILE="$HERE/wasm32-posix-toolchain.cmake" \
+    -DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-toolchain.cmake" \
+    -DCMAKE_CXX_FLAGS="-isystem \"$SYSROOT/include/c++/v1\"" \
+    -DCMAKE_CXX_STANDARD_LIBRARIES="-lc++ -lc++abi" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DBUILD_SHARED_LIBS=OFF \
@@ -312,9 +282,7 @@ cmake --build "$CROSS_BUILD_DIR" --target espeak-ng-bin -j"$(sysctl -n hw.ncpu 2
 echo "==> Staging into $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/share"
 
-# espeak-ng-bin produces a "espeak-ng" file with no extension; rename
-# to .wasm for the package resolver's binary contract.
-cp "$CROSS_BUILD_DIR/src/espeak-ng" "$INSTALL_DIR/bin/espeak-ng.wasm"
+cp "$CROSS_BUILD_DIR/src/espeak-ng.wasm" "$INSTALL_DIR/bin/espeak-ng.wasm"
 
 # Data dir: the native build wrote it under NATIVE_BUILD_DIR/espeak-ng-data/.
 rm -rf "$INSTALL_DIR/share/espeak-ng-data"

@@ -383,51 +383,6 @@ grep -F 'url = "'"$msmtpd_source"'"' \
     "$REPO_ROOT/packages/registry/msmtpd/package.toml" >/dev/null ||
     fail "msmtpd manifest does not use its immutable source snapshot"
 
-glue="$TEST_ROOT/glue"
-mkdir -p "$glue"
-: >"$glue/channel_syscall.o"
-: >"$glue/compiler_rt.o"
-driver="$TEST_ROOT/driver.cmake"
-cat >"$driver" <<'CMAKE'
-include("${CONTRACT}")
-kandelo_mariadb_glue_object_flags(result)
-file(WRITE "${RESULT}" "${result}")
-CMAKE
-cmake \
-    -DCONTRACT="$REPO_ROOT/packages/registry/mariadb/mariadb-glue-object-contract.cmake" \
-    -DRESULT="$TEST_ROOT/result" \
-    -DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$glue" \
-    -P "$driver"
-grep -F "$glue/channel_syscall.o" "$TEST_ROOT/result" >/dev/null ||
-    fail "MariaDB glue contract omitted channel_syscall.o"
-grep -F "$glue/compiler_rt.o" "$TEST_ROOT/result" >/dev/null ||
-    fail "MariaDB glue contract omitted compiler_rt.o"
-
-symlink_glue="$TEST_ROOT/symlink-glue"
-mkdir -p "$symlink_glue"
-ln -s "$glue/channel_syscall.o" "$symlink_glue/channel_syscall.o"
-cp "$glue/compiler_rt.o" "$symlink_glue/compiler_rt.o"
-for bad in missing relative symlink; do
-    err="$TEST_ROOT/$bad.err"
-    args=()
-    if [ "$bad" = relative ]; then
-        args=(-DWASM_POSIX_MARIADB_GLUE_OBJ_DIR=relative)
-    elif [ "$bad" = symlink ]; then
-        args=(-DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$symlink_glue")
-    fi
-    if cmake \
-        -DCONTRACT="$REPO_ROOT/packages/registry/mariadb/mariadb-glue-object-contract.cmake" \
-        -DRESULT="$TEST_ROOT/$bad.result" \
-        "${args[@]}" \
-        -P "$driver" >"$TEST_ROOT/$bad.out" 2>"$err"; then
-        fail "MariaDB glue contract accepted $bad authority"
-    fi
-done
-
-grep -F -- '-DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"' \
-    "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh" >/dev/null ||
-    fail "MariaDB build does not pass its resolver-owned glue directory"
-
 mariadb="$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
 awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
     "$mariadb" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
@@ -456,14 +411,13 @@ mariadb_work="$mariadb_fixture/work"
 mariadb_out="$mariadb_fixture/out"
 mariadb_seed="$mariadb_fixture/sysroot"
 mariadb_libcxx="$mariadb_fixture/libcxx"
-mariadb_pcre2="$mariadb_fixture/pcre2"
+mariadb_pcre2="$mariadb_fixture/pcre2-source"
+mariadb_ncurses="$mariadb_fixture/ncurses-source"
 mariadb_fake_bin="$mariadb_fixture/fake-bin"
-mariadb_fake_llvm="$mariadb_fixture/llvm"
 mkdir -p \
     "$mariadb_recipe" \
     "$mariadb_repo/scripts" \
-    "$mariadb_repo/sdk" \
-    "$mariadb_repo/libc/glue" \
+    "$mariadb_repo/sdk/cmake" \
     "$mariadb_source" \
     "$mariadb_work/source" \
     "$mariadb_work/source/mysys" \
@@ -478,37 +432,37 @@ mkdir -p \
     "$mariadb_seed/include/c++/v1" \
     "$mariadb_libcxx/lib" \
     "$mariadb_libcxx/include/c++/v1" \
-    "$mariadb_pcre2/lib" \
-    "$mariadb_pcre2/include" \
-    "$mariadb_fake_bin" \
-    "$mariadb_fake_llvm/bin"
+    "$mariadb_pcre2/src" \
+    "$mariadb_ncurses" \
+    "$mariadb_fake_bin"
 cp "$mariadb" "$mariadb_recipe/build-mariadb.sh"
 package_test_copy_recipe "$REPO_ROOT" "$mariadb_repo" mariadb
-cp "$REPO_ROOT/packages/registry/mariadb/wasm32-posix-toolchain.cmake" \
-    "$mariadb_recipe/wasm32-posix-toolchain.cmake"
-cat >"$mariadb_repo/sdk/activate.sh" <<'SH'
-#!/usr/bin/env bash
-:
-SH
-: >"$mariadb_repo/libc/glue/channel_syscall.c"
-: >"$mariadb_repo/libc/glue/compiler_rt.c"
+cp -R "$REPO_ROOT/sdk/cmake/." "$mariadb_repo/sdk/cmake/"
+cp "$REPO_ROOT/sdk/activate.sh" "$mariadb_repo/sdk/"
 printf '__wasm32__\n' >"$mariadb_work/source/mysys/my_gethwaddr.c"
 printf 'system tables\n' \
     >"$mariadb_work/source/scripts/mysql_system_tables.sql"
 printf 'system table data\n' \
     >"$mariadb_work/source/scripts/mysql_system_tables_data.sql"
 : >"$mariadb_seed/lib/libc.a"
-: >"$mariadb_seed/lib/crt1.o"
 printf 'seed atomic\n' >"$mariadb_seed/include/c++/v1/atomic"
 : >"$mariadb_libcxx/lib/libc++.a"
 : >"$mariadb_libcxx/lib/libc++abi.a"
 printf 'private atomic\n' >"$mariadb_libcxx/include/c++/v1/atomic"
 printf 'cached-sysroot=%s\n' "$mariadb_seed" \
     >"$mariadb_work/cross-build/CMakeCache.txt"
-: >"$mariadb_pcre2/lib/libpcre2-8.a"
-: >"$mariadb_pcre2/lib/libpcre2-posix.a"
-: >"$mariadb_pcre2/include/pcre2.h"
-: >"$mariadb_pcre2/include/pcre2posix.h"
+: >"$mariadb_pcre2/CMakeLists.txt"
+: >"$mariadb_pcre2/src/pcre2posix.h"
+cat >"$mariadb_ncurses/configure" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "$@"; do
+    case "$arg" in
+        --prefix=*) printf '%s\n' "${arg#--prefix=}" >install-prefix ;;
+    esac
+done
+test -s install-prefix
+SH
 : >"$mariadb_work/host-build/import_executables.cmake"
 for helper in \
     extra/comp_err scripts/comp_sql dbug/factorial \
@@ -517,27 +471,6 @@ for helper in \
     chmod 0755 "$mariadb_work/host-build/$helper"
 done
 
-cat >"$mariadb_fake_llvm/bin/clang" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-output=""
-while [ "$#" -gt 0 ]; do
-    if [ "$1" = -o ]; then
-        output="$2"
-        shift 2
-    else
-        shift
-    fi
-done
-[ -n "$output" ] || exit 72
-: >"$output"
-SH
-for tool in llvm-ar llvm-ranlib llvm-nm; do
-    cat >"$mariadb_fake_llvm/bin/$tool" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-done
 cat >"$mariadb_fake_bin/bison" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -545,6 +478,17 @@ SH
 cat >"$mariadb_fake_bin/cmake" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+expected_toolchain="-DCMAKE_TOOLCHAIN_FILE=${EXPECTED_MARIADB_TOOLCHAIN:?}"
+if [[ " $* " != *" $expected_toolchain "* ]] || [ ! -f "${expected_toolchain#*=}" ]; then
+    echo "fixture: missing the worktree SDK toolchain in $PWD" >&2
+    exit 72
+fi
+if [ "$1" = "${EXPECTED_MARIADB_PCRE2_SOURCE:?}" ]; then
+    : >pcre2.h
+    : >"${OBSERVED_PCRE2_CONFIGURE:?}"
+    exit 0
+fi
+[ -f "${OBSERVED_PCRE2_CONFIGURE:?}" ] || exit 72
 : >"${MARIADB_COMPETITOR_START:?}"
 attempt=0
 while [ ! -e "${MARIADB_COMPETITOR_DONE:?}" ]; do
@@ -562,6 +506,8 @@ case "${WASM_POSIX_SYSROOT:?}/" in
 esac
 [ "$WASM_POSIX_SYSROOT" != "${EXPECTED_MARIADB_SEED:?}" ] || exit 75
 [ -f "$WASM_POSIX_SYSROOT/include/c++/v1/atomic" ] || exit 76
+[ -f "$WASM_POSIX_SYSROOT/lib/libpcre2-8.a" ] || exit 76
+[ -f "$WASM_POSIX_SYSROOT/lib/libtinfow.a" ] || exit 76
 printf 'configured-sysroot=%s\n' "$WASM_POSIX_SYSROOT" \
     >"$EXPECTED_MARIADB_CROSS_BUILD/CMakeCache.txt"
 printf '%s\n' "$WASM_POSIX_SYSROOT" >"${OBSERVED_MARIADB_SYSROOT:?}"
@@ -571,15 +517,29 @@ cat >"$mariadb_fake_bin/make" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 case " $* " in
+  *" install "*)
+    prefix="$(cat install-prefix)"
+    mkdir -p "$prefix/include/ncursesw" "$prefix/lib"
+    : >"$prefix/include/ncursesw/curses.h"
+    : >"$prefix/lib/libtinfow.a"
+    ;;
+  *" pcre2-8-static pcre2-posix-static "*)
+    : >libpcre2-8.a
+    : >libpcre2-posix.a
+    ;;
   *" mariadbd "*)
     mkdir -p sql
-    printf 'fixture mariadbd\n' >sql/mariadbd
+    printf 'fixture mariadbd\n' >sql/mariadbd.wasm
+    ;;
+  *" mariadb "*)
+    mkdir -p client
+    printf 'fixture mariadb\n' >client/mariadb.wasm
     ;;
   *" mariadb-test "*)
     mkdir -p client
-    printf 'fixture mysqltest\n' >client/mariadb-test
+    printf 'fixture mysqltest\n' >client/mariadb-test.wasm
     ;;
-  *) exit 79 ;;
+  *) [ -f install-prefix ] || exit 79 ;;
 esac
 SH
 cat >"$mariadb_repo/scripts/install-local-binary.sh" <<'SH'
@@ -595,11 +555,7 @@ install_local_runtime_file() {
 }
 SH
 chmod 0755 \
-    "$mariadb_repo/sdk/activate.sh" \
-    "$mariadb_fake_llvm/bin/clang" \
-    "$mariadb_fake_llvm/bin/llvm-ar" \
-    "$mariadb_fake_llvm/bin/llvm-ranlib" \
-    "$mariadb_fake_llvm/bin/llvm-nm" \
+    "$mariadb_ncurses/configure" \
     "$mariadb_fake_bin/bison" \
     "$mariadb_fake_bin/cmake" \
     "$mariadb_fake_bin/make"
@@ -620,7 +576,9 @@ mariadb_competitor_pid=$!
 set +e
 env \
     PATH="$mariadb_fake_bin:$PATH" \
-    LLVM_PREFIX="$mariadb_fake_llvm" \
+    EXPECTED_MARIADB_TOOLCHAIN="$mariadb_repo/sdk/cmake/kandelo-toolchain.cmake" \
+    EXPECTED_MARIADB_PCRE2_SOURCE="$mariadb_pcre2" \
+    OBSERVED_PCRE2_CONFIGURE="$mariadb_fixture/pcre2-configured" \
     EXPECTED_MARIADB_WORK="$mariadb_work" \
     EXPECTED_MARIADB_CROSS_BUILD="$mariadb_work/cross-build" \
     EXPECTED_MARIADB_SEED="$mariadb_seed" \
@@ -634,7 +592,8 @@ env \
     WASM_POSIX_DEP_OUT_DIR="$mariadb_out" \
     WASM_POSIX_DEP_SOURCE_DIR="$mariadb_source" \
     WASM_POSIX_DEP_LIBCXX_DIR="$mariadb_libcxx" \
-    WASM_POSIX_DEP_PCRE2_DIR="$mariadb_pcre2" \
+    WASM_POSIX_DEP_K_70637265322D736F75726365_SRC_DIR="$mariadb_pcre2" \
+    WASM_POSIX_DEP_K_6E6375727365732D736F75726365_SRC_DIR="$mariadb_ncurses" \
     WASM_POSIX_SYSROOT="$mariadb_seed" \
     bash "$mariadb_recipe/build-mariadb.sh" \
         >"$mariadb_fixture/stdout" 2>"$mariadb_fixture/stderr"
@@ -677,39 +636,6 @@ for shared_path in \
     [ ! -e "$shared_path" ] ||
         fail "MariaDB build mutated shared sysroot path $shared_path"
 done
-
-try_compile_source="$TEST_ROOT/mariadb-glue-try-compile"
-try_compile_sysroot="$TEST_ROOT/mariadb-glue-sysroot"
-mkdir -p "$try_compile_source" "$try_compile_sysroot/lib"
-: >"$try_compile_sysroot/lib/libc.a"
-cat >"$try_compile_source/CMakeLists.txt" <<'CMAKE'
-cmake_minimum_required(VERSION 3.13)
-project(mariadb_glue_try_compile C)
-CMAKE
-
-for arch in wasm32 wasm64; do
-    toolchain="$REPO_ROOT/packages/registry/mariadb/$arch-posix-toolchain.cmake"
-    grep -F 'mariadb-glue-object-contract.cmake' "$toolchain" >/dev/null ||
-        fail "MariaDB $arch toolchain does not load the glue contract"
-    if grep -F '_TOOLCHAIN_DIR2' "$toolchain" >/dev/null; then
-        fail "MariaDB $arch toolchain still infers checkout-local glue objects"
-    fi
-    if ! WASM_POSIX_SYSROOT="$try_compile_sysroot" cmake \
-        -S "$try_compile_source" \
-        -B "$TEST_ROOT/$arch-try-compile" \
-        -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
-        -DWASM_POSIX_SYSROOT="$try_compile_sysroot" \
-        -DWASM_POSIX_MARIADB_GLUE_OBJ_DIR="$glue" \
-        >"$TEST_ROOT/$arch-try-compile.out" \
-        2>"$TEST_ROOT/$arch-try-compile.err"; then
-        cat "$TEST_ROOT/$arch-try-compile.err" >&2
-        fail "MariaDB $arch compiler probe lost its prepared glue directory"
-    fi
-done
-
-grep -F '"packages/registry/mariadb/mariadb-glue-object-contract.cmake"' \
-    "$REPO_ROOT/packages/registry/mariadb/build.toml" >/dev/null ||
-    fail "MariaDB build provenance omits the glue contract"
 
 # Nano must consume the resolver's declared source, work, output, and ncurses
 # roots. Exercise the real recipe in a miniature checkout: any nested resolver

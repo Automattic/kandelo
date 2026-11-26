@@ -15,6 +15,7 @@
 pub mod arch;
 pub mod driver;
 pub mod exec;
+pub mod fictions;
 pub mod flags;
 pub mod node_path;
 pub mod plugin;
