@@ -32,6 +32,14 @@ and defaults are outside this feature's integration scope.
 
 The Rust kernel owns group identity, membership, budgets and backing leases, physical allocation and page custody, image roots, per-task scratch, shared objects, mapping publication, barriers and retirement. The owner is part of `ProcessTable`; it is not a separate helper module managed by the host. The host retains the corresponding `WebAssembly.Memory`, Worker and native Promise instances.
 
+| Owner | Lifetime and changes |
+| --- | --- |
+| `ProcessTable` process and thread records | POSIX identity, guest wait state, descriptors, logical mappings and thread entry. Fork and clone add identities, exec replaces the image, and exit and reap advance guest state. |
+| `MemoryGroups` group, image and task records | Group budgets and exact execution admissions. Preparation charges them. Publication, cancellation, stop and retirement advance or release those charges. An image may outlive its guest process record. |
+| Physical storage | Page tables and private frames belong to an image. Scratch belongs to a replica. Shared object pages remain charged while descriptors or mappings retain them. Each native wait pins its exact storage until that observation settles. |
+| Kernel continuations | Mapping and execution operations retain preconditions and pending effects through asynchronous progress. Exit publication holds a parent's event through execution stop. Retirement advances transport, reference and physical release. The completion owner retains terminal mailbox authority through its last publication or cancellation. |
+| Host transport and Worker objects | Channel and memory views, import endpoints, native Workers and observation promises serve the exact kernel receipt. Reference disposal closes endpoints and observers. Worker termination and native wait settlement report separate platform facts. |
+
 Page-table scans use a stateless Rust Wasm adjunct instantiated once for each
 backing inside the disposable kernel Worker. It imports that existing memory
 and performs bounded sequential atomic reads directly, returning the next
@@ -135,6 +143,14 @@ launch delivery after checking the exact execution and pending default signals.
 A stopped operation stays pending in Rust. TypeScript retains native objects
 and executes each granted effect in the same kernel-entry transaction; grouped
 starts never enter the ordinary host deferred-constructor registry.
+
+Root, fork, exec and pthread effects use the same host Worker object for
+scalar-only preparation, readiness observation and memory delivery. The
+readiness observer matches the exact expectation sent to the Worker. A memory
+delivery requires a started backing Worker on that same deferred handle and
+fails if the handle has retired. Reference disposal cancels any pending
+readiness observation. Rust still selects the sequencing and failure path of
+each operation, including fork replay and old-image exec retirement.
 
 Exec readiness and memory delivery are separate kernel-selected effects. While
 handoff is pending, the actual exec owner retains a replacement's normal or
@@ -490,8 +506,8 @@ in-memory shared objects and compatible participants; it does not complete gener
 shared-file growth/truncation, persistent writable sharing or mixed graphical clients.
 
 Validation must distinguish native, Node, browser, ABI, conformance and resource
-results. Chromium, Firefox and WebKit are preview targets within the
-[current qualification scope](measurements/2026-11-25-shared-memory-webkit-qualification.md).
+results. Chromium and Firefox are supported preview targets. WebKit remains
+experimental within the [landing receipt's scope](measurements/2026-11-25-shared-memory-scanner.md).
 Playwright WebKit is not native Safari evidence. Record failed
 and unrun checks, and distinguish the pinned tested runtime from later source
 integration. A matched ordinary control measures group costs; it does not replace

@@ -7,8 +7,6 @@ import type { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import type { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
 import type { CentralizedWorkerInitMessage } from './worker-protocol';
 import type { WorkerAdapter, WorkerHandle } from './worker-adapter';
-import { DeferredWorkerHandle } from './deferred-worker-handle';
-import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, waitForGroupedWorkerReady } from './grouped-worker-initialization';
 import { retryKernelEntryResult } from './kernel-entry-retry';
 
 export interface GroupedExecWorkerOptions {
@@ -49,8 +47,7 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
     startAfterCommit: async () => {
       let generation!: ForkExternrefGeneration;
       let replacement!: GroupedWorkerObjects;
-      let nativeWorker: WorkerHandle | undefined, readiness: Promise<void> | undefined;
-      let deliver: (() => void) | undefined;
+      let init!: Omit<CentralizedWorkerInitMessage, 'memory'>;
       let replacementExitObserver: ((code: number) => void) | undefined;
       try {
         return await kernel.runMemoryGroupExecHandoff(request, {
@@ -71,22 +68,10 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
           publishTermination: (signal, status) => options.onTerminated?.(signal, status),
           bindReplacement: async (handle, launch, secureExec) => {
             await options.onRetired?.(options.previousImage, handle);
-            const { assertLive: _live, ...expected } = launch.expectation;
-            let ownership!: GroupedWorkerObjects;
-            let init!: Omit<CentralizedWorkerInitMessage, 'memory'>;
-            const worker = new DeferredWorkerHandle(() => {
-              const actual = options.adapter.createWorker(createGroupedWorkerPrepare(expected));
-              nativeWorker = actual;
-              readiness = waitForGroupedWorkerReady(actual, expected);
-              void readiness.catch(() => {});
-              return actual;
-            });
-            deliver = () => {
-              if (!nativeWorker || !options.isCurrent(ownership)) throw Error('Stale grouped exec before memory launch');
-              nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
-            };
-            ownership = new GroupedWorkerObjects(handle, expected.receipt, generation, worker,
+            const ownership = new GroupedWorkerObjects(handle, launch.expectation.receipt, generation,
+              { adapter: options.adapter, launch: () => launch, readinessTimeoutMs: 10000 },
               () => options.externrefs.releaseGeneration(generation));
+            const { worker } = ownership;
             const endpoint = options.imports.createWorker({ pid: request.pid, generationId: generation.id,
               authorizeSender: () => { if (!options.isCurrent(ownership)) throw Error('Stale grouped exec host-import sender'); },
               onDiagnostic: error => options.onError(error instanceof Error ? error : Error(String(error)), ownership) });
@@ -125,13 +110,10 @@ export function prepareGroupedExecWorker(options: GroupedExecWorkerOptions): Pre
           startReplacement: () => {
             if (!replacement.worker.start()) throw Error('Grouped exec Worker start cancelled');
           },
-          waitReady: async () => {
-            if (!readiness) throw Error('Grouped exec has no constructed Worker');
-            await readiness;
-          },
+          waitReady: () => replacement.waitReady(),
           deliverLaunch: () => {
-            if (!deliver) throw Error('Grouped exec has no bound launch');
-            deliver();
+            if (!replacement || !options.isCurrent(replacement)) throw Error('Stale grouped exec before memory launch');
+            replacement.deliverLaunch(init);
           },
         });
       } catch (cause) { return kernel.containMemoryGroupExecFailure(cause); }

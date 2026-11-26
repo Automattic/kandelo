@@ -6,12 +6,10 @@ import { ERRNO } from './generated/abi';
 import { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
 import type { PreparedGroupReplica, GroupReplicaLaunch } from './group-memory-transport';
-import type { WorkerAdapter, WorkerHandle } from './worker-adapter';
-import { DeferredWorkerHandle } from './deferred-worker-handle';
+import type { WorkerAdapter } from './worker-adapter';
 import { prepareGroupedExecWorker } from './grouped-exec-launch';
 import { launchGroupedForkWorker } from './grouped-fork-launch';
 import { launchGroupedThreadWorker } from './grouped-thread-launch';
-import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, waitForGroupedWorkerReady } from './grouped-worker-initialization';
 import { retryKernelEntryResult as retry } from './kernel-entry-retry';
 import type { MemoryGroupUsage } from './memory-group-usage';
 import type { CentralizedWorkerInitMessage } from './worker-protocol';
@@ -169,21 +167,17 @@ export class GroupedSessionRuntime {
     const { receipt, handle, layout } = prepared;
     const generation = this.externrefs.startGeneration(pid);
     let launch!: GroupReplicaLaunch;
-    let expected!: Omit<GroupReplicaLaunch['expectation'], 'assertLive'>;
     let init!: Omit<CentralizedWorkerInitMessage, 'memory'>;
     let observed = false;
-    let nativeWorker: WorkerHandle | undefined, readiness: Promise<void> | undefined;
-    const worker = new DeferredWorkerHandle(() => {
-      if (this.closed || !this.current(process)) throw Error('Grouped root admission closed');
-      const actual = this.adapter.createWorker(createGroupedWorkerPrepare(expected));
-      nativeWorker = actual;
-      // Observe immediately so readiness cannot race installation of the next
-      // kernel-requested effect. Its result is consumed by that effect.
-      readiness = waitForGroupedWorkerReady(actual, expected);
-      void readiness.catch(() => {});
-      return actual;
-    });
-    const owner = new GroupedWorkerObjects(handle, receipt, generation, worker, () => this.externrefs.releaseGeneration(generation));
+    const owner = new GroupedWorkerObjects(handle, receipt, generation, {
+      adapter: this.adapter,
+      launch: () => {
+        if (this.closed || !this.current(process)) throw Error('Grouped root admission closed');
+        return launch;
+      },
+      readinessTimeoutMs: 10000,
+    }, () => this.externrefs.releaseGeneration(generation));
+    const { worker } = owner;
     const process: Process = { pid, handle, owner, bytes, module, layout };
     const bindWorker = () => {
       if (observed) return;
@@ -193,11 +187,7 @@ export class GroupedSessionRuntime {
       this.processes.set(pid, process);
     };
     await this.kernel.runMemoryGroupRootLaunch(handle, {
-      publishTransport: result => {
-        launch = result;
-        const { assertLive: _live, ...identity } = launch.expectation;
-        expected = identity;
-      },
+      publishTransport: result => { launch = result; },
       bindWorker,
       registerProcess: () => this.kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], {
         ...layout, ptrWidth: 4, argv, env }),
@@ -226,13 +216,10 @@ export class GroupedSessionRuntime {
       startWorker: () => {
         if (this.closed || !worker.start()) throw Error('Grouped root start cancelled');
       },
-      waitReady: async () => {
-        if (!readiness) throw Error('Grouped root has no constructed Worker');
-        await readiness;
-      },
+      waitReady: () => owner.waitReady(),
       deliverLaunch: () => {
-        if (!nativeWorker || !this.current(process)) throw Error('Grouped root replaced before launch delivery');
-        nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+        if (!this.current(process)) throw Error('Grouped root replaced before launch delivery');
+        owner.deliverLaunch(init);
       },
       sealAbsence: () => {
         bindWorker();

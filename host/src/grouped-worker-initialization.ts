@@ -50,14 +50,21 @@ function ready(expected: Expectation) {
     forkReplay: G.MEMORY_GROUP_FORK_REPLAY_VERSION } as const;
 }
 /** Start the exact normal Worker entry without exposing any process backing. */
-export function createGroupedWorkerPrepare(expected: Expectation): unknown {
-  return { type: PREPARE, expected: expectation(expected) };
+export function createGroupedWorkerPrepare(expected: Expectation) {
+  return Object.freeze({ type: PREPARE, expected: expectation(expected) });
 }
+
+interface ReadinessObservation {
+  result: Promise<void>;
+  cancel(reason: Error): void;
+}
+
 /** The caller keeps ownership of this handle on timeout/failure. Neither a
  * timeout nor readiness authorizes task cancellation, page reuse or reclamation.
  */
-export function observeGroupedWorkerReady(worker: WorkerHandle, expected: Expectation): { result: Promise<void>; cancel(reason: Error): void } {
-  const wanted = ready(expectation(expected));
+export function observeGroupedWorkerReady(worker: WorkerHandle, prepare: ReturnType<typeof createGroupedWorkerPrepare>,
+    timeoutMs?: number): ReadinessObservation {
+  const wanted = ready(prepare.expected);
   let cancel!: (reason: Error) => void;
   const result = new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -79,12 +86,12 @@ export function observeGroupedWorkerReady(worker: WorkerHandle, expected: Expect
     cancel = error;
     worker.on('message', message); worker.on('error', error); worker.on('exit', exit);
   });
-  return { result, cancel };
+  if (timeoutMs === undefined) return { result, cancel };
+  const timeout = setTimeout(() => cancel(new MemoryGroupProtocolFault('Grouped Worker readiness timed out')), timeoutMs);
+  return { result: result.finally(() => clearTimeout(timeout)), cancel };
 }
 export async function waitForGroupedWorkerReady(worker: WorkerHandle, expected: Expectation, timeoutMs = 10000): Promise<void> {
-  const observation = observeGroupedWorkerReady(worker, expected);
-  const timeout = setTimeout(() => observation.cancel(new MemoryGroupProtocolFault('Grouped Worker readiness timed out')), timeoutMs);
-  try { await observation.result; } finally { clearTimeout(timeout); }
+  return observeGroupedWorkerReady(worker, createGroupedWorkerPrepare(expected), timeoutMs).result;
 }
 /** Send only after readiness and exact Rust publication have both succeeded. */
 export function createGroupedWorkerLaunch(init: GroupedWorkerInit, envelope: ProcessMemoryEnvelope): unknown {
