@@ -1,4 +1,7 @@
-use wasm_posix_shared::{Errno, signal::NSIG};
+use wasm_posix_shared::{
+    Errno, abi::WasmIndirectCallTrap,
+    signal::{NSIG, SIGILL},
+};
 extern crate alloc;
 
 use alloc::{collections::VecDeque, vec::Vec};
@@ -163,7 +166,7 @@ pub fn try_terminate_process_by_signal(
     host: &mut dyn HostIO,
     signum: u32,
 ) -> SignalProgress<()> {
-    try_terminate_process_by_signal_impl(proc, None, host, signum)
+    try_terminate_process_by_signal_impl(proc, None, host, signum, None)
 }
 
 pub fn terminate_process_by_signal_with_locks(
@@ -171,8 +174,10 @@ pub fn terminate_process_by_signal_with_locks(
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
     signum: u32,
+    trap: Option<WasmIndirectCallTrap>,
 ) {
-    try_terminate_process_by_signal_with_locks(proc, locks, host, signum).require_complete();
+    let signum = if trap.is_some() { SIGILL } else { signum };
+    try_terminate_process_by_signal_impl(proc, Some(locks), host, signum, trap).require_complete();
 }
 
 pub fn try_terminate_process_by_signal_with_locks(
@@ -181,7 +186,7 @@ pub fn try_terminate_process_by_signal_with_locks(
     host: &mut dyn HostIO,
     signum: u32,
 ) -> SignalProgress<()> {
-    try_terminate_process_by_signal_impl(proc, Some(locks), host, signum)
+    try_terminate_process_by_signal_impl(proc, Some(locks), host, signum, None)
 }
 
 fn try_terminate_process_by_signal_impl(
@@ -189,12 +194,13 @@ fn try_terminate_process_by_signal_impl(
     locks: Option<&mut crate::lock::AdvisoryLockManager>,
     host: &mut dyn HostIO,
     signum: u32,
+    trap: Option<WasmIndirectCallTrap>,
 ) -> SignalProgress<()> {
     match preflight_signal_termination(proc) {
         SignalProgress::Complete(()) => (),
         pending => return pending,
     }
-    terminate_process_by_signal_impl(proc, locks, host, signum);
+    terminate_process_by_signal_impl(proc, locks, host, signum, trap);
     SignalProgress::Complete(())
 }
 
@@ -203,6 +209,7 @@ fn terminate_process_by_signal_impl(
     locks: Option<&mut crate::lock::AdvisoryLockManager>,
     host: &mut dyn HostIO,
     signum: u32,
+    trap: Option<WasmIndirectCallTrap>,
 ) {
     proc.mask_waits.clear();
     proc.caught_handler_depth = 0;
@@ -212,10 +219,7 @@ fn terminate_process_by_signal_impl(
         thread.signals.caught_handler_depth = 0;
         thread.signals.returned_handler_depths.clear();
     }
-    match locks {
-        Some(locks) => crate::syscalls::sys_exit_by_signal_with_locks(proc, locks, host, signum),
-        None => crate::syscalls::sys_exit_by_signal(proc, host, signum),
-    }
+    crate::syscalls::sys_exit_by_signal_impl(proc, locks, host, signum, trap);
 }
 
 /// Apply a signal's default action after its pending instance has been
@@ -275,7 +279,7 @@ fn apply_default_signal_action_impl(
 ) -> DefaultSignalOutcome {
     match default_action(signum) {
         DefaultAction::Terminate | DefaultAction::CoreDump => {
-            terminate_process_by_signal_impl(proc, locks, host, signum);
+            terminate_process_by_signal_impl(proc, locks, host, signum, None);
             DefaultSignalOutcome::Exited
         }
         DefaultAction::Stop => {

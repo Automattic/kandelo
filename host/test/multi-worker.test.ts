@@ -982,7 +982,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       );
 
       expect(removeProcess).toHaveBeenCalledWith(childPid);
-      expect(markProcessSignaled).toHaveBeenCalledWith(parentPid, 11);
+      expect(markProcessSignaled).toHaveBeenCalledWith(parentPid, 11, 0);
       expect(onExit).toHaveBeenCalledWith(parentPid, 139);
       // The dead process's Worker is woken with EINTR and a retirement marker
       // so it can unwind; see handleExitedProcessChannel.

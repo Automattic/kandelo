@@ -15,6 +15,7 @@ pub mod call_graph;
 pub mod contract_inventory;
 pub mod debug_info;
 pub mod facts;
+pub mod indirect_call_report;
 pub mod instrument;
 mod limits;
 pub mod linked_frames;

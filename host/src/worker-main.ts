@@ -175,6 +175,7 @@ import {
 // native channel-syscall binaries (mariadbd, dinit, dash, coreutils,
 // everything compiled by wasm32-posix) never trigger.
 import { isWasiModule, wasiModuleDefinesMemory } from "./wasi-detect";
+import { observeWasmIndirectCallTrap } from "./trap-signals";
 import { synchronizeReceivedSharedWasmMemory } from "./shared-wasm-memory-growth";
 import { noteProcessMemoryInstance } from "./wasm-instance-retention";
 import {
@@ -4428,6 +4429,7 @@ export async function centralizedWorkerMain(
         type: "error",
         pid: initData.pid,
         message: `Kernel worker failed: ${errMsg}`,
+        wasmIndirectCallTrap: observeWasmIndirectCallTrap(err),
       } satisfies WorkerToHostMessage);
     } catch (retirementError) {
       // A sibling may request stop between the first RUN check and a marker
@@ -6129,6 +6131,7 @@ export async function centralizedThreadWorkerMain(
         type: "error",
         pid,
         message: `Thread worker failed: ${message}`,
+        wasmIndirectCallTrap: observeWasmIndirectCallTrap(err),
       } satisfies WorkerToHostMessage);
     } catch (retirementError) {
       if (!grouped?.stopRequested) throw retirementError;

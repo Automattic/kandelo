@@ -627,14 +627,16 @@ pub enum KlogSite {
     /// A process's first successful `mprotect` that would remove read or
     /// write access, which Kandelo does not enforce.
     ProtectionNotEnforced,
+    /// The Wasm engine reported an indirect call signature mismatch or null target.
+    WasmIndirectCallTrap,
 }
 
-const _: () = assert!((KlogSite::ProtectionNotEnforced as u32) < KMSG_EVENT_CALLSITES);
+const _: () = assert!((KlogSite::WasmIndirectCallTrap as u32) < KMSG_EVENT_CALLSITES);
 
 impl KlogSite {
     /// Every site, for tests that must hold for all of them.
     #[cfg(test)]
-    pub(crate) const ALL: [KlogSite; 9] = [
+    pub(crate) const ALL: [KlogSite; 10] = [
         KlogSite::BootIdentity,
         KlogSite::RootImageMounted,
         KlogSite::DeviceFirstOpen,
@@ -644,6 +646,7 @@ impl KlogSite {
         KlogSite::MmapKernelMemoryExhausted,
         KlogSite::HostCapabilityUnavailable,
         KlogSite::ProtectionNotEnforced,
+        KlogSite::WasmIndirectCallTrap,
     ];
 
     /// The limiter slot this site owns.
@@ -662,7 +665,8 @@ impl KlogSite {
             | KlogSite::MmapAddressSpaceExhausted
             | KlogSite::MmapKernelMemoryExhausted
             | KlogSite::HostCapabilityUnavailable
-            | KlogSite::ProtectionNotEnforced => LOG_WARNING,
+            | KlogSite::ProtectionNotEnforced
+            | KlogSite::WasmIndirectCallTrap => LOG_WARNING,
         }
     }
 }

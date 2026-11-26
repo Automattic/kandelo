@@ -64,6 +64,7 @@ describe("kernel_handle_channel", () => {
     const markProcessSignaled = instance.exports.kernel_mark_process_signaled as (
       pid: number,
       signum: number,
+      trap: number,
     ) => number;
     const reapExitedChild = instance.exports.kernel_reap_exited_child as (
       parentPid: number,
@@ -86,7 +87,7 @@ describe("kernel_handle_channel", () => {
 
     expect(parentPid).toBeGreaterThan(0);
     expect(childPid).toBeGreaterThan(0);
-    expect(markProcessSignaled(childPid, 11)).toBe(0);
+    expect(markProcessSignaled(childPid, 11, 0)).toBe(0);
     expect(reapExitedChild(parentPid, childPid)).toBe(0);
 
     channel.fill(0);
@@ -154,6 +155,7 @@ describe("kernel_handle_channel", () => {
     const markProcessSignaled = instance.exports.kernel_mark_process_signaled as (
       pid: number,
       signum: number,
+      trap: number,
     ) => number;
     const reapExitedChild = instance.exports.kernel_reap_exited_child as (
       parentPid: number,
@@ -171,7 +173,7 @@ describe("kernel_handle_channel", () => {
     const childPid = spawnProcess(parentPid, parentPid, 0x100n, path.byteLength, 0x200n, 40);
 
     expect(childPid).toBeGreaterThan(0);
-    expect(markProcessSignaled(childPid, 15)).toBe(0);
+    expect(markProcessSignaled(childPid, 15, 0)).toBe(0);
     expect(reapExitedChild(parentPid, childPid)).toBe(-10);
 
     expect(publishSpawnChild(parentPid, childPid)).toBe(15);

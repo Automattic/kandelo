@@ -14,7 +14,7 @@
 use crate::process::{HostIO, ProcessState};
 use crate::process_table::{ProcessTable, ProcessRemovalState};
 use crate::syscalls;
-use wasm_posix_shared::Errno;
+use wasm_posix_shared::{Errno, abi::WasmIndirectCallTrap};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Request {
@@ -37,6 +37,7 @@ pub(crate) enum Request {
     SignalExit {
         pid: u32,
         signum: u32,
+        trap: Option<WasmIndirectCallTrap>,
     },
     ReapInit {
         pid: u32,
@@ -161,9 +162,9 @@ pub(crate) fn run(
             }
             Completion::Exit(proc.exit_status)
         }
-        Request::SignalExit { pid, signum } => {
+        Request::SignalExit { pid, signum, trap } => {
             let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-            crate::signal::terminate_process_by_signal_with_locks(proc, locks, host, signum);
+            crate::signal::terminate_process_by_signal_with_locks(proc, locks, host, signum, trap);
             Completion::Signaled
         }
         Request::ReapInit { pid } => {

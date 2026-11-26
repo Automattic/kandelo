@@ -122,8 +122,10 @@ import {
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
+  observeWasmIndirectCallTrap,
   signalExitStatus,
   SIGSEGV,
+  type WasmIndirectCallTrap,
 } from "./trap-signals";
 import {
   removeThreadWorkerRegistryEntry,
@@ -467,7 +469,7 @@ function installProcessWorkerListeners(
       return;
     }
     if (message.type === "error" && message.pid === pid) {
-      finalizeProcessWorkerError(pid, worker, message.message);
+      finalizeProcessWorkerError(pid, worker, message.message, message.wasmIndirectCallTrap);
     } else if (message.type === "exit" && message.pid === pid) {
       void finalizeProcessWorker(pid, worker, message.status ?? 0);
     } else if (
@@ -675,6 +677,7 @@ async function finalizeProcessWorker(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
   exitStatus: number,
   crashSignum: number = signalFromExitStatus(exitStatus) ?? SIGSEGV,
+  trap?: WasmIndirectCallTrap,
 ): Promise<void> {
   if (intentionallyTerminated.has(worker as object)) return;
   const cur = processes.get(pid);
@@ -697,7 +700,7 @@ async function finalizeProcessWorker(
   // destroy because the kernel never marked the child as a zombie.
   // Idempotent via `hostReaped`: when the kernel already processed
   // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
-  try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
+  try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum, trap); } catch { /* best-effort */ }
 
   // WHY: ordinary exits and crashes must share one teardown funnel. Keeping a
   // second cleanup sequence here previously let their Worker/channel ordering
@@ -727,6 +730,7 @@ function finalizeProcessWorkerError(
   pid: number,
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
   message: string | undefined,
+  trap?: WasmIndirectCallTrap,
 ): void {
   if (intentionallyTerminated.has(worker as object)) return;
   if (processes.get(pid)?.worker !== worker) return;
@@ -737,7 +741,7 @@ function finalizeProcessWorkerError(
     source: "worker-main error message",
     message: `[process-worker] ${message ?? "unknown error"}`,
   });
-  void finalizeProcessWorker(pid, worker, exitStatus, signum);
+  void finalizeProcessWorker(pid, worker, exitStatus, signum, trap);
 }
 
 function finalizeUnexpectedWorkerError(
@@ -756,7 +760,7 @@ function finalizeUnexpectedWorkerError(
     source: label,
     message: `[kernel-worker] pid=${pid}: ${label}: ${message}`,
   });
-  void finalizeProcessWorker(pid, worker, exitStatus, signum);
+  void finalizeProcessWorker(pid, worker, exitStatus, signum, observeWasmIndirectCallTrap(err));
 }
 
 const ownedJobs = new OwnedJobs(pid => {
@@ -3451,7 +3455,7 @@ async function handleClone(
   const isCurrentThreadGeneration = () =>
     !intentionallyTerminated.has(threadWorker as object)
     && belongsToCurrentProcessImage();
-  const failThread = (reason: string, awaitQuiescence = false) => {
+  const failThread = (reason: string, awaitQuiescence = false, trap?: WasmIndirectCallTrap) => {
     if (!isCurrentThreadGeneration()) {
       void terminateThreadEntry();
       return;
@@ -3468,7 +3472,7 @@ async function handleClone(
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     if (!awaitQuiescence) void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
-      try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum); } catch { /* best-effort */ }
+      try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum, trap); } catch { /* best-effort */ }
       void finishProcessExit(pid, disposition.exitStatus);
     }
   };
@@ -3490,7 +3494,7 @@ async function handleClone(
       threadEntry.workerQuiescence.settle();
       void terminateThreadEntry();
     } else if (m.type === "error") {
-      failThread(m.message, true);
+      failThread(m.message, true, m.wasmIndirectCallTrap);
     } else if (m.type === "vm_interrupt_timer") {
       if (isCurrentThreadGeneration() && m.pid === pid) {
         handleVmInterruptTimer(m, pid, processInfo);
@@ -3499,7 +3503,8 @@ async function handleClone(
       dispatchForkHostImport(threadWorker, m);
     }
   });
-  threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
+  threadWorker.on("error", (err: Error) =>
+    failThread(`worker error: ${err.message ?? err}`, false, observeWasmIndirectCallTrap(err)));
 
   let startDisposition: ReturnType<
     CentralizedKernelWorker["startProcessWorkerWhenRunnable"]
