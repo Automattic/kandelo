@@ -223,10 +223,13 @@ package binaries of the trial (`bash`, `nginx`, `php`, `php-fpm`,
 optimizing compiler removes the calls from hot code. V8 does: on Node 24, a
 loop in a function that V8 has optimized runs 2.1 times slower than the
 plain loop. It runs 1.6 times slower on Node 26, and on Node 24 with
-`--experimental-wasm-branch-hinting`. A small loop that V8 has not
-optimized runs 2.9 times slower. A loop with more than 16 loads and stores
-keeps the calls and runs about 9 times slower until V8 optimizes its
-function.
+`--experimental-wasm-branch-hinting`. `NodeKernelHost` sets that flag on
+Node 24 in `"share"` mode (`host/src/wasm-branch-hints.ts`). The flag
+applies to the whole Node process, so V8 also reads the branch hints of
+every module that the embedder compiles after `init()`. A small loop that
+V8 has not optimized runs 2.9 times slower. A loop with more than 16 loads
+and stores keeps the calls and runs about 9 times slower until V8 optimizes
+its function.
 
 `aligned` is the recommended mode: clang emits a natural alignment hint only
 for typed accesses that C requires to be aligned, and emits a weaker hint for

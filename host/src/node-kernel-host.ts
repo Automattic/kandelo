@@ -54,6 +54,7 @@ import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { enableWasmBranchHints } from "./wasm-branch-hints";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
@@ -141,7 +142,8 @@ export interface NodeKernelHostOptions {
    * (default `"copy"`). `"share"` gives each such process a group header and
    * routes host access through its page tables. Fork then shares the
    * parent's pages with the child, and a store to a shared page copies that
-   * page first. See `ForkMemory`.
+   * page first. See `ForkMemory`. On Node 24, `"share"` sets the V8 flag
+   * `--experimental-wasm-branch-hinting` for the whole Node process.
    */
   forkMemory?: ForkMemory;
   /**
@@ -370,6 +372,9 @@ export class NodeKernelHost {
     }
     if (this.options.rootfsImageFile !== undefined && !isAbsolute(this.options.rootfsImageFile)) {
       throw new Error("rootfs image file path must be absolute");
+    }
+    if (this.options.forkMemory === "share") {
+      enableWasmBranchHints();
     }
     if (this.options.rootfsImageIntegrity !== undefined
       && (this.options.rootfsImageFile === undefined
