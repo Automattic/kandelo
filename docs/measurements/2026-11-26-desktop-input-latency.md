@@ -98,6 +98,18 @@ It used the same frozen kernel as the earlier diagnostics. The
 ordinary clock and the group variant were built and published by
 the normal package resolver.
 
+The same Chromium comparison repeated against this packaged image.
+Both arms ran identical early-hover browser code. The final run
+included a documentation-only commit. A Sway IPC command restored
+the legacy clock in the outer two runs. The inner two used the
+packaged default. Starting one-minute load was 10.5–12.2.
+All four runs captured 45 moves. Median focus was 61.72 ms with
+the legacy clock and 61.10 ms with the packaged clock. The
+respective p95s were 113.36 ms and 72.24 ms. Seven of 90 legacy
+moves reached 100 ms. All 90 packaged-clock moves finished below
+that mark. The early-hover and clock comparisons hold different inputs
+constant, so their latency deltas cannot be added.
+
 Four Node partial-image tests passed, including ordinary shell
 launch of the lazily installed executable and its pipe shutdown.
 Chromium 153 and Firefox 155 both passed the normal Sway app test.
@@ -108,6 +120,16 @@ temporary-directory cleanup permission error after the assertions
 passed. Typecheck, the host build and 382 browser-app unit tests
 also passed. The initial trusted Sway/Cage input checks passed on
 Chromium and Firefox using the earlier partial image.
+
+The package and partial-shell build also completed on the SDK at
+pinned develop, using build checkout `5d8e58809c`. The image SHA-256
+was `8f7a25bc1b93fdb82e2ae78ac0448798d7dfdf22cb63822e6cc1c50bdb997e92`.
+Its kernel SHA-256 was
+`7064525a2436379bc088ff2aa54ad0dfe1f6781a8be6b8d4de9f1eee05206b98`.
+All four Node partial-image tests and the Sway lifecycle test on Chromium
+and Firefox passed on that product. The canonical shell build was still
+in progress when this report was recorded. The full performance suites
+and native display timing remain outside this evidence.
 
 ## Retained failures
 
