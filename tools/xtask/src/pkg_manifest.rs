@@ -121,6 +121,20 @@ impl ForkInstrumentationPolicy {
     }
 }
 
+/// Per-program-output memory instrumentation policy.
+///
+/// `auto` gives a wasm32 program that imports `kernel.kernel_fork` the
+/// `kandelo.memory.rewrite_at_exec` mark, so a host in `"share"` fork mode
+/// rewrites it when a process starts it. `disabled` leaves the output
+/// unmarked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MemoryInstrumentationPolicy {
+    Auto,
+    #[default]
+    Disabled,
+}
+
 /// One entry in a `kind = "program"` manifest's `[[outputs]]` array.
 ///
 /// Each program declares one or more wasm artifacts. `name` is the
@@ -133,6 +147,8 @@ pub struct ProgramOutput {
     pub wasm: String,
     #[serde(default)]
     pub fork_instrumentation: ForkInstrumentationPolicy,
+    #[serde(default)]
+    pub memory_instrumentation: MemoryInstrumentationPolicy,
     #[serde(default)]
     pub original_wasm: Option<String>,
     /// Derive this ZIP output from another ordinary executable output using
@@ -3785,6 +3801,32 @@ guest_path = "/usr/share/kernel-data"
             m.output_fork_instrumentation("rootfs.vfs").unwrap(),
             ForkInstrumentationPolicy::Disabled
         );
+    }
+
+    #[test]
+    fn output_memory_instrumentation_defaults_to_disabled_accepts_auto_and_rejects_other_values() {
+        let disabled = program_manifest(
+            "dash",
+            "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\n",
+        );
+        assert_eq!(
+            disabled.program_outputs[0].memory_instrumentation,
+            MemoryInstrumentationPolicy::Disabled
+        );
+        let auto = program_manifest(
+            "dash",
+            "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\nmemory_instrumentation = \"auto\"\n",
+        );
+        assert_eq!(
+            auto.program_outputs[0].memory_instrumentation,
+            MemoryInstrumentationPolicy::Auto
+        );
+        let error = try_program_manifest(
+            "dash",
+            "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\nmemory_instrumentation = \"foo\"\n",
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown variant `foo`"), "{error}");
     }
 
     #[test]

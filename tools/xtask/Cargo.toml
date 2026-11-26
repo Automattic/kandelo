@@ -29,6 +29,7 @@ wasm-artifact = { path = "../../crates/wasm-artifact" }
 # than reimplementing the format, so its answers match what the kernel mounts.
 runtime-core = { path = "../../crates/runtime-core" }
 fork-instrument = { path = "../../crates/fork-instrument" }
+memory-instrument = { path = "../../crates/memory-instrument", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Pinned to a single minor. wasmparser has churned across minors
