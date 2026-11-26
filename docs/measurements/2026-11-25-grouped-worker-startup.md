@@ -229,7 +229,10 @@ ninth Sway/SFWBar boot timed out waiting for its first Foot process. Its
 screenshots show SFWBar and wallpaper downloads in progress at the deadline
 and the lazy Foot download at 40% afterward. The retained evidence includes
 the process snapshot, syslog and screenshots. The failure precedes that
-cycle's retirement checks.
+cycle's retirement checks. Matched Firefox reruns on pinned develop and the
+final runtime both completed all twelve replacements and exact guest-retirement
+assertions. They used the same partial shell and kernel in separate browser
+sessions. The first boot timeout remains in the evidence.
 
 Normal retirement is still issuing a `BEGIN_REFERENCES` call after Rust's
 `DETACH_REFERENCES` effect has moved the selected receipt into detaching.

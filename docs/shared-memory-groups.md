@@ -7,7 +7,7 @@ retirement, leaving the computer locked because storage quiescence is unconfirme
 Native Safari and iOS remain untested. The
 [scanner and landing receipt](measurements/2026-11-25-shared-memory-scanner.md)
 records validation, measurements and limits for the initial feature. The
-[Worker startup receipt](measurements/2026-11-25-grouped-worker-startup.md)
+[Worker startup and retirement receipt](measurements/2026-11-25-grouped-worker-startup.md)
 records the follow-up and its comparison with develop. The earlier
 [WebKit qualification](measurements/2026-11-25-shared-memory-webkit-qualification.md)
 retains the successful runs preceding the reproduced failure.
