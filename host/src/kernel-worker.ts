@@ -8810,37 +8810,50 @@ export class CentralizedKernelWorker {
     await containment;
   }
 
-  async releaseMemoryGroupWorkerReferences(handle: PreparedGroupReplica): Promise<boolean> {
+  releaseMemoryGroupWorkerReferences(handle: PreparedGroupReplica): Promise<boolean> {
+    return this.#releaseGroupWorkerReferences(handle, false);
+  }
+
+  async #releaseGroupWorkerReferences(handle: PreparedGroupReplica, detachmentIssued: boolean): Promise<boolean> {
     const objects = this.#groupWorkerReferences.get(handle);
     if (!objects) return this.#disposedGroupWorkerReferences.has(handle);
-    if (objects.pending) return objects.pending;
+    while (objects.pending) {
+      const released = await objects.pending;
+      // A rollback refusal before detachment can race an issued retirement
+      // effect. That effect still owns the right to run the disposer.
+      if (released || !detachmentIssued) return released;
+    }
     const protocol = MEMORY_GROUP_PROTOCOL.retirement_control;
-    const pending = (async (): Promise<boolean> => {
-      let reply = await retryKernelEntryResult(() => {
-        let result: GroupOperationEffect | undefined;
-        this.#runImmediateKernelEntry('request kernel-owned reference detachment', entry => {
-          try { result = objects.store.retirementControl(objects.receipt, protocol.commands.beginReferences, entry); }
-          catch (error) { if (!(error instanceof GroupMemoryStorageRefusal) || error.errno !== EBUSY) throw error; }
-          return undefined;
+    // Publish the shared operation before any disposer can reenter the host.
+    const pending = Promise.resolve().then(async () => {
+      let effect: number = protocol.detach_platform;
+      if (!detachmentIssued) {
+        let reply = await retryKernelEntryResult(() => {
+          let result: GroupOperationEffect | undefined;
+          this.#runImmediateKernelEntry('request kernel-owned reference detachment', entry => {
+            try { result = objects.store.retirementControl(objects.receipt, protocol.commands.beginReferences, entry); }
+            catch (error) { if (!(error instanceof GroupMemoryStorageRefusal) || error.errno !== EBUSY) throw error; }
+            return undefined;
+          });
+          return result;
         });
-        return result;
-      });
-      if (!reply) return false;
-      while (reply.effect === protocol.contain_worker) {
-        await this.#containRetiringMemoryGroupWorker(handle);
-        reply = await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.beginReferences));
+        if (!reply) { objects.pending = undefined; return false; }
+        while (reply.effect === protocol.contain_worker) {
+          await this.#containRetiringMemoryGroupWorker(handle);
+          reply = await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.beginReferences));
+        }
+        effect = reply.effect;
       }
-      if (reply.effect === protocol.detach_platform) {
+      if (effect === protocol.detach_platform) {
         objects.dispose();
         await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.referencesDetached));
-      } else if (reply.effect !== MEMORY_GROUP_PROTOCOL.driver.effects.complete) this.#memoryGroupProtocolError('Unknown reference-detachment effect');
+      } else if (effect !== MEMORY_GROUP_PROTOCOL.driver.effects.complete) this.#memoryGroupProtocolError('Unknown reference-detachment effect');
       this.#groupWorkerReferences.delete(handle);
       this.#groupWorkerReferenceKeys.delete(`${objects.receipt.group}:${objects.receipt.serial}`);
       this.#disposedGroupWorkerReferences.add(handle);
       return true;
-    })();
+    });
     objects.pending = pending;
-    void pending.then(released => { if (!released) objects.pending = undefined; }, () => {});
     return pending;
   }
 
@@ -11479,7 +11492,7 @@ export class CentralizedKernelWorker {
         const objects = handle && this.#groupWorkerReferences.get(handle);
         if (!objects || ['group', 'pid', 'tid', 'serial', 'generation'].some(key =>
           selected[key as keyof MemoryGroupTaskReceipt] !== objects.receipt[key as keyof MemoryGroupTaskReceipt])
-            || !await this.releaseMemoryGroupWorkerReferences(handle!)) this.#memoryGroupProtocolError('Kernel-selected reference objects are missing or unretired');
+            || !await this.#releaseGroupWorkerReferences(handle!, true)) this.#memoryGroupProtocolError('Kernel-selected reference objects are missing or unretired');
       } else if (reply.effect === protocol.retirement_control.detach_platform) {
         if (!detach) this.#memoryGroupProtocolError('Missing retirement platform effect');
         await detach(); command = protocol.retirement_control.commands.platformDetached;

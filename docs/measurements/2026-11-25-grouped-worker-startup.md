@@ -234,13 +234,13 @@ final runtime both completed all twelve replacements and exact guest-retirement
 assertions. They used the same partial shell and kernel in separate browser
 sessions. The first boot timeout remains in the evidence.
 
-Normal retirement is still issuing a `BEGIN_REFERENCES` call after Rust's
-`DETACH_REFERENCES` effect has moved the selected receipt into detaching.
-Launch rollback uses the same disposer and still needs its own authorization.
-A follow-up could share the exact disposal and acknowledgement while honoring
-both sources of authorization. It would need to keep one disposer when
-rollback and retirement meet on the same receipt, including refusal before
-entry and failure after platform disposal starts.
+Normal retirement uses Rust's `DETACH_REFERENCES` effect for the exact
+receipt, removing one `BEGIN_REFERENCES` kernel round trip per normally
+retired Worker. An independent launch rollback still requests authorization.
+Both paths join one pending disposer. An authorization refusal releases the
+host attempt so an already-issued effect can proceed. Disposer and
+acknowledgement failures stay with the exact Worker. Rust still requires the
+`REFERENCES_DETACHED` acknowledgement before releasing physical storage.
 
 ## Focus latency follow-up
 

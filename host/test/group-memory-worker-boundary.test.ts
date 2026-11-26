@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import * as G from '../src/generated/program-extensions';
-import { ABI_SYSCALLS, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE, CH_STATUS, CH_SYSCALL, CH_RETURN, CH_REQUEST_FLAGS, CH_TOTAL_SIZE, ERRNO } from '../src/generated/abi';
+import { ABI_SYSCALLS, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE, CH_STATUS, CH_SYSCALL, CH_RETURN, CH_REQUEST_FLAGS, CH_TOTAL_SIZE, ERRNO, MEMORY_GROUP_PROTOCOL as P } from '../src/generated/abi';
 import { WasmPosixKernel, getWasmPosixKernelRuntimeAccess } from '../src/kernel';
 import { createCentralizedKernelWorkerTestDouble, CAPTURED_STDIO } from '../src/kernel-worker';
 import { allocateKernelScratchRegion } from '../src/kernel-scratch';
@@ -12,7 +12,7 @@ import { FixedTreeBackend } from './support/fixed-tree-backend';
 import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import { DeferredWorkerHandle } from '../src/deferred-worker-handle';
 import { MockWorkerHandle } from '../src/worker-adapter';
-import { GroupMemoryStorageRefusal } from '../src/group-memory-transport';
+import { GroupMemoryStorageRefusal, GroupMemoryTransport } from '../src/group-memory-transport';
 
 // The actual Rust kernel owns allocation and lifecycle here. The test-only
 // bridge installs its exact gate/scratch on the host worker; no fake owner or
@@ -200,6 +200,77 @@ it('retains the Rust allocation after a failed asynchronous host closer without 
     expect(close).toHaveBeenCalledTimes(1);
     expect(inspectBacking(h)).toMatchObject({ allocatedPages: before, images: 1 });
   } finally { h.scratch.revoke(); }
+}, 30_000);
+
+it.each([false, true])('direct retirement shares exact Worker disposal with rollback (failure=%s)', async fail => {
+  const h = await published();
+  const commands = P.retirement_control.commands;
+  const control = vi.spyOn(GroupMemoryTransport.prototype, 'retirementControl');
+  const queued = vi.fn(() => {
+    expect(control.mock.calls.some(([, command]) => command === commands.referencesDetached)).toBe(false);
+    return undefined;
+  });
+  let rollback!: Promise<boolean>;
+  const failure = Error('Worker reference disposal failed');
+  const dispose = vi.fn(() => {
+    rollback = h.worker.releaseMemoryGroupWorkerReferences(h.handle);
+    void rollback.catch(() => {});
+    if (fail) throw failure;
+    h.access.gate.runOrDeferVoidIngress('hold retirement acknowledgement behind queued ingress', () => {
+      expect(h.access.gate.runOrDeferVoidIngress('run before acknowledgement', queued)).toBe(true);
+      return undefined;
+    });
+  });
+  try {
+    const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
+    h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false, retireHostReferences: dispose });
+    const before = inspectBacking(h).allocatedPages;
+    const retire = h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete);
+    if (fail) {
+      await expect(retire).rejects.toBe(failure);
+      await expect(rollback).rejects.toBe(failure);
+      await expect(h.worker.releaseMemoryGroupWorkerReferences(h.handle)).rejects.toBe(failure);
+      expect(inspectBacking(h)).toMatchObject({ images: 1, allocatedPages: before });
+    } else {
+      await expect(retire).resolves.toBe(true);
+      await expect(rollback).resolves.toBe(true);
+      expect(queued).toHaveBeenCalledOnce();
+      expect(inspectBacking(h)).toMatchObject({ images: 0, allocatedPages: 1 });
+    }
+    const calls = control.mock.calls.map(([, command]) => command);
+    expect(calls).not.toContain(commands.beginReferences);
+    expect(calls.filter(command => command === commands.referencesDetached)).toHaveLength(fail ? 0 : 1);
+    expect(dispose).toHaveBeenCalledOnce();
+  } finally { control.mockRestore(); h.scratch.revoke(); }
+}, 30_000);
+
+it('uses the issued effect when a concurrent rollback refuses detachment before disposal', async () => {
+  const h = await published();
+  const commands = P.retirement_control.commands;
+  const retirementControl = GroupMemoryTransport.prototype.retirementControl;
+  let rollback: Promise<boolean> | undefined;
+  const control = vi.spyOn(GroupMemoryTransport.prototype, 'retirementControl').mockImplementation(function (this: GroupMemoryTransport, ...args) {
+    // Inject the scalar refusal at the host boundary. All genuine effects,
+    // including the selected detachment and its ACK, come from real Rust.
+    if (args[1] === commands.beginReferences) throw new GroupMemoryStorageRefusal(ERRNO.EBUSY);
+    const reply = retirementControl.apply(this, args);
+    if (!rollback && reply.effect === P.retirement_control.detach_references) {
+      rollback = h.worker.releaseMemoryGroupWorkerReferences(h.handle);
+    }
+    return reply;
+  });
+  try {
+    const dispose = vi.fn();
+    const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
+    h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false, retireHostReferences: dispose });
+    await expect(h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete)).resolves.toBe(true);
+    await expect(rollback).resolves.toBe(false);
+    expect(dispose).toHaveBeenCalledOnce();
+    const calls = control.mock.calls.map(([, command]) => command);
+    expect(calls.filter(command => command === commands.beginReferences)).toHaveLength(1);
+    expect(calls.filter(command => command === commands.referencesDetached)).toHaveLength(1);
+    expect(inspectBacking(h)).toMatchObject({ images: 0, allocatedPages: 1 });
+  } finally { control.mockRestore(); h.scratch.revoke(); }
 }, 30_000);
 
 it('returns scalar diagnostics and refuses actual allocator contention without blocking admission inspection', async () => {
