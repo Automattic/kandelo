@@ -115,13 +115,15 @@ test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
 
 ## Patch documentation
 
-Aim for unpatched upstream builds. Before patching, look for a fix through
-the platform (libc, SDK, kernel, host), an upstream configure option or
-build flag, or a newer upstream release. When a patch is still needed, keep
-it as small as the problem. Where possible, gate it on the missing
-capability, so the code behaves as upstream does wherever that capability
-exists, and mark it `# @suggest-upstream` when upstream could take it (see
-below).
+Kandelo aims to build upstream software unpatched. Carrying a patch is a
+last resort.
+
+Before patching, look for a fix through the platform (libc, SDK, kernel,
+host), an upstream configure option or build flag, or a newer upstream
+release. When a patch is still needed, keep it as small as the problem.
+Where possible, gate it on the missing capability, so the code behaves as
+upstream does wherever that capability exists, and mark it
+`# @suggest-upstream` when upstream could take it (see below).
 
 Every patch the repository carries against third-party source documents
 itself. That covers package patches, SDK and toolchain patches under `sdk/`,
