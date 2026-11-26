@@ -74,8 +74,10 @@
 +    error("input defines the reserved kandelo_dynsym segment");
 +    return;
 +  }
-@@ -1073,0 +1111,81 @@
+@@ -1073,0 +1111,92 @@
 +  uint64_t byteSize = 16;
++  DefinedFunction *cMainWithArgs = nullptr;
++  bool hasMainName = false;
 +  for (Symbol *sym : symtab->symbols()) {
 +    if (!sym->isLive() || !sym->isExported() || !sym->getFile())
 +      continue;
@@ -94,6 +96,15 @@
 +      continue;
 +    kandeloSymbols.push_back({exportName, sym});
 +    byteSize += 16 + exportName.size() + 1;
++    if (executable && exportName == "__main_argc_argv")
++      cMainWithArgs = function;
++    hasMainName |= exportName == "main";
++  }
++  // Clang uses the signature-qualified symbol for C main(argc, argv).
++  // Index the source name at the same slot when the entry was exported.
++  if (cMainWithArgs && !hasMainName) {
++    kandeloSymbols.push_back({"main", cMainWithArgs});
++    byteSize += 16 + sizeof("main");
 +  }
 +  if (byteSize > 64 * 1024 * 1024) {
 +    error("Kandelo dynamic symbol index exceeds 64 MiB");
@@ -156,8 +167,8 @@
 +  }
 +}
 +
-@@ -1094,0 +1213,2 @@
+@@ -1094,0 +1224,2 @@
 +  reserveKandeloDynsym();
 +
-@@ -1859,0 +1980 @@
+@@ -1859,0 +1991 @@
 +  writeKandeloDynsym();

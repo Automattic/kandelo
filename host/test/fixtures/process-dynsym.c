@@ -28,6 +28,7 @@ typedef pid_t (*fork_fn)(void);
 
 int main(int argc, char **argv)
 {
+    if (dlsym(RTLD_DEFAULT, "main") != (void *)&main) return 25;
 #ifdef PROCESS_DYNSYM_LOOKUP_ONLY
     void *main = RTLD_DEFAULT;
 #else
