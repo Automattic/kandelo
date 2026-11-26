@@ -1,3 +1,30 @@
+# LDC 1.43.0: build the compiler itself as a Kandelo guest program.
+#
+# Applied only by sdk/d/build-guest.sh, to a copy of the source that
+# sdk/d/build.sh has already patched. These changes only affect building
+# ldc2 as a wasm32 program; programs that ldc2 compiles are unaffected.
+#
+# - CMakeLists.txt: a cross build cannot run the target LLVM's llvm-config.
+#   With CMAKE_CROSSCOMPILING and LLVM_DIR, take libraries and include
+#   paths from the target LLVM's CMake package instead, and link only the
+#   targets that LLVM was built with (WebAssembly) rather than
+#   `all-targets`. A native build is unchanged.
+# - dmd/target.d: defaultTargetOS() names the OS the compiler runs on and
+#   has no case for Kandelo, so compiling it stops at `unknown TARGET`.
+#   LDC never calls it, because it sets the target from the LLVM triple,
+#   so it is left out of LDC builds.
+# - dmd/root/dcompat.h, gen/ctfloat.cpp: on wasm32, C++ size_t is
+#   `unsigned long` but D size_t is `uint`, so their mangled names differ
+#   and the frontend's D and C++ halves do not link. Use the same d_size_t
+#   mapping upstream already uses for 32-bit Apple targets.
+# - cmake/Modules/BuildDExecutable.cmake: rebuild D objects when the host D
+#   compiler changes. Otherwise objects built by an earlier host compiler
+#   (for example, before the D SDK was rebuilt) are reused silently.
+#
+# Justification: these are cross-compilation portability fixes in LDC's
+# build, not Kandelo platform gaps. The d_size_t and target.d changes are
+# candidates for upstream; this patch stays until an LDC release in use
+# includes equivalents.
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -29,13 +29,28 @@

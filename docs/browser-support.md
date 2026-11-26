@@ -5019,6 +5019,58 @@ compiler's engine stack. The compiler browser test checks this exact
 diagnostic and exit status as a known boundary; it does not treat the
 failed compilation as success. See [in-guest compilation](sdk-guide.md#compile-inside-the-base-shell).
 
+### Engine stack depth
+
+Guest Wasm calls run on the browser engine's native stack, separately from
+the C stack the program keeps in Wasm linear memory. A deep enough recursion
+exhausts it: the worker reports the engine's stack overflow and the process
+dies with SIGSEGV (status 139). Large compilers hit this first, for example
+Clang's template instantiation (see [Compiler engine limits](#compiler-engine-limits))
+and the guest D compiler's semantic passes when `dub` builds a package. The
+linker's stack size and Kandelo's memory profiles do not change it.
+
+Playwright WebKit gives far less depth than Chromium, and how much depends
+on which tier runs the code. Depth reached by small recursive functions, one
+deep call per fresh worker and module (Playwright WebKit 26.6 and Chromium
+153 on macOS, 2026-11-24):
+
+| Function | WebKit first call | WebKit second call | WebKit after warm-up | Chromium first call | Chromium after warm-up |
+|---|---|---|---|---|---|
+| no locals | 906–2,510 | 556 | 41,669 | 7,933 | 53,049 |
+| 64 used `i64` locals | ~290 | 229 | 6,250 | 880 | 935 |
+| 64 unused `i64` locals | ~310 | 229 | 41,669 | 880 | 53,049 |
+| 64 parameters | 149 | 124 | 2,654 | 367 | 4,529 |
+
+Read from these numbers, not from WebKit's source: a function's first deep
+call runs in WebKit's interpreter, that call moves it to the baseline
+compiler, whose frames are the largest, and warmed-up code reaches the
+optimizing tier. In the baseline tier each frame costs a fixed amount of
+about 45 locals, plus one per declared local whether used or not, one per
+operand-stack value, and about 2.4 per parameter. Code size made no
+difference, and module and classic workers measured the same. On WebKit, a
+deep call after an overflow in the same worker also reaches less depth, so
+probes that search for the limit in one worker understate it.
+
+Kandelo keeps its own share of each frame small. Fork instrumentation adds
+locals only to functions that a fork can return or unwind through
+([fork-instrumentation.md](fork-instrumentation.md#engine-stack-depth)).
+An earlier guest D compiler, instrumented for fork through nearly all of its
+code, overflowed on its first WebKit compile in the in-guest DUB build; the
+same compile passed on Chromium and Node. The shipped guest compiler has no
+fork path and no fiber support, is compiled with Wasm tail calls, and is
+optimized without inlining. Its first in-guest DUB build passed three of
+three cold WebKit runs
+([sdk/d/README.md](../sdk/d/README.md#dub-and-ldc-inside-a-guest)). A first
+run of deeper recursion in a large program can still overflow on WebKit;
+that is the current boundary.
+
+Whether any of this is a WebKit defect rather than a design choice is not
+established. The WebAssembly specification sets no minimum depth, and no
+entry exists in `tests/runtime-workarounds/`. A way to remove the limit on
+every engine, by moving older activations into linear memory with the fork
+continuation machinery, is described as possible future work in
+[fork-instrumentation.md](fork-instrumentation.md#possible-future-work-spilling-activations-off-the-engine-stack).
+
 ### Text-mode web browsing (ELinks) in the browser
 
 The shell image ships ELinks, a text-mode web browser, built with the

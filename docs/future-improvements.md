@@ -2177,6 +2177,73 @@ in the meantime.
 
 **Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
 
+### Support D fibers without instrumenting whole programs
+
+The D SDK builds without `core.thread.Fiber`, `std.concurrency.Generator`
+and `FiberScheduler`, as upstream DRuntime does on every WebAssembly
+target. An implementation on the SDK's guest-local continuation provider
+exists. It stays in `sdk/d/ldc-1.43.0-kandelo.patch` behind the opt-in
+`KandeloFibers` version, which is off by default
+([sdk/d/README.md](../sdk/d/README.md#fibers)). It was turned off because
+of its cost, not because it was wrong.
+
+**The challenge.** Wasm has no portable way to switch stacks, so a fiber
+suspends the way a fork does. The instrumenter
+([fork-instrumentation.md](fork-instrumentation.md)) rewrites every function
+that might be on a fiber's stack when it suspends, so that it can unwind into
+linear memory and later rewind. Which functions that is comes from the call
+graph, between the provider's dispatcher (which calls the fiber's entry
+through a function pointer) and the suspend call. D reaches nearly all code
+through delegates and virtual calls. LDC does not emit the per-call-site
+type facts that the C/C++ SDK's KandeloCallTypes plugin provides
+([sdk-guide.md](sdk-guide.md#compiler-facts-for-fork-instrumentation)), so
+every indirect call must be assumed to reach a suspend. Phobos links
+`Fiber` for `std.concurrency`, so the cost lands on programs that never
+create a fiber. The guest D compiler is one example:
+- No fiber is used anywhere in LDC's sources.
+- The rewrite took ldc2's code section from 28.8 MB to 53.6 MB, and the
+  optimized binary was 49.3 MB instead of 25.2 MB (ldc2 on LLVM 21).
+- Its larger frames made the DMD frontend overflow WebKit's first-tier Wasm
+  stack in the first in-guest DUB compile (exit 139, 2026-11-25). The same
+  compiler without the rewrite passed three cold WebKit runs.
+
+The same applies to any runtime that would use the continuation provider.
+D is only the first. Meanwhile DUB, which wraps its SDLang parser in a
+fiber, carries a small patch that parses a whole recipe up front instead
+(`sdk/d/dub-1.43.0-sdlang-without-fiber.patch`); drop it with this work.
+
+**Possible solutions**, which can be combined:
+- **Compiler facts from LDC.** Emit `kandelo.calltypes` records for D
+  functions, delegates and vtable slots, so the analysis follows only the
+  indirect calls that can reach `Fiber.yield`. This is the general fix, and
+  fork analysis of D programs gains from it too. How far it narrows the
+  rewrite for a program that does use fibers has not been measured.
+- **Rewrite only programs that can create a fiber.** Skip the rewrite when
+  nothing reachable from the program's roots can start a continuation.
+  Without facts, reachability through vtables is as coarse as the suspend
+  analysis itself, so this mostly depends on the facts above.
+- **Opt in per program at link time.** Link the continuation provider, and
+  with it the rewrite, only into programs that ask for fibers. Programs that
+  don't would get a fiber stand-in that fails with a clear diagnostic when
+  used. This follows the precedent of `-lkandelo-ucontext-unsupported`
+  ([sdk-guide.md](sdk-guide.md#opt-in-libraries-for-unsupported-apis)). It is
+  cheap, but it moves the choice to every program's build.
+- **Engine stack switching.** The WebAssembly stack-switching proposal would
+  give each fiber its own engine stack and need no rewrite at all. That waits
+  until Chromium, Firefox and WebKit all ship it.
+
+Spilling activations off the engine stack
+([fork-instrumentation.md](fork-instrumentation.md#possible-future-work-spilling-activations-off-the-engine-stack))
+would remove the WebKit overflow, but not the code size.
+
+**Done when:** a D program that uses fibers builds and passes
+`sdk/d/test/fibers.d` on Node, Chromium, Firefox and WebKit. A program that
+links Phobos but creates no fiber must also pay no rewrite cost; the guest
+ldc2 compile on a cold WebKit run is the check.
+
+**Files:** `sdk/d/ldc-1.43.0-kandelo.patch` (`KandeloFibers`),
+`sdk/kandelo/continuation/`, `crates/fork-instrument/`
+
 ### Provide the missing complex-multiply and `__int128` conversion builtins
 
 `libc/glue/compiler_rt.c` does not define `__floattitf` (`__int128` to

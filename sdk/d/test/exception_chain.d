@@ -1,7 +1,7 @@
 module exception_chain;
 
 import core.memory : GC;
-import core.thread : Fiber;
+version (KandeloFibers) import core.thread : Fiber;
 import std.stdio : writeln;
 
 private class Primary : Exception
@@ -73,6 +73,8 @@ private void nestedFinally()
     }
 }
 
+// Fibers are opt-in on Kandelo (sdk/d/README.md, "Fibers").
+version (KandeloFibers)
 private void suspendWithReplacement()
 {
     try
@@ -155,6 +157,13 @@ void main()
         errorTookPriority = error.msg == "fatal" && error.bypassedException.msg == "original";
     assert(errorTookPriority);
 
+    version (KandeloFibers) checkFiberExceptions();
+    writeln("exception chains ok");
+}
+
+version (KandeloFibers)
+private void checkFiberExceptions()
+{
     bool resumed;
     auto fiber = new Fiber({
         try
@@ -194,6 +203,4 @@ void main()
     assert(collectedAbandonedExceptions == 1);
     fiber.call();
     assert(fiber.state == Fiber.State.TERM);
-
-    writeln("exception chains ok");
 }
