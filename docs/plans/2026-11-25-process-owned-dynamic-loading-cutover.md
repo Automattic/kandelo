@@ -76,6 +76,26 @@ path, expected architecture and loader version through `dlerror`.
   alias follow-up assigned `main` and `__main_argc_argv` the same
   slot. The alias probe ran before post-link optimization.
 
+## Explicit named-loading opt-in
+
+The review branch incorporates `origin/develop@6b6904b30`. An explicit
+`-ldl` retains the executable's fork entry when the mapping import is
+live after archive extraction, LTO and section liveness analysis. An
+ordinary named load still works without `-ldl`. A lookup-only program
+or a program with an unused loading archive member gains neither the
+mapper nor the fork import from `-ldl`. After both core sysroots were
+built, the SDK suite passed all 45 checks with the patched wasm-ld.
+That covers both CMake targets, the LTO archive and the executable
+lookup probe. The Rust SDK driver suite passed all 147 checks.
+With the source-built kernel, the ABI snapshot, host typecheck and
+real Node worker test passed. The test linked the main program with
+`-rdynamic -ldl`, called `fork` from an instrumented plugin and checked
+the plugin's live frame in both parent and child.
+The same executable and plugin passed in Chromium, Firefox and WebKit
+through the minimal browser runner, using the source-built kernel and
+the retained image writer binaries from unchanged sources. The full
+release-image browser-memory gate remains pending local review.
+
 ## Application measurements
 
 Size is in bytes. The LÖVE baseline uses the earlier pinned develop
@@ -192,9 +212,10 @@ The resolver rejected a pre-cutover release projection during Vite
 preflight because its package index format predates the current
 schema. The machine-switch test did not start with those images.
 The full Sortix, libc-test and Open POSIX suites were outside the
-targeted runs. The earlier packaged Clang test proves in-guest
-linking of a side module. The guest build-image Libtool, CMake and
-Meson suites still need a current build image.
+targeted runs. On the earlier cutover branch, a focused build-image
+fixture using the updated guest SDK passed Libtool, CMake and Meson
+workflows. Each executable used the new mapping import and ran its
+plugin. The complete release build-image rebuild remains pending.
 
 The [prototype report](2026-11-25-process-owned-dynamic-loading-prototype.md)
 retains the earlier SDL2 cohort, ScummVM, and synthetic timing runs.
