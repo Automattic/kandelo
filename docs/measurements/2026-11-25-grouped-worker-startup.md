@@ -116,6 +116,31 @@ quarantined replicas and pending wait drains. Live page count returned to
 within five pages of its starting count in every run. Physical extent grew
 in both revisions while the pool retained reusable capacity.
 
+## Removing the unused replica view
+
+The initial consolidation deleted a net 54 lines from the four launch
+adapters and added a net 63 in shared code. The follow-up runtime
+`25701786e746` drops the kernel Worker's unused per-replica translated view,
+its constructor's Wasm length check, and its detach paths. The registered
+image view still serves kernel access, and the guest Worker reconstructs its
+own view from the envelope. The session reads the PID and replica handle
+from its exact Worker owner, and the pending pthread attachment drops a
+write-only replica handle. The combined production TypeScript diff is
+151 additions and 146 deletions against the pinned baseline.
+
+With the same partial shell and kernel, a third four-run Chromium block
+returned to 11 tasks and nine images with zero quarantined replicas or wait
+drains in every run. Live page counts were within five pages of their
+starting values. Open medians were 1,306 ms on develop and 1,117 ms on the
+follow-up. Focus p95 was 118.11 ms and 115.72 ms, respectively. The single
+block leaves the cause of the timing difference unresolved. The raw sample
+file records the block separately from the two earlier measurements.
+
+The follow-up passed 66 targeted Node cases, 36 browser SDK cases across
+the three engines, the host boundary audit, and app typecheck. The longer
+partial-shell app and replacement results above refer to the initial
+consolidation.
+
 ## Retained failures
 
 The first partial build refused a changed package registry snapshot. A retry
@@ -128,6 +153,10 @@ failed navigation in every arm. Setting the app working directory let all
 four arms complete.
 A Firefox test-runner cleanup reported an operating-system permission error
 removing its temporary Library directory after passing the browser assertions.
+The follow-up initially exposed three fixture assertions that used the
+deleted view or a zeroed publication reply. The focused rerun passed after
+asserting against the registered image view and supplying a valid reply for
+the stale-publication check.
 A native test attempt used the default Wasm target. The native-target retry
 required missing frozen fixtures, which were provisioned and compared with the
 pinned digests. Wasmtime smoke stopped at the existing three-argument native
