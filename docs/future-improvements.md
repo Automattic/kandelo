@@ -1600,23 +1600,6 @@ builder, or make the field name the real build path.
 `packages/registry/kandelo-sdk/build-kandelo-sdk.sh`,
 `tools/xtask/src/vfs_products/product_manifest.rs`
 
-### Keep `build-programs.sh` fixtures out of the shared sysroot
-
-`scripts/build-programs.sh` stages resolved fixture libraries and headers
-(SDL2, Wayland, libffi, glib and others) into the repository's shared
-`sysroot/`. SDK package recipes compile against that same directory:
-the compiler driver falls back to it when `WASM_POSIX_SYSROOT` is unset,
-many recipes set `WASM_POSIX_SYSROOT` to it themselves, and
-`kandelo_package_prepare_private_sysroot` (`scripts/package-build-roots.sh`)
-seeds private sysroots by copying it. A configure or CMake probe can
-therefore find a library or header the recipe never declared, depending
-on whether `build-programs.sh` ran first, under a cache key that does not
-cover it. The SDK bundle already copies only declared content
-(`images/vfs/scripts/stage-sdk-sysroot.sh`). The root fix is for
-`build-programs.sh` to stage into a fixture-only sysroot.
-
-**Files:** `scripts/build-programs.sh`, `scripts/package-build-roots.sh`
-
 ### Keep the user's Cargo configuration out of Rust recipes
 
 Cargo reads `.cargo/config.toml` from its working directory and from
