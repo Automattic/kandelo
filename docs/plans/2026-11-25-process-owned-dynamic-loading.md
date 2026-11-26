@@ -463,55 +463,46 @@ transition and the plan for cyclic direct imports.
 
 ## Landing sequence
 
-Start with an opt-in wasm32 executable lookup path. The measured gain
-comes from resolving executable symbols locally and giving the fork
-instrumenter a complete set of statically assigned slots. This slice
-can use the existing program ABI and host adapter. It introduces no
-mapping import or new interpretation of old capability flags. The
-normal SDK keeps the legacy route for existing artifacts and programs
-with a retained `dlopen` reference.
+Target one PR on fresh develop for the wasm32 executable lookup path.
+Include the linker, libc, normal SDK selection, and fork regression
+coverage together. Enable it automatically for new links whose full
+resolved input set can use executable lookup alone. Adoption then
+happens through ordinary rebuilds across the cohort.
 
-1. **Toolchain.** Package the executable index and canonical slot
-   support through the SDK's normal wasm-ld build and selection. Give
-   requested lookup-only links a useful error with a stock or stale
-   linker. Verify ordinary SDK links retain their export policy.
-   Exercise the supported host and in-guest compiler routes, and
-   measure the final-link and artifact cost for large export sets
-   before enabling the feature by default.
-2. **Libc and fork.** Make executable lookup an explicit SDK choice
-   with a link-time guard. Reject a lookup-only request if the final
-   link retains a reference to `dlopen`, including a reference from
-   a dependency. Check that the executable cannot mix guest lookups
-   with legacy handles or imports. The first slice leaves
-   `dlopen(NULL)` on the legacy route as part of this conservative
-   boundary. Verify the supported lookup, error, and pointer identity
-   behavior, including per-thread `dlerror`. Add ordinary Node and
-   browser regressions for a previously unaddressed export, a fork
-   that returns through a looked-up target, stable table size, and
-   the existing side-loading behavior.
-3. **First package.** Exercise the normal build path with LÖVE as
-   the first opt-in candidate. Use matched builds on fresh develop
-   to repeat the headless physics comparison and test graphical and
-   audio behavior. Run the old-artifact and ABI checks, verify the
-   resulting role and dependency closure, and record which
-   conformance and performance suites ran before requesting rollout
-   review.
+Use a single link-time decision for the complete loader implementation.
+Require proof that a dependency or an LTO input cannot retain
+`dlopen` or otherwise supply a legacy handle to the guest loader.
+Run this check before choosing the loader. The absence of host
+imports after substituting the guest loader is insufficient evidence.
+A retained `dlopen` reference, including `dlopen(NULL)`, or an
+unproven link keeps the legacy loader as a unit. A toolchain without
+index support also keeps the legacy route. Links that use no loader
+keep their existing export policy and omit the index.
 
-Named-module loading follows as a separate implementation and review
-step. Cover real dependency closures, lifecycle and fork attachment on
-the mapping path before testing Waybar and `gtk3_smoke`. Treat removal
-of the legacy loader and a supported-baseline transition as a separate
-maintainer decision. The ABI 56 and adapter 8 numbers above describe
-the prototype's pinned base. Read the live versions when preparing
-each landing branch and assign any successor versions at integration.
+Before enabling the default, verify lookup semantics, per-thread
+`dlerror`, canonical pointer identity, a stable indirect table, and
+fork continuation through a looked-up function in Node and Chromium.
+Exercise the normal host and in-guest SDK routes, including a
+transitive `dlopen` control and a stock linker control. Check existing
+artifacts against the ABI gates and rerun matched LÖVE builds on
+fresh develop for physics, graphics, and audio. Record final-link
+cost at clang and rustc scale and report the conformance and
+performance suites run. The executable-only path introduces no host
+mapping import and can preserve the existing program ABI and host
+adapter contract.
 
-After that review, propose reviewable changes targeting develop.
-Land any independent correctness regression coverage first, then
-toolchain/artifact and guest-loader/adapter changes behind a coherent
-admission boundary, then the approved compatible deployment or
-successor-ABI cutover. Keep incompatible ABI declarations, generated
-bindings and the matching runtime together. Release validation includes
-normal SDK and guest build paths, the loader/fork host and browser
-suites, Sortix dynamic-linking and applicable POSIX/libc suites, the
-browser-memory gate, and the Node/browser performance suites. Report
-each run or omission. Push and PR creation require separate approval.
+A universal cutover requires the named-module path to reach parity
+first. The prototype maps one distinct side module per process.
+General dependency closures, side-originated loading, destructor
+handling, and concurrent loader operations still need coverage.
+Waybar and `gtk3_smoke` keep the legacy path until they pass a
+mapping-capable comparison. Decide whether to retire the legacy
+loader and transition the supported baseline at that review. The
+ABI and adapter numbers above describe the pinned prototype base.
+Assign any successor versions against the actual landing branch.
+
+Release validation includes the normal SDK and guest build paths,
+the loader and fork host and browser suites, Sortix dynamic-linking
+and applicable POSIX/libc suites, the browser-memory gate, and the
+Node and browser performance suites. Report each run or omission.
+Push and PR creation require separate approval.
