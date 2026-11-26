@@ -166,6 +166,8 @@ function readProgramPackageProjection(registryRoot) {
         "cacheKeys",
         "dependencyClosures",
         "members",
+        // Declared fictions are provenance (the host parser checks them).
+        ...(Object.hasOwn(packageProjection, "fictions") ? ["fictions"] : []),
       ])
       || typeof packageProjection?.manifestSha256 !== "string"
       || !/^[a-f0-9]{64}$/.test(packageProjection.manifestSha256)

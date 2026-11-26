@@ -1612,6 +1612,48 @@ version = "1.0.0"
     expect(programOutputClosureRelPaths(relPath)).toEqual([relPath]);
   });
 
+  it("accepts a package row that reports its declared fictions, and rejects a malformed one", () => {
+    const name = fixturePackageName();
+    const sourceArtifact = `${name}.wasm`;
+    const relPath = `programs/wasm32/${sourceArtifact}`;
+    writeFixturePackageManifest(name, `kind = "program"
+name = "${name}"
+version = "1.0.0"
+`);
+    writeFixturePackageProjection(name, [{
+      kind: "output",
+      sourceArtifact,
+      mirrorPath: sourceArtifact,
+      outputName: name,
+      forkInstrumentation: "disabled",
+    }]);
+    fixtureRegistryIdentities.kernel = {
+      manifestSha256: "a".repeat(64),
+      cacheKeys: { wasm32: "b".repeat(64), wasm64: "c".repeat(64) },
+    };
+    const row = fixtureRegistryPackages[name] as Record<string, unknown>;
+    row.fictions = [{
+      name: "mprotect",
+      reason: "fiber stack guard pages",
+      selection: "mprotect:prot_none=accept-unenforced,prot_none_max=65536",
+    }];
+    writeFixtureRegistryIndex();
+    expect(programOutputClosureRelPaths(relPath)).toEqual([relPath]);
+
+    for (const fictions of [
+      [],
+      [{ name: "mprotect", reason: " ", selection: "mprotect:prot_none=accept-unenforced" }],
+      [{ name: "mprotect", reason: "r", selection: "mmap:x=1" }],
+      [{ name: "mprotect", reason: "r", selection: "mprotect:a=b", extra: 1 }],
+    ]) {
+      row.fictions = fictions;
+      writeFixtureRegistryIndex();
+      expect(() => programOutputClosureRelPaths(relPath)).toThrow(/malformed fictions/);
+    }
+    delete row.fictions;
+    writeFixtureRegistryIndex();
+  });
+
   it("matches Rust first-hit semantics by ignoring a directory without package.toml", () => {
     const name = fixturePackageName();
     mkdirSync(fixturePackageDirectory(name), { recursive: true });

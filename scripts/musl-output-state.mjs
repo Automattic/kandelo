@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 const [mode, sysroot] = process.argv.slice(2);
 const required = ['lib/libc.a', 'lib/crt1.o', 'lib/crti.o', 'lib/crtn.o',
-  'lib/libkandelo-ucontext-unsupported.a', 'include/stdio.h',
+  'lib/libkandelo-ucontext-unsupported.a', 'lib/libkandelo-mprotect.a', 'include/stdio.h',
   'include/bits/alltypes.h', 'include/bits/kandelo_thread_syscalls.h'];
 const digest = (relative) => {
   const path = join(sysroot, relative);
@@ -14,7 +14,7 @@ const digest = (relative) => {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 };
 if (mode === 'write') {
-  const paths = ['lib/libc.a', 'lib/crt1.o', 'lib/crti.o', 'lib/crtn.o', 'lib/libkandelo-ucontext-unsupported.a'];
+  const paths = ['lib/libc.a', 'lib/crt1.o', 'lib/crti.o', 'lib/crtn.o', 'lib/libkandelo-ucontext-unsupported.a', 'lib/libkandelo-mprotect.a'];
   function headers(relative) {
     for (const name of readdirSync(join(sysroot, relative)).sort()) {
       const child = `${relative}/${name}`;

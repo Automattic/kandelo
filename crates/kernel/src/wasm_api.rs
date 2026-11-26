@@ -13050,6 +13050,18 @@ pub fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
+    // WHY here: a request that removes read or write access succeeds without
+    // effect (Wasm memory has no page protection). libc refuses it with
+    // ENOTSUP unless the program declared the mprotect fiction, so a success
+    // here is that fiction (or a raw syscall) in use; the log says so, once
+    // per process image.
+    const READ_WRITE: u32 = 0x1 | 0x2;
+    if result == 0
+        && prot & READ_WRITE != READ_WRITE
+        && proc.memory.take_first_unenforced_protection()
+    {
+        crate::kmsg::klog_protection_not_enforced(&mut host, proc.pid, addr, len, prot);
+    }
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
