@@ -58,7 +58,6 @@ static size_t module_count;
 static uint32_t generation;
 static uintptr_t table_high_water;
 static uintptr_t next_handle = 2;
-static pid_t (*volatile fork_entry)(void) = fork;
 static pthread_mutex_t modules_mutex = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local unsigned lock_depth;
 
@@ -388,6 +387,12 @@ static struct guest_module *load_side(const char *path)
 
     uintptr_t packet[] = {(uintptr_t)bytes, byte_count, (uintptr_t)metadata, metadata_limit};
     int size = __kandelo_map_module_v1(packet, sizeof(packet), KANDELO_LOADER_INSPECT);
+    if (size == -ENOEXEC) {
+        __kandelo_loader_set_error(sizeof(uintptr_t) == 8
+            ? "rebuild as a wasm64 Kandelo loader v1 side module: "
+            : "rebuild as a wasm32 Kandelo loader v1 side module: ", path);
+        goto fail;
+    }
     if (size < 12 || (uint32_t)size > metadata_limit) {
         __kandelo_loader_set_error("side module inspection failed: ", path);
         goto fail;
@@ -491,7 +496,6 @@ static void promote_global(struct guest_module *module)
 
 static void *open_side(const char *path, int flags)
 {
-    if (!fork_entry) __builtin_trap();
     if (!lock_modules()) return 0;
     struct guest_module *module = strchr(path, '/') ?
         load_side(path) : load_needed("", path);

@@ -164,9 +164,8 @@ instrument_wasm() {
     "$FORK_INSTRUMENT" "$wasm" -o "$wasm" && abi_contract_stamp "$wasm"
 }
 
-# Fork-instrumented executables require the same side-boundary preparation
-# for modules they load, including a fixture whose own code never forks.
-build_runtime_side_module() {
+# Each side fixture follows the fork contract selected by its executable.
+build_runtime_side_module() (
     local src="$1"
     local wasm="$2"
     if ! grep -q '#ifdef SHARED' "$src"; then
@@ -175,12 +174,19 @@ build_runtime_side_module() {
 
     local so="${wasm%.wasm}.so"
     rm -f "$so"
-    if ! "$WASM32_CC" -fPIC -O2 -DSHARED "$src" -shared -o "$so" ||
-       ! instrument_wasm "$so"; then
-        rm -f "$wasm" "$so"
-        return 1
+    if "$WASM32_CC" -fPIC -O2 -DSHARED "$src" -shared -o "$so"; then
+        source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+        local fork_status=0
+        wasm_imports_kernel_fork "$wasm" || fork_status=$?
+        case "$fork_status" in
+            0) instrument_wasm "$so" && return 0 ;;
+            1) abi_contract_stamp "$so" && return 0 ;;
+        esac
     fi
-}
+
+    rm -f "$wasm" "$so"
+    return 1
+)
 
 # The per-test budget in seconds. It is forwarded to examples/run-example.ts
 # as TIMEOUT (its own guest watchdog, 30 s by default, which exits 124 like

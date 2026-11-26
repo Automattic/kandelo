@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
@@ -98,6 +98,59 @@ it.skipIf(!process.env.KANDELO_ABI56_LOADER_FIXTURE)(
     expect(result.hostDiagnostics).toEqual([]);
   },
 );
+
+it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
+  "replicates a loaded plugin's slots to a pthread when no caller names fork",
+  { timeout: 120_000 },
+  async () => {
+    const linked = new WebAssembly.Module(readFileSync(join(fixtureDir, "process-dynsym-threaded.linked.wasm")));
+    expect(WebAssembly.Module.imports(linked)).toContainEqual({
+      module: "kernel", name: "kernel_fork", kind: "function",
+    });
+    const path = "/lib/threaded-plugin.so";
+    const result = await runCentralizedProgram({
+      programPath: join(fixtureDir, "process-dynsym-threaded.wasm"),
+      argv: ["threaded-plugin-host", path],
+      execPrograms: new Map([[path, join(fixtureDir, "process-dynsym-threaded.so")]]),
+      useDefaultRootfs: false,
+      timeout: 30_000,
+    });
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "plugin: host_scale=3\nplugin_run(7) = 22\n",
+      stderr: "",
+      hostDiagnostics: [],
+    });
+  },
+);
+
+const frozenFixture = process.env.KANDELO_ABI56_LOADER_FIXTURE;
+const otherWidth = join(root, ".scratch", wasm64 ? "" : "dynsym-wasm64", "process-dynsym-side.so");
+for (const [kind, side] of [
+  ["pre-cutover", frozenFixture && join(frozenFixture, "plugin.so")],
+  ["wrong-width", otherWidth],
+]) {
+  it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1" || !side || !existsSync(side))(
+    `identifies the expected format for a ${kind} side module`,
+    { timeout: 120_000 },
+    async () => {
+      const path = "/lib/incompatible-plugin.so";
+      const result = await runCentralizedProgram({
+        programPath: join(fixtureDir, "process-dynsym-mapped.wasm"),
+        argv: ["process-dynsym", path],
+        execPrograms: new Map([[path, side!]]),
+        useDefaultRootfs: false,
+        timeout: 30_000,
+      });
+      expect(result).toMatchObject({
+        exitCode: 14,
+        stdout: "",
+        stderr: `rebuild as a ${wasm64 ? "wasm64" : "wasm32"} Kandelo loader v1 side module: ${path}\n`,
+        hostDiagnostics: [],
+      });
+    },
+  );
+}
 
 it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
   "serializes named loads and resumes forks in initializers and finalizers",

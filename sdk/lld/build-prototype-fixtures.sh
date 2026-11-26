@@ -32,7 +32,14 @@ fi
 "$cc" -O2 -rdynamic \
     host/test/fixtures/process-dynsym-lifecycle.c \
     -o "$out/process-dynsym-lifecycle.linked.wasm"
+fixtures=host/test/fixtures/guest-build/plugins
+"$cc" -O2 -rdynamic "$fixtures/host.c" -o "$out/process-dynsym-plain.wasm"
+"$cc" -O2 -shared -fPIC "$fixtures/plugin.c" -o "$out/process-dynsym-plain.so"
+"$cc" -O2 -rdynamic host/test/fixtures/process-dynsym-threaded.c -o "$out/process-dynsym-threaded.linked.wasm"
 instrument=scripts/run-wasm-fork-instrument.sh
+bash "$instrument" "$out/process-dynsym-threaded.linked.wasm" --side-modules=assume-all-entries-fork-returning \
+    -o "$out/process-dynsym-threaded.wasm"
+bash "$instrument" "$out/process-dynsym-plain.so" -o "$out/process-dynsym-threaded.so"
 bash "$instrument" "$out/dynsym-needed/dynsym-dependency.so" -o "$out/dynsym-dependency.so"
 bash "$instrument" "$out/dynsym-needed-consumer.linked.so" --entry env.fork -o "$out/dynsym-needed-consumer.so"
 bash "$instrument" "$out/process-dynsym.linked.wasm" -o "$out/process-dynsym.wasm"

@@ -9,19 +9,37 @@
 @@ -594,0 +596,2 @@
 +  if (ctx.arg.kandeloSideDynsym && !ctx.arg.shared)
 +    error("--kandelo-side-dynsym requires --shared");
-@@ -1520,1 +1523,13 @@
+@@ -1520,1 +1523,10 @@
    markLive();
 +
-+  // The process-owned loader retains the real libc fork entry. Export it
-+  // only when the mapping import survived archive extraction, LTO and GC.
++  // Side modules can bind the process fork entry when the main program
++  // already links it. The mapping import alone does not make a program fork.
 +  if (Symbol *map = symtab->find("__kandelo_map_module_v1");
 +      map && map->isLive() && isa<UndefinedFunction>(map)) {
-+    Symbol *fork = symtab->find("fork");
-+    if (!fork || !fork->isLive() || !isa<DefinedFunction>(fork)) {
-+      error("Kandelo mapping import requires the process fork entry");
++    if (Symbol *fork = symtab->find("fork");
++        fork && fork->isLive() && isa<DefinedFunction>(fork))
++      fork->forceExport = true;
++  }
+--- a/lld/wasm/MarkLive.cpp
++++ b/lld/wasm/MarkLive.cpp
+@@ -26,0 +27 @@
++#include "lld/Common/ErrorHandler.h"
+@@ -143,0 +145,16 @@
++
++  // A pthread Worker has its own WebAssembly table. A program that can both
++  // load modules and start threads needs the continuation instrumenter's
++  // table reconciliation points, even when no C caller names fork.
++  Symbol *map = symtab->find("__kandelo_map_module_v1");
++  Symbol *clone = symtab->find("kernel_clone");
++  if (!ctx.arg.shared && map && map->isLive() && isa<UndefinedFunction>(map) &&
++      clone && clone->isLive() && isa<UndefinedFunction>(clone)) {
++    auto *fork = dyn_cast_or_null<DefinedFunction>(symtab->find("fork"));
++    if (!fork) {
++      error("Kandelo threaded dynamic loading requires the SDK fork entry");
 +      return;
 +    }
-+    fork->forceExport = true;
++    enqueue(fork);
++    mark();
 +  }
 --- a/lld/wasm/Options.td
 +++ b/lld/wasm/Options.td

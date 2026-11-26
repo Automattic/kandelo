@@ -372,7 +372,10 @@ with `-Wl,--export=<symbol>`. Calling `fork` from a plugin likewise needs a
 program that links `fork` and is fork-instrumented. Run the same
 instrumenter on every plugin a fork-instrumented process loads so
 the host can restore its side-module boundaries. This also applies
-to plugins that never call `fork` themselves.
+to plugins that never call `fork` themselves. Prepare the executable
+with the instrumenter when it can both load plugins and start pthreads.
+That link retains the continuation support that keeps the Workers'
+indirect tables consistent.
 
 Libtool, CMake and Meson build plugin modules natively inside Kandelo:
 see [GNU build tools](#gnu-build-tools) and

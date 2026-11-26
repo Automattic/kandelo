@@ -666,18 +666,25 @@ describe('integration: compile C program', () => {
       expect(compile.exitCode, compile.stderr).toBe(0);
       const pack = sdk(AR, ['rcs', archive, object]);
       expect(pack.exitCode, pack.stderr).toBe(0);
-      for (const used of [false, true]) {
-        writeFileSync(main, used ? `
+      for (const [used, threaded] of [[false, false], [true, false], [false, true], [true, true]]) {
+        writeFileSync(main, `
+          #include <pthread.h>
           void *open_plugin(const char *);
-          int main(int argc, char **argv) { return open_plugin(argv[argc - 1]) == 0; }
-        ` : 'int main(void) { return 0; }');
+          static void *worker(void *arg) { return arg; }
+
+          int main(int argc, char **argv) {
+            ${threaded ? 'pthread_t t; if (pthread_create(&t, 0, worker, 0)) return 2;' : ''}
+            return ${used ? 'open_plugin(argv[argc - 1]) == 0' : '0'};
+          }
+        `);
         const link = sdk(CC, ['-flto', '-O2', main, archive, '-o', output]);
         expect(link.exitCode, link.stderr).toBe(0);
         const module = new WebAssembly.Module(readFileSync(output));
-        expect(WebAssembly.Module.imports(module).some(
-          ({ module }) => module === 'kandelo.loader.v1',
-        )).toBe(used);
-        expect(WebAssembly.Module.exports(module).some(({ name }) => name === 'fork')).toBe(used);
+        const imports = WebAssembly.Module.imports(module);
+        expect(imports.some(({ module }) => module === 'kandelo.loader.v1')).toBe(used);
+        expect(imports.some(({ name }) => name === 'kernel_clone')).toBe(threaded);
+        expect(imports.some(({ name }) => name === 'kernel_fork')).toBe(used && threaded);
+        expect(WebAssembly.Module.exports(module).some(({ name }) => name === 'fork')).toBe(used && threaded);
       }
     } finally {
       for (const file of [member, object, archive, main, output]) {

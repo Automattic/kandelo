@@ -1,5 +1,5 @@
 import { expect, test } from "../playwright-test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const fixture = new URL(
@@ -68,6 +68,41 @@ for (const needed of [false, true]) {
   });
 }
 
+for (const [kind, title] of [
+  ["plain", "ordinary SDK executables can call plugins without fork instrumentation"],
+  ["threaded", "a pthread can call a plugin loaded by the SDK executable"],
+]) {
+  test(title, async ({ page }) => {
+    test.skip(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1", "requires the loader fixtures");
+    await page.goto("/pages/test-runner/?minimal=1");
+    await page.waitForFunction(() => (window as Window & { __testRunnerReady?: boolean }).__testRunnerReady);
+    const read = (name: string) => Array.from(readFileSync(new URL(name, fixture)));
+    const path = "/lib/sdk-plugin.so";
+    const result = await page.evaluate(async ({ main, path, data }) => {
+      const runner = window as Window & {
+        __runTest: (wasm: ArrayBuffer, argv: string[], timeout: number, options: {
+          seedEtc: boolean;
+          dataFiles: { path: string; data: number[] }[];
+        }) => Promise<{ exitCode: number; stdout: string; stderr: string; hostDiagnostics: unknown[] }>;
+      };
+      return runner.__runTest(new Uint8Array(main).buffer, ["plugin-host", path], 30_000, {
+        seedEtc: false,
+        dataFiles: [{ path, data }],
+      });
+    }, {
+      main: read(`process-dynsym-${kind}.wasm`),
+      path,
+      data: read(`process-dynsym-${kind}.so`),
+    });
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "plugin: host_scale=3\nplugin_run(7) = 22\n",
+      stderr: "",
+      hostDiagnostics: [],
+    });
+  });
+}
+
 test("a previously built ABI-56 plugin is callable in the fork child", async ({ page }) => {
   const directory = process.env.KANDELO_ABI56_LOADER_FIXTURE;
   test.skip(!directory, "requires the retained ABI-56 loader fixture");
@@ -92,6 +127,43 @@ test("a previously built ABI-56 plugin is callable in the fork child", async ({ 
   });
   expect(result).toMatchObject({ exitCode: 0, stderr: "", hostDiagnostics: [] });
   expect(result.stdout).toMatch(/^\d+ \d+ \d+ \d+\n$/);
+});
+
+test("guest loader identifies the required format for incompatible plugins", async ({ page }) => {
+  const directory = process.env.KANDELO_ABI56_LOADER_FIXTURE;
+  const wasm64 = process.env.KANDELO_LOADER_FIXTURE_ARCH === "wasm64posix";
+  const otherWidth = new URL(
+    wasm64 ? "../../../.scratch/process-dynsym-side.so" : "../../../.scratch/dynsym-wasm64/process-dynsym-side.so",
+    import.meta.url,
+  );
+  test.skip(!directory || !existsSync(otherWidth) || process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1",
+    "requires the retained ABI-56 and both SDK architectures' fixtures");
+  await page.goto("/pages/test-runner/?minimal=1");
+  await page.waitForFunction(() => (window as Window & { __testRunnerReady?: boolean }).__testRunnerReady);
+
+  const main = Array.from(readFileSync(new URL("process-dynsym-mapped.wasm", fixture)));
+  const path = "/lib/incompatible-plugin.so";
+  for (const plugin of [directory + "/plugin.so", otherWidth]) {
+    const data = Array.from(readFileSync(plugin));
+    const result = await page.evaluate(async ({ main, path, data }) => {
+      const runner = window as Window & {
+        __runTest: (wasm: ArrayBuffer, argv: string[], timeout: number, options: {
+          seedEtc: boolean;
+          dataFiles: { path: string; data: number[] }[];
+        }) => Promise<{ exitCode: number; stdout: string; stderr: string; hostDiagnostics: unknown[] }>;
+      };
+      return runner.__runTest(new Uint8Array(main).buffer, ["process-dynsym", path], 30_000, {
+        seedEtc: false,
+        dataFiles: [{ path, data }],
+      });
+    }, { main, path, data });
+    expect(result).toMatchObject({
+      exitCode: 14,
+      stdout: "",
+      stderr: `rebuild as a ${wasm64 ? "wasm64" : "wasm32"} Kandelo loader v1 side module: ${path}\n`,
+      hostDiagnostics: [],
+    });
+  }
 });
 
 test("guest-owned loader serializes pthreads and resumes initializer and finalizer forks", async ({ page }) => {

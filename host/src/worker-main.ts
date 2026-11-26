@@ -41,6 +41,7 @@ import {
 } from "./dylink-fork-archive";
 import {
   describeWasmArtifactPolicyFailures,
+  detectPtrWidth,
   extractAbiVersion,
   readWasmFunctionArity,
   readWasmImportDescriptors,
@@ -63,6 +64,7 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  ERRNO,
   EXTENSION_REQUEST_KLOG_V1,
   HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
@@ -1191,9 +1193,7 @@ export function buildDlopenImports(
     return errno !== 0 ? -errno : result;
   };
   const extensionImports: WebAssembly.Imports = {
-    ...(forkActivationOwner ? {
-      [LOADER_MODULE]: { [LOADER_IMPORT]: mapGuestModule },
-    } : {}),
+    [LOADER_MODULE]: { [LOADER_IMPORT]: mapGuestModule },
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
@@ -1866,15 +1866,17 @@ export function buildDlopenImports(
         const metadata = parseDylinkSection(bytes);
         if (!metadata || metadata.tlsExports.size ||
             metadata.neededDynlibs.length > LOADER_MAX_IMPORTS) return -22;
+        if (detectPtrWidth(bytes.buffer) !== ptrWidth) return -ERRNO.ENOEXEC;
         const compiled = new WebAssembly.Module(bytes);
+        const [symtab, duplicate] = WebAssembly.Module.customSections(compiled, "kandelo.dynsym.v1");
+        if (!symtab) return -ERRNO.ENOEXEC;
+        if (duplicate) return -ERRNO.EINVAL;
         const imports = WebAssembly.Module.imports(compiled);
         const rows = guestBindingImports(imports).map(({ name, kind }) => ({
           name: encoder.encode(name),
           kind: metadata.weakImports.has(name) ? kind | LOADER_BIND_WEAK : kind,
         }));
         if (rows.length > LOADER_MAX_IMPORTS) return -22;
-        const [symtab, duplicate] = WebAssembly.Module.customSections(compiled, "kandelo.dynsym.v1");
-        if (!symtab || duplicate) return -22;
         const dependencies = metadata.neededDynlibs.map(name => encoder.encode(name));
         const size = 12 + rows.reduce((size, { name }) => size + 8 + name.length + 1, 0)
           + dependencies.reduce((size, name) => size + 4 + name.length + 1, 0) + symtab.byteLength;
