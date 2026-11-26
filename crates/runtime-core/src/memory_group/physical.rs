@@ -461,6 +461,7 @@ pub(super) mod tests {
         pub(in crate::memory_group) refuse_growth: bool,
         fail_bitmap_write: bool,
         fail_atomic_store_at: Option<u32>,
+        pub(in crate::memory_group) next_reported_pages: core::cell::Cell<Option<u32>>,
         watched_load: Option<u32>,
         watched_loads: core::cell::Cell<usize>,
         fail_read_at: Option<u32>,
@@ -489,6 +490,7 @@ pub(super) mod tests {
                 refuse_growth: false,
                 fail_bitmap_write: false,
                 fail_atomic_store_at: None,
+                next_reported_pages: core::cell::Cell::new(None),
                 watched_load: None,
                 watched_loads: core::cell::Cell::new(0),
                 fail_read_at: None,
@@ -500,7 +502,7 @@ pub(super) mod tests {
     }
     impl PhysicalMemory for Memory {
         fn current_pages(&self) -> Result<u32, Errno> {
-            Ok(self.bytes.len() as u32 / PAGE)
+            Ok(self.next_reported_pages.take().unwrap_or(self.bytes.len() as u32 / PAGE))
         }
         fn grow(&mut self, extra: u32) -> Result<u32, Errno> {
             let old = self.current_pages()?;

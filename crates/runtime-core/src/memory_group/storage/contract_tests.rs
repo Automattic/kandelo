@@ -34,6 +34,21 @@ pub(super) fn image(maximum_virtual_pages: u32) -> (MemoryGroups, Storage, Memor
 }
 
 #[test]
+fn a_peer_scan_refreshes_the_backing_extent_for_newly_visible_frames() {
+    let (_groups, storage, memory, root) = image(32);
+    let descriptor = storage.descriptor(root).unwrap();
+    let key = storage.owned(root).unwrap().image;
+    let payload = memory.atomic_load(descriptor.root + layout::ROOT_HEADER_BYTES).unwrap() >> 16;
+    let first_extent = descriptor.root / PAGE + 1;
+    assert!(payload >= first_extent);
+    // Model a grow between the first extent read and a later frame observation.
+    memory.next_reported_pages.set(Some(first_extent));
+    let mut selected = [false; 32];
+    storage.image_pages(&memory, key, &mut selected, false).unwrap();
+    assert!(selected[payload as usize]);
+}
+
+#[test]
 fn corrupt_root_limits_cannot_authorize_retirement() {
     for offset in [4, 8] {
         let (_groups, mut storage, mut memory, root) = image(32);
