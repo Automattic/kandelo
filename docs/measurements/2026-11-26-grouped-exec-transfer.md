@@ -40,8 +40,13 @@ The measured step did less work even during a period of substantially higher
 machine load. The aggregate first-key-to-six-prompts samples increased from
 3.83 to 4.58 seconds on Chromium and from 5.59 to 6.67 seconds on WebKit.
 The one-minute host load changed from 14 to 119 and from 8 to 119, respectively.
-Those runs give no end-to-end speedup estimate. A first Firefox trial stalled
+Those runs give no end-to-end speedup estimate. A first Firefox trial timed out
 with a black desktop before the initial prompt at a one-minute load of 146.
+The same Firefox startup timeout occurred on the unchanged host at a load
+of 138, with Sway still making shared-memory operations. A second candidate
+run reached the same deadline. The comparison provides no qualified Firefox terminal-burst timing. In the successful
+traces, binding itself still took about 40–48 ms per Foot executable
+and was the largest measured stage before compilation.
 
 ## Validation
 
