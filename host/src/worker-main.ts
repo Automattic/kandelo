@@ -675,6 +675,12 @@ export function buildKernelImportsForTest(
   );
 }
 
+interface DlopenReplayOptions {
+  readonly memoryOwnership?: "copied" | "borrowed";
+  /** The copied child continues the surviving Worker's staged calls. */
+  readonly resumeLoaderTransactions?: boolean;
+}
+
 export interface DlopenSupport {
   imports: Record<string, WebAssembly.ExportValue>;
   readonly extensionImports: WebAssembly.Imports;
@@ -683,7 +689,7 @@ export interface DlopenSupport {
   /** Recreate the parent's live module and handle state from linear memory. */
   replayDlopens: (
     validatedState?: DylinkForkState,
-    options?: { readonly memoryOwnership?: "copied" | "borrowed" },
+    options?: DlopenReplayOptions,
   ) => void;
   /** Clear a fork parent's copied archive lock in ordinary child memory. */
   resetForkChildLock: () => void;
@@ -2156,7 +2162,7 @@ export function buildDlopenImports(
 
   const replayDlopens = (
     validatedState?: DylinkForkState,
-    options: { readonly memoryOwnership?: "copied" | "borrowed" } = {},
+    options: DlopenReplayOptions = {},
   ): void => {
     const state = validatedState ?? readForkState();
     if (
@@ -2172,6 +2178,16 @@ export function buildDlopenImports(
     try {
       lk.reconcileForkModules(state, options);
       lk.reconcileForkHandleState(state);
+      if (options.resumeLoaderTransactions && state.transactions?.length) {
+        if (loaderOwner.load() !== workerIdentity) {
+          throw new Error("fork child cannot resume dynamic-loader transactions without their lease");
+        }
+        // Resume the whole stack so closing a nested transaction keeps the
+        // lease for its suspended outer initializer.
+        for (const { token } of state.transactions) {
+          ownedDlopenTransactions.add(token);
+        }
+      }
     } catch (error) {
       abortLinkerOperation();
       throw error;
@@ -4302,6 +4318,7 @@ export async function centralizedWorkerMain(
           }
           dlopenSupport.replayDlopens(childDylinkState, {
             memoryOwnership: forkMemoryOwnership,
+            resumeLoaderTransactions: !borrowedForkChild,
           });
           // Ordinary children reconcile a copied archive under their private
           // lock. Borrowed children already replayed the validated snapshot;

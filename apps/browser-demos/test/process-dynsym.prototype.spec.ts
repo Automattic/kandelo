@@ -94,7 +94,7 @@ test("a previously built ABI-56 plugin is callable in the fork child", async ({ 
   expect(result.stdout).toMatch(/^\d+ \d+ \d+ \d+\n$/);
 });
 
-test("guest-owned loader lifecycle is shared by the process's pthreads", async ({ page }) => {
+test("guest-owned loader serializes pthreads and resumes initializer and finalizer forks", async ({ page }) => {
   test.skip(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1", "requires the prototype linker");
   await page.goto("/pages/test-runner/?minimal=1");
   await page.waitForFunction(() => (window as Window & { __testRunnerReady?: boolean }).__testRunnerReady);

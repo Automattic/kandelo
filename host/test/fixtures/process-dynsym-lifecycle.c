@@ -9,6 +9,8 @@
 static const char provider_path[] = "/lib/dynsym-dependency.so";
 static pthread_barrier_t error_barrier;
 static int callbacks[3];
+int lifecycle_fork_stage;
+pid_t lifecycle_fork_result;
 
 void observe_lifecycle(int stage)
 {
@@ -84,6 +86,26 @@ int main(int argc, char **argv)
         pthread_join(first, &status) || status ||
         pthread_join(second, &status) || status)
         return 14;
+
+    for (int stage = 1; stage <= 2; ++stage) {
+        lifecycle_fork_stage = stage;
+        lifecycle_fork_result = -1;
+        const int loaded = callbacks[0], closed = callbacks[1];
+        void *handle = dlopen(argv[1], RTLD_NOW);
+        int (*check)(void) = handle ? dlsym(handle, "lifecycle_check") : 0;
+        int ok = check && check() == 19 && !dlclose(handle) &&
+            callbacks[0] == loaded + 1 && callbacks[1] == closed + 1;
+        child = lifecycle_fork_result;
+        lifecycle_fork_stage = 0;
+        if (child == 0) {
+            if (ok) ok = !check_loader_parallel("child after loader continuation");
+            _exit(ok ? 0 : 14 + stage);
+        }
+        if (!ok || child < 0 || waitpid(child, &child_status, 0) != child || child_status) {
+            fprintf(stderr, "loader fork stage %d failed, child status %#x\n", stage, child_status);
+            return 14 + stage;
+        }
+    }
     puts("guest loader lifecycle ok");
     return 0;
 }

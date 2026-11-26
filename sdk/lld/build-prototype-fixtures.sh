@@ -38,6 +38,6 @@ bash "$instrument" "$out/dynsym-needed-consumer.linked.so" --entry env.fork -o "
 bash "$instrument" "$out/process-dynsym.linked.wasm" -o "$out/process-dynsym.wasm"
 bash "$instrument" "$out/process-dynsym-side.linked.so" --entry env.fork -o "$out/process-dynsym-side.so"
 bash "$instrument" "$out/process-dynsym-mapped.linked.wasm" --side-modules=assume-all-entries-fork-returning -o "$out/process-dynsym-mapped.wasm"
-bash "$instrument" "$out/dynsym-lifecycle.linked.so" -o "$out/dynsym-lifecycle.so"
+bash "$instrument" "$out/dynsym-lifecycle.linked.so" --entry env.fork -o "$out/dynsym-lifecycle.so"
 bash "$instrument" "$out/process-dynsym-lifecycle.linked.wasm" --side-modules=assume-all-entries-fork-returning \
     -o "$out/process-dynsym-lifecycle.wasm"

@@ -100,7 +100,7 @@ it.skipIf(!process.env.KANDELO_ABI56_LOADER_FIXTURE)(
 );
 
 it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
-  "serializes named loads and closes, including nested initialization",
+  "serializes named loads and resumes forks in initializers and finalizers",
   { timeout: 120_000 },
   async () => {
     const plugin = "/lib/dynsym-lifecycle.so";
