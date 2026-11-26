@@ -264,6 +264,32 @@ fn trusted_host_program_requires_complete_unchanged_observation_before_commit() 
 }
 
 #[test]
+fn memory_group_binding_rejects_changed_image_bytes_with_unchanged_metadata() {
+    let mut host = private_program_host();
+    host.image = append_section(&group_variant_for(&host.source), b"binding-test", b"before");
+    let mut proc = Process::new(100);
+    let mut locks = AdvisoryLockManager::new();
+    let mut retain = |handle, path| {
+        let ofd = proc.ofd_table.create(FileType::Regular, O_RDONLY, handle, path);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd), 0).unwrap();
+        let token = prepare_fd(&mut proc, &mut locks, &mut host, fd);
+        observe(&mut proc, &mut host, token);
+        token
+    };
+    let target = retain(SOURCE, b"/source".to_vec());
+    let image = retain(IMAGE, b"/image".to_vec());
+    *host.image.last_mut().unwrap() = b'X';
+
+    assert_eq!(
+        bind_memory_group_image(&mut proc, &mut locks, &mut host, 100, target, image),
+        Err(Errno::ETXTBSY),
+    );
+    let ordinary = proc.prepared_exec_targets.get(target).unwrap();
+    assert_eq!(ordinary.observed_bytes().unwrap(), host.source);
+    sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+}
+
+#[test]
 fn source_digest_is_exact_retained_source_and_is_checked_again_after_image_reads() {
     let source = output(ORIGINAL);
     let image = append_section(&source, b"current-preparation", b"prepared");
