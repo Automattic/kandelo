@@ -53,6 +53,14 @@ retirement custody.
   and Firefox. They covered Sway input and file persistence, grouped Sway
   activation from an ordinary shell, Cage/Foot input and retirement, Freeciv
   quit and relaunch, and static ScummVM gameplay and native quit.
+- Chromium and Firefox each passed twelve same-page Cage, Sway and Sway/SFWBar
+  replacements with physical input, terminal creation and close, guest exit,
+  and memory boundary assertions.
+- The focused engine teardown selection passed three Node and seven Bun
+  tests using fixtures linked and stamped through the normal SDK. The
+  canonical browser-memory gate is still preparing its full package closure.
+  Its full-gallery browser cycles, the dedicated 120-terminal soak and broad
+  POSIX conformance are outside the completed validation scope.
 
 ## Matched Node ownership comparison
 
@@ -84,24 +92,25 @@ static ScummVM, curl, unzip, sysklogd, desktop-data and Bibata. Its activities
 were Shell, Freeciv, Cage, Sway and Sway/SFWBar. Static ScummVM launches from
 the desktop shell.
 
-Chromium 153 ran two Sway sessions per revision in
-develop–candidate–candidate–develop order, using the normal Vite app at
-1600×1000. Each run opened and closed six Foot terminals and moved focus 30
-times. Terminal timings end at an observed rendered prompt. Focus timings
-use the trusted pointer event and an observed canvas frame. Machine
-load varied across runs and the canonical product build ran concurrently.
+Chromium 153 ran two blocks in develop–candidate–candidate–develop order,
+using the normal Vite app at 1600×1000. Each run opened and closed six Foot
+terminals and moved focus 30 times. Terminal timings end at an observed
+rendered prompt. Focus timings use the trusted pointer event and an observed
+canvas frame. Machine load varied across runs and the canonical product
+build ran concurrently. The repeat used the same host code, after the
+validation-only commit `a4eed3c56c8815767494d9a7e5d9706d72c77555`.
 [Raw timings and counters](2026-11-25-grouped-worker-startup-samples.json).
 
-| Measurement | Develop | Candidate |
-| --- | ---: | ---: |
-| Terminal open median | 1,171 ms | 1,235 ms |
-| Terminal close median | 241 ms | 249 ms |
-| Terminal focus median | 79.69 ms | 82.24 ms |
-| Terminal focus p95 | 119.31 ms | 119.38 ms |
+| Measurement | First develop | First candidate | Repeat develop | Repeat candidate |
+| --- | ---: | ---: | ---: | ---: |
+| Terminal open median | 1,171 ms | 1,235 ms | 1,278 ms | 1,267 ms |
+| Terminal close median | 241 ms | 249 ms | 253 ms | 250 ms |
+| Terminal focus median | 79.69 ms | 82.24 ms | 82.18 ms | 82.21 ms |
+| Terminal focus p95 | 119.31 ms | 119.38 ms | 147.58 ms | 130.69 ms |
 
-The candidate's median open took 64 ms longer in this sample. Its median close
-and focus also took longer, with nearly equal focus p95. This small comparison
-under competing load leaves the cause of the timing differences unresolved.
+The candidate's median open took 64 ms longer in the first block and 11 ms less
+in the repeat. The median close also changed direction. These samples under
+competing load leave the effect on startup latency unresolved.
 Each run returned to 11 tasks and nine images after terminal churn, with zero
 quarantined replicas and pending wait drains. Live page count returned to
 within five pages of its starting count in every run. Physical extent grew
@@ -117,6 +126,8 @@ The later targeted runs used the separate normally published kernel projection.
 A first scratch desktop benchmark started Vite in the scratch directory and
 failed navigation in every arm. Setting the app working directory let all
 four arms complete.
+A Firefox test-runner cleanup reported an operating-system permission error
+removing its temporary Library directory after passing the browser assertions.
 A native test attempt used the default Wasm target. The native-target retry
 required missing frozen fixtures, which were provisioned and compared with the
 pinned digests. Wasmtime smoke stopped at the existing three-argument native
