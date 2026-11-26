@@ -202,6 +202,11 @@ pub fn push_epoll_ready() {
 /// syscall that changed the counter, so that syscall's own completion drains
 /// it.
 pub fn push_eventfd_changed() {
+    push_device_readable();
+}
+
+/// A kernel device with no pipe token can now satisfy a parked read or poll.
+pub fn push_device_readable() {
     append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
 }
 

@@ -21,7 +21,7 @@ const expectedCases = [
   "real-file-async-write-read-and-errors", "process-title-explicit-unsupported",
   "physical-memory-explicitly-unknown-and-rss-unsupported",
   "memory-constraints-follow-real-guest-resource-limits",
-  "filesystem-watch-explicit-unsupported",
+  "filesystem-watch-provider-contract",
 ];
 function identity(path: string) {
   const bytes = readFileSync(path);

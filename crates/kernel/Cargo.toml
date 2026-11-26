@@ -8,7 +8,7 @@ name = "kandelo_kernel"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-runtime-core = { path = "../runtime-core" }
+runtime-core = { path = "../runtime-core", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
 wasm-posix-shared = { path = "../shared" }
@@ -17,5 +17,7 @@ wasm-posix-shared = { path = "../shared" }
 dlmalloc = { version = "0.2.14", default-features = false }
 
 [features]
+default = ["vfs-events"]
+vfs-events = ["runtime-core/vfs-events"]
 # Diagnostic build: see runtime-core's feature of the same name.
 shared-mapping-proof-verify = ["runtime-core/shared-mapping-proof-verify"]

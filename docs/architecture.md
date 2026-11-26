@@ -4868,6 +4868,13 @@ to Node foreign mounts are not reported, and an inode modified through a
 hard-link name is not reported under every alias. See [WebMCP](webmcp.md)
 for the consumer-facing contract.
 
+Guest processes can subscribe through the optional `vfs-events` kernel feature.
+An open description for `/dev/kandelo/fs-events` binds to a readable rootfs or
+tmpfs descriptor. Mutations queue rename and change records with raw basenames
+for immediate directory children. Duplicated watcher descriptors share the
+queue until the last reference closes. A full queue reports overflow, so a
+consumer can rescan. See [guest VFS events](posix-status.md) for the record format.
+
 ### Inspection of the live filesystem
 
 Both host workers answer `read_vfs_file`, `read_vfs_dir` and

@@ -196,6 +196,7 @@ pub enum VirtualDevice {
     /// program's bytes go to the host's stderr stream and nowhere else (see
     /// `crate::console_device`). host_handle -14.
     Console,
+    FsEvents, // /dev/kandelo/fs-events, per-open watcher
 }
 
 impl VirtualDevice {
@@ -215,6 +216,7 @@ impl VirtualDevice {
             VirtualDevice::Clipboard => -12,
             VirtualDevice::Kmsg => -13,
             VirtualDevice::Console => -14,
+            VirtualDevice::FsEvents => -15,
         }
     }
 
@@ -235,6 +237,7 @@ impl VirtualDevice {
             -12 => Some(VirtualDevice::Clipboard),
             -13 => Some(VirtualDevice::Kmsg),
             -14 => Some(VirtualDevice::Console),
+            -15 if cfg!(feature = "vfs-events") => Some(VirtualDevice::FsEvents),
             _ => None,
         }
     }
@@ -255,6 +258,7 @@ impl VirtualDevice {
             VirtualDevice::Clipboard => 12,
             VirtualDevice::Kmsg => 13,
             VirtualDevice::Console => 14,
+            VirtualDevice::FsEvents => 15,
         }
     }
 
@@ -304,6 +308,7 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
         b"/dev/kandelo/clipboard" => Some(VirtualDevice::Clipboard),
         b"/dev/kmsg" => Some(VirtualDevice::Kmsg),
+        b"/dev/kandelo/fs-events" if cfg!(feature = "vfs-events") => Some(VirtualDevice::FsEvents),
         _ => None,
     }
 }
@@ -4877,6 +4882,27 @@ fn publish_virtual_device_fd(proc: &mut Process, host: &mut dyn HostIO, device: 
     Ok(fd)
 }
 
+fn bind_vfs_events(proc: &Process, device: &crate::ofd::OpenFileDesc, buf: &[u8]) -> Result<usize, Errno> {
+    let fd = i32::from_le_bytes(buf.try_into().map_err(|_| Errno::EINVAL)?);
+    let target = proc.ofd_table.get(resolve_io_ofd(proc, fd)?).ok_or(Errno::EBADF)?;
+    if target.status_flags() & O_PATH != 0 || target.status_flags() & O_ACCMODE == O_WRONLY {
+        return Err(Errno::EBADF);
+    }
+    let identity = target.file_id.ok_or(Errno::ENOTSUP)?;
+    let handle = target.host_handle;
+    let directory = if target.file_type == FileType::Directory && handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
+        Some(crate::tmpfs::watch_directory(&target.path, identity)?)
+    } else if target.file_type == FileType::Directory && handle == crate::rootfs::ROOTFS_DIR_SENTINEL {
+        Some(crate::rootfs::watch_directory(&target.path, identity)?)
+    } else if target.file_type == FileType::Regular && (crate::tmpfs::is_tmpfs_file_handle(handle) || crate::rootfs::is_rootfs_file_handle(handle)) {
+        None
+    } else {
+        return Err(Errno::ENOTSUP);
+    };
+    crate::vfs_events::bind(device, identity, directory)?;
+    Ok(buf.len())
+}
+
 fn try_open_fifo(proc: &mut Process, host: &mut dyn HostIO, resolved: &[u8], oflags: u32, exclusive_create: bool) -> Result<Option<i32>, Errno> {
     let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(resolved) else { return Ok(None); };
     if exclusive_create { return Err(Errno::EEXIST); }
@@ -5331,6 +5357,7 @@ fn tmpfs_stamp_now(host: &mut dyn HostIO) -> Result<(), Errno> {
 /// live store, so there is no host handle and no backing to refcount.
 fn open_scratch_tmpfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
     proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
+        if cfg!(feature = "vfs-events") { description.file_id = Some(crate::vfs_events::identity(crate::tmpfs::lstat(&resolved)?)); }
         description.dir_host_handle = crate::tmpfs::TMPFS_DIR_SENTINEL;
         Ok(crate::tmpfs::TMPFS_DIR_SENTINEL)
     })
@@ -5349,6 +5376,7 @@ fn open_rootfs(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effective_mod
 /// regenerates entries from the live store, so there is no host handle.
 fn open_rootfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
     proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
+        if cfg!(feature = "vfs-events") { description.file_id = Some(crate::vfs_events::identity(crate::rootfs::lstat(&resolved)?)); }
         description.dir_host_handle = crate::rootfs::ROOTFS_DIR_SENTINEL;
         Ok(crate::rootfs::ROOTFS_DIR_SENTINEL)
     })
@@ -7209,6 +7237,7 @@ pub fn sys_read(
                         // One record per read, at the cursor held in the OFD
                         // position. EAGAIN at the tail parks a blocking reader
                         // the same way.
+                        VirtualDevice::FsEvents => crate::vfs_events::read(ofd.ofd_id, buf)?,
                         VirtualDevice::Kmsg => crate::kmsg_device::read(ofd, buf)?,
                     };
                     return Ok(n);
@@ -7710,6 +7739,7 @@ pub fn sys_write(
                         // could append could forge a kernel record. Refused
                         // rather than accepted and discarded.
                         VirtualDevice::Kmsg => Err(Errno::EACCES),
+                        VirtualDevice::FsEvents => bind_vfs_events(proc, ofd, buf),
                         // The program's own bytes, to the host and nowhere
                         // else. This arm is where console writes are kept
                         // out of the ring; the behavioural test
@@ -8006,6 +8036,7 @@ pub fn sys_lseek(
             // The file position is the kmsg cursor, so seeking is how a
             // program moves it. Only the oldest record, the post-clear
             // record and the tail are reachable.
+            if dev == VirtualDevice::FsEvents { return Err(Errno::ESPIPE); }
             if dev == VirtualDevice::Kmsg {
                 // SAFETY: the kernel services one syscall at a time.
                 let ring = unsafe { crate::kmsg::global_kmsg_ring() };
@@ -18518,6 +18549,10 @@ fn poll_check_depth(
                         revents |= POLLOUT;
                     }
                 } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::FsEvents)
+                {
+                    if pollfd.events & POLLIN != 0 && crate::vfs_events::readable(ofd.ofd_id) { revents |= POLLIN; }
+                } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Kmsg)
                 {
                     // Readable while a record, or the news that the reader was
@@ -24651,6 +24686,86 @@ mod tests {
                 .iter()
                 .all(|path| !is_procfs_namespace_path(path) && !is_devfs_namespace_path(path))
         );
+    }
+
+    #[cfg(not(feature = "vfs-events"))]
+    #[test]
+    fn vfs_watch_device_absent_without_provider() {
+        assert!(match_virtual_device(b"/dev/kandelo/fs-events").is_none());
+        assert!(VirtualDevice::from_host_handle(-15).is_none());
+    }
+
+    #[cfg(feature = "vfs-events")]
+    #[test]
+    fn vfs_watch_rootfs_reports_overflow_and_preserves_target_identity() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_mkdir(&mut proc, &mut host, b"/original", 0o700).unwrap();
+        let dir = sys_open(&mut proc, &mut host, b"/original", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        sys_rename(&mut proc, &mut host, b"/original", b"/moved").unwrap();
+        sys_mkdir(&mut proc, &mut host, b"/original", 0o700).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/kandelo/fs-events", O_RDWR | O_NONBLOCK, 0).unwrap();
+        let write_only = sys_open(&mut proc, &mut host, b"/original/other", O_CREAT | O_WRONLY, 0o600).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &write_only.to_le_bytes()), Err(Errno::EBADF));
+        sys_write(&mut proc, &mut host, fd, &dir.to_le_bytes()).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, &dir.to_le_bytes()), Err(Errno::EBUSY));
+        sys_write(&mut proc, &mut host, write_only, b"ignored").unwrap();
+        let mut buf = [0u8; 256];
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Err(Errno::EAGAIN));
+        for i in 0..64 {
+            sys_mkdir(&mut proc, &mut host, format!("/moved/child{i}").as_bytes(), 0o700).unwrap();
+        }
+        let mut polls = [WasmPollFd { fd, events: POLLIN, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut polls, 0), Ok(1));
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Ok(1));
+        assert_eq!(buf[0], 3);
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut polls, 0), Ok(0));
+        sys_mkdir(&mut proc, &mut host, b"/moved/visible", 0o700).unwrap();
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"\x01visible");
+        for fd in [fd, dir, write_only] { sys_close(&mut proc, &mut host, fd).unwrap(); }
+    }
+
+    #[cfg(feature = "vfs-events")]
+    #[test]
+    fn vfs_watch_tracks_actual_names_and_independent_open_descriptions() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let dir = b"/tmp/watch-contract";
+        let path = b"/tmp/watch-contract/entry";
+        let renamed = b"/tmp/watch-contract/renamed";
+        let device = b"/dev/kandelo/fs-events";
+        sys_mkdir(&mut proc, &mut host, dir, 0o700).unwrap();
+        let directory = sys_open(&mut proc, &mut host, dir, O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let first = sys_open(&mut proc, &mut host, device, O_RDWR | O_NONBLOCK, 0).unwrap();
+        let second = sys_open(&mut proc, &mut host, device, O_RDWR | O_NONBLOCK, 0).unwrap();
+        let alias = sys_dup(&mut proc, first).unwrap();
+        for fd in [first, second] {
+            assert_eq!(sys_write(&mut proc, &mut host, fd, &directory.to_le_bytes()), Ok(4));
+        }
+        sys_close(&mut proc, &mut host, first).unwrap();
+        let file = sys_open(&mut proc, &mut host, path, O_RDWR | O_CREAT, 0o600).unwrap();
+        sys_write(&mut proc, &mut host, file, b"content").unwrap();
+        sys_rename(&mut proc, &mut host, path, renamed).unwrap();
+        sys_write(&mut proc, &mut host, file, b"more").unwrap();
+        let mut buf = [0u8; 256];
+        for fd in [second, alias] {
+            assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf[..1]), Err(Errno::EINVAL));
+            for expected in [b"\x01entry".as_slice(), b"\x02entry", b"\x01entry", b"\x01renamed", b"\x02renamed"] {
+                let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+                assert_eq!(&buf[..n], expected);
+            }
+            assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Err(Errno::EAGAIN));
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        sys_close(&mut proc, &mut host, file).unwrap();
+        sys_close(&mut proc, &mut host, directory).unwrap();
+        sys_unlink(&mut proc, &mut host, renamed).unwrap();
+        sys_rmdir(&mut proc, &mut host, dir).unwrap();
     }
 
     #[test]
