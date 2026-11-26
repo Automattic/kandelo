@@ -1271,6 +1271,12 @@ stats slot 7). The legacy `mode: "2d"` CPU blit (`putImageData` + CPU
 swizzle) remains available. GL demos (modeset, sdl2) keep the WebGL2
 bridge instead and the pump never touches their canvas.
 
+The KMS canvas forwards an unpressed mouse's first trusted
+`pointerrawupdate` before the regular `pointermove` when the browser
+provides that event. The regular stream supplies any later coalesced
+position and handles buttons, drag, touch and pen. Pointer-locked input
+continues through the relative mouse stream.
+
 Interactions, all end-to-end through the compositor:
 
 - **Typing** — `BrowserInputSource` writes keystrokes to `event0`;

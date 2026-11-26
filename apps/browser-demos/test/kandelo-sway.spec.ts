@@ -460,6 +460,17 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await page.keyboard.press("Alt+Enter");
   await expect.poll(tiled, { timeout: 180_000, intervals: [2_000] }).toBe(true);
 
+  // Trusted mouse motion moves focus in both directions. Read each tile's
+  // title band so a repaint of the old focus cannot pass this check.
+  const box = (await canvas.boundingBox())!;
+  for (const tile of [0, 1]) {
+    await page.mouse.move(box.x + box.width * (tile ? 0.75 : 0.25), box.y + box.height / 3);
+    await expect.poll(async () => {
+      const band = await outputShot(out, tile * out.width / 2 + 10, 5, 2, 2);
+      return isBlue(await meanColor(page, band));
+    }).toBe(true);
+  }
+
   // Gate 6: real swaynag action, owner release, terminal return and exit0.
   await exitSway(page, out, "sway-exit");
 
