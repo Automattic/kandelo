@@ -5177,27 +5177,26 @@ live map. The live process list omits zombies; use the actual `/proc/PID/stat`
 record when verifying root reclamation.
 
 The shell configures `BrowserKernel.kmsAttachBitmapRelay` through its normal
-KMS attachment API. This device transport renders into detached canvases in
-the kernel worker and presents independent `ImageBitmap` objects in a
-disposable display worker. Guest memories, their backing buffers and views
-never enter the display worker or browser main. Embedders without this group
+KMS attachment API. The kernel worker captures the primary scanout as an
+independent bitmap and sends it to a disposable display worker. The guest KMS
+cursor plane remains separate. Its update carries the guest-selected position and
+up to 64×64 owned RGBA pixels (16 KiB). The display worker clears the previous
+cursor rectangle and paints the new one on its transparent canvas. When a CRTC
+color stage is active the producer composites the cursor before applying the
+color transform and the display worker clears the separate overlay. Guest memory
+stays in the kernel and process workers. Embedders without this group
 configuration and the Node host retain their existing presentation paths.
 
-At most one bundle of up to two changed planes is captured or awaiting an exact
-sequence acknowledgement. Each plane is bounded by 3840×2160 pixels. Capture
-snapshots the producer canvas without consuming its retained pixels. A later
-swap or commit can present the same cached image without a redraw; consuming
-that image made subsequent presentations black. Native bitmap transport remains
-bounded, and the producer keeps its own surface until normal device retirement.
-This opt-in transport does not establish compatibility with mixed
-unprepared graphical clients. It creates an additional Worker and native device
-surfaces. A two-plane 3072×1728 bundle contains up to 40.5 MiB of pixel data;
-that is a payload bound, not a measurement of native graphics memory or total
-browser footprint. The retained producer surface adds a resource cost that
-must be remeasured after this correction. Earlier ordinary/grouped comparisons
-do not establish a net memory saving, and their results do not validate the new
-snapshot path's memory or performance. See the [current resource measurements](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md)
-for the workload, response endpoints, limitations and remaining acceptance.
+At most one bundle of changed planes is in flight until the display acknowledges
+its exact sequence. Consequently a cursor update can wait for an outstanding
+primary snapshot. A primary capture snapshots up to 3840×2160 pixels without
+consuming the producer's canvas. A later swap or commit can reuse its retained
+pixels. The additional worker and native display surfaces have a resource cost.
+See the [cursor relay measurements](measurements/2026-11-26-kms-cursor-relay.md)
+for the boundary measured by the worker acknowledgement. The [earlier desktop
+resource measurements](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md)
+predate this transport. Mixed unprepared graphical clients remain outside the
+tested scope.
 
 The shell's group has a 512 MiB backing ceiling without an additional small
 process/task quota. Embedders can supply explicit count quotas; kernel
