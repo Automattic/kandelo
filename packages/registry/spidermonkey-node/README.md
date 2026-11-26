@@ -38,6 +38,8 @@ symlink. Experimental QUIC/DTLS are not enabled in this standard build; their
 implementation and qualification remain required later compatibility work.
 There is no automatic second executable or user profile selector.
 
+Node’s bundled OpenSSL uses the upstream `no-secure-memory` configuration because Kandelo cannot enforce the guard pages required by the OpenSSL secure heap. OpenSSL uses its ordinary allocator for secure allocations. Programs that require a guarded heap must treat this as a platform limitation. With `--secure-heap`, Node reports initialization failure on stderr. The requested capacity in `crypto.secureHeapUsed()` comes from the CLI options.
+
 Node's embedded llhttp static target uses hidden symbol visibility. Its native
 parser remains unchanged and uses Node's original callback settings. The
 separate standalone Wasm embedding helpers are not executable exports: exporting
