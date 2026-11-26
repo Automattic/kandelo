@@ -230,7 +230,7 @@ export class GroupProcessAddressSpace implements ProcessAddressSpace {
     }
     return { binding, spans };
   }
-  readBytes(address: number, length: number): Uint8Array {
+  readBytes(address: number, length: number): Uint8Array<ArrayBuffer> {
     const { binding, spans } = this.plan(address, length, READ);
     const result = new Uint8Array(length);
     let at = 0;

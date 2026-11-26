@@ -66,6 +66,12 @@ int main(int argc, char **argv)
             return 15;
         if (dlsym(main, "plugin_value") || !dlerror())
             return 16;
+        if (argc > 2) {
+            value_fn dependency = (value_fn)dlsym(side, "dependency_value");
+            if (!dependency || dependency() != 19 ||
+                dlsym(RTLD_DEFAULT, "dependency_value") || !dlerror())
+                return 24;
+        }
     }
 
     /* Re-entry at the beginning would print a second prefix. */

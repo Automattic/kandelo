@@ -108,19 +108,25 @@ static int find_executable_symbol(const char *name, uintptr_t *address,
 #ifdef KANDELO_DYNSYM_MAP
 _Static_assert(sizeof(void *) == 4, "the mapping prototype requires wasm32");
 
-__attribute__((import_module("kandelo.loader.prototype.v1"), import_name("__kandelo_map_module_v1")))
-extern int __kandelo_map_module_v1(uint32_t *, uint32_t, int);
+__attribute__((import_module("kandelo.loader.prototype.v2"), import_name("__kandelo_map_module_v2")))
+extern int __kandelo_map_module_v2(uint32_t *, uint32_t, int);
 extern void __wasm_posix_signal_checkpoint(void);
 
-/* The start/attach path reads these exact bindings from the copied process. */
-struct guest_binding {
-    uint32_t slot;
-    const char *export_name;
-};
-_Static_assert(sizeof(struct guest_binding) == 8, "binding vector row size");
-struct guest_binding __kandelo_loader_bindings[KANDELO_LOADER_MAX_IMPORTS];
+struct guest_module;
 
-static struct {
+/* The adapter reads this prefix from guest memory, including on fork attach.
+ * A zero provider identifies the executable. Side providers are already mapped. */
+struct guest_binding {
+    uint32_t address;
+    const char *export_name;
+    const struct guest_module *provider;
+};
+
+struct guest_module {
+    struct guest_binding *bindings;
+    uint32_t binding_count;
+    struct guest_module **dependencies;
+    uint32_t dependency_count;
     const unsigned char *index;
     size_t index_size;
     char *path;
@@ -128,169 +134,352 @@ static struct {
     uint32_t memory_base;
     unsigned references;
     int global;
-} side;
+    int mapped;
+    struct guest_module *next;
+};
+_Static_assert(sizeof(struct guest_binding) == 12, "binding vector row size");
+_Static_assert(offsetof(struct guest_module, index) == 16, "mapping descriptor size");
+
+static struct guest_module *modules;
+static size_t module_count;
 static int side_busy;
 
-static void *open_side(const char *path, int flags)
+static int lock_modules(void)
 {
     if (__atomic_exchange_n(&side_busy, 1, __ATOMIC_ACQUIRE)) {
         set_error("guest module mapping is already active", 0);
         return 0;
     }
-    void *result = 0;
-    unsigned char *bytes = 0;
-    unsigned char *metadata = 0;
-    unsigned char *index = 0;
-    char *path_copy = 0;
-    int fd = -1;
-    if (side.index) {
-        unsigned references = __atomic_load_n(&side.references, __ATOMIC_RELAXED);
-        if (strcmp(side.path, path) || references == UINT32_MAX) {
-            set_error("prototype supports one mapped side module", 0);
-            goto done;
-        }
-        if (flags & RTLD_GLOBAL) __atomic_store_n(&side.global, 1, __ATOMIC_RELEASE);
-        __atomic_add_fetch(&side.references, 1, __ATOMIC_RELEASE);
-        result = &side;
-        goto done;
+    return 1;
+}
+
+static void unlock_modules(void)
+{
+    __atomic_store_n(&side_busy, 0, __ATOMIC_RELEASE);
+}
+
+static int find_module_symbol(const struct guest_module *module, const char *name,
+                              uintptr_t *address, uint32_t *kind,
+                              const char **definition)
+{
+    int found = find_symbol(module->index, module->index_size, name,
+                            address, kind, definition);
+    if (found == 1) {
+        uintptr_t base = *kind == 1 ? module->table_base : module->memory_base;
+        if (*address > UINTPTR_MAX - base) return -1;
+        *address += base;
     }
+    return found;
+}
+
+/* POSIX handle lookup walks the named object and its dependency closure in
+ * breadth-first order. Deduplicate a dependency reached by several routes. */
+static int find_in_scope(struct guest_module *const *roots, size_t root_count,
+                         const char *name, uintptr_t *address, uint32_t *kind,
+                         const char **definition,
+                         const struct guest_module **provider)
+{
+    if (!root_count) return 0;
+    struct guest_module **queue = calloc(module_count, sizeof(*queue));
+    if (!queue) return -1;
+    size_t read_index = 0;
+    size_t end = 0;
+    int found = 0;
+    for (;;) {
+        for (size_t i = 0; i < root_count; ++i) {
+            size_t known = 0;
+            while (known < end && queue[known] != roots[i]) ++known;
+            if (known == end) queue[end++] = roots[i];
+        }
+        if (read_index == end) break;
+        struct guest_module *module = queue[read_index++];
+        found = find_module_symbol(module, name, address, kind, definition);
+        if (found) {
+            *provider = module;
+            break;
+        }
+        roots = module->dependencies;
+        root_count = module->dependency_count;
+    }
+    free(queue);
+    return found;
+}
+
+static int find_global_symbol(const char *name, uintptr_t *address, uint32_t *kind,
+                              const char **definition,
+                              const struct guest_module **provider)
+{
+    int found = find_executable_symbol(name, address, kind, definition);
+    if (found) return found;
+    for (struct guest_module *module = modules; module; module = module->next) {
+        if (module->mapped && module->global) {
+            found = find_module_symbol(module, name, address, kind, definition);
+            if (found) {
+                *provider = module;
+                return found;
+            }
+        }
+    }
+    return 0;
+}
+
+static char *join_path(const char *prefix, size_t prefix_length, const char *name)
+{
+    size_t length = strlen(name);
+    if (prefix_length > SIZE_MAX - length - 1) return 0;
+    char *path = malloc(prefix_length + length + 1);
+    if (!path) return 0;
+    memcpy(path, prefix, prefix_length);
+    memcpy(path + prefix_length, name, length + 1);
+    return path;
+}
+
+static struct guest_module *load_side(const char *path);
+
+static struct guest_module *load_needed(const char *parent, const char *name)
+{
+    if (name[0] == '/') return load_side(name);
+    const char *slash = strrchr(parent, '/');
+    const char *prefixes[] = {parent, "/lib/", "/usr/lib/"};
+    size_t lengths[] = {slash ? (size_t)(slash - parent) + 1 : 0, 5, 9};
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        char *path = join_path(prefixes[i], lengths[i], name);
+        if (!path) {
+            set_error("cannot allocate dependency path: ", name);
+            return 0;
+        }
+        /* Search only for a present entry. A present but invalid candidate
+         * reports its actual error instead of falling through to another file. */
+        if (access(path, F_OK) == 0) {
+            struct guest_module *loaded = load_side(path);
+            free(path);
+            return loaded;
+        }
+        free(path);
+    }
+    set_error("side module dependency not found: ", name);
+    return 0;
+}
+
+static int read_word(const unsigned char *data, size_t end, size_t *offset,
+                     uint32_t *word)
+{
+    if (*offset > end || end - *offset < sizeof(*word)) return 0;
+    memcpy(word, data + *offset, sizeof(*word));
+    *offset += sizeof(*word);
+    return 1;
+}
+
+static const char *read_name(const unsigned char *data, size_t end, size_t *offset)
+{
+    uint32_t length;
+    if (!read_word(data, end, offset, &length) || length < 2 ||
+        length > end - *offset || memchr(data + *offset, 0, length) != data + *offset + length - 1)
+        return 0;
+    const char *name = (const char *)data + *offset;
+    *offset += length;
+    return name;
+}
+
+static int bind_imports(struct guest_module *module, const unsigned char *metadata,
+                        size_t end, size_t imports)
+{
+    for (uint32_t i = 0; i < module->binding_count; ++i) {
+        uint32_t binding_kind, kind;
+        uintptr_t address;
+        const char *definition;
+        const struct guest_module *provider = 0;
+        if (!read_word(metadata, end, &imports, &binding_kind)) return 0;
+        const char *name = read_name(metadata, end, &imports);
+        if (!name || binding_kind < KANDELO_LOADER_BIND_DIRECT ||
+            binding_kind > KANDELO_LOADER_BIND_DATA) return 0;
+        int found = find_global_symbol(name, &address, &kind, &definition, &provider);
+        if (found == 0)
+            found = find_in_scope(module->dependencies, module->dependency_count,
+                                  name, &address, &kind, &definition, &provider);
+        if (found != 1 || kind != (binding_kind == KANDELO_LOADER_BIND_DATA ? 2u : 1u) ||
+            (kind == 1 && !address)) {
+            set_error("unresolved side module binding: ", name);
+            return 0;
+        }
+        module->bindings[i] = (struct guest_binding){address, definition, provider};
+    }
+    return imports == end;
+}
+
+static struct guest_module *load_side(const char *path)
+{
+    struct guest_module **link = &modules;
+    for (; *link; link = &(*link)->next) {
+        if (!strcmp((*link)->path, path)) {
+            if ((*link)->mapped) return *link;
+            set_error("cyclic side module dependency: ", path);
+            return 0;
+        }
+    }
+
+    struct guest_module *module = calloc(1, sizeof(*module));
+    unsigned char *bytes = 0, *metadata = 0;
+    int fd = -1;
+    if (!module || !(module->path = strdup(path))) {
+        set_error("cannot allocate side module: ", path);
+        goto fail;
+    }
+    *link = module;
+    ++module_count;
 
     fd = open(path, O_RDONLY);
     struct stat file;
     if (fd < 0 || fstat(fd, &file) < 0 || file.st_size <= 0 ||
         file.st_size > 64 * 1024 * 1024) {
         set_error("cannot open side module: ", path);
-        goto done;
+        goto fail;
     }
     uint32_t byte_count = file.st_size;
-    uint32_t metadata_limit = 1024 * 1024;
+    const uint32_t metadata_limit = 1024 * 1024;
     bytes = malloc(byte_count);
     metadata = malloc(metadata_limit);
-    path_copy = strdup(path);
-    if (!bytes || !metadata || !path_copy) {
-        set_error("out of memory while opening side module: ", path);
-        goto done;
+    if (!bytes || !metadata) {
+        set_error("cannot allocate side module metadata: ", path);
+        goto fail;
     }
+
     size_t offset = 0;
     while (offset < byte_count) {
-        ssize_t read_count = read(fd, bytes + offset, byte_count - offset);
-        if (read_count < 0 && errno == EINTR) continue;
-        if (read_count <= 0) {
+        ssize_t count = read(fd, bytes + offset, byte_count - offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) {
             set_error("cannot read side module: ", path);
-            goto done;
+            goto fail;
         }
-        offset += read_count;
+        offset += count;
     }
     close(fd);
     fd = -1;
 
     uint32_t packet[] = {(uintptr_t)bytes, byte_count, (uintptr_t)metadata, metadata_limit};
-    int inspected = __kandelo_map_module_v1(packet, sizeof(packet), KANDELO_LOADER_INSPECT);
-    free(bytes);
-    bytes = 0;
-    if (inspected < 8 || (uint32_t)inspected > metadata_limit) {
+    int size = __kandelo_map_module_v2(packet, sizeof(packet), KANDELO_LOADER_INSPECT);
+    if (size < 12 || (uint32_t)size > metadata_limit) {
         set_error("side module inspection failed: ", path);
-        goto done;
+        goto fail;
     }
 
-    uint32_t import_count, index_size;
-    memcpy(&import_count, metadata, 4);
-    memcpy(&index_size, metadata + 4, 4);
-    if (import_count > KANDELO_LOADER_MAX_IMPORTS ||
-        index_size < sizeof(struct dynsym_header) || index_size > (uint32_t)inspected - 8) {
-        set_error("invalid side module metadata: ", path);
-        goto done;
-    }
-    size_t index_start = inspected - index_size;
-    offset = 8;
-    for (uint32_t ordinal = 0; ordinal < import_count; ++ordinal) {
-        uint32_t length, binding_kind;
-        if (offset + 8 > index_start) {
-            set_error("truncated side module imports: ", path);
-            goto done;
-        }
-        memcpy(&length, metadata + offset, 4);
-        memcpy(&binding_kind, metadata + offset + 4, 4);
-        offset += 8;
-        if (!length || length > index_start - offset || metadata[offset + length - 1] != 0) {
-            set_error("invalid side module import: ", path);
-            goto done;
-        }
-        const char *name = (const char *)metadata + offset;
-        uint32_t kind;
-        uintptr_t address;
-        const char *definition;
-        if (binding_kind < KANDELO_LOADER_BIND_DIRECT || binding_kind > KANDELO_LOADER_BIND_DATA ||
-            find_executable_symbol(name, &address, &kind, &definition) != 1 ||
-            kind != (binding_kind == KANDELO_LOADER_BIND_DATA ? 2u : 1u) ||
-            (kind == 1 && !address)) {
-            set_error("unresolved executable binding: ", name);
-            goto done;
-        }
-        __kandelo_loader_bindings[ordinal] = (struct guest_binding){address, definition};
-        offset += length;
-    }
-    if (offset != index_start) {
-        set_error("invalid side module import length: ", path);
-        goto done;
-    }
-    index = malloc(index_size);
-    if (!index) {
-        set_error("out of memory for side symbol index: ", path);
-        goto done;
-    }
-    memcpy(index, metadata + index_start, index_size);
-    free(metadata);
-    metadata = 0;
+    uint32_t index_size;
+    offset = 0;
+    if (!read_word(metadata, size, &offset, &module->binding_count) ||
+        !read_word(metadata, size, &offset, &index_size) ||
+        !read_word(metadata, size, &offset, &module->dependency_count) ||
+        module->binding_count > KANDELO_LOADER_MAX_IMPORTS ||
+        module->dependency_count > KANDELO_LOADER_MAX_IMPORTS ||
+        index_size < sizeof(struct dynsym_header) || index_size > (uint32_t)size - offset)
+        goto invalid;
 
-    int transaction = __kandelo_map_module_v1(packet, sizeof(packet), KANDELO_LOADER_MAP);
+    size_t end = size - index_size;
+    // A valid edge list fits before the import list. Traverse it in the guest.
+    if (module->dependency_count) {
+        module->dependencies = calloc(module->dependency_count, sizeof(*module->dependencies));
+        if (!module->dependencies) goto allocation_failure;
+    }
+    for (uint32_t i = 0; i < module->dependency_count; ++i) {
+        const char *name = read_name(metadata, end, &offset);
+        if (!name) goto invalid;
+        module->dependencies[i] = load_needed(path, name);
+        if (!module->dependencies[i]) goto fail;
+    }
+    if (module->binding_count) {
+        module->bindings = calloc(module->binding_count, sizeof(*module->bindings));
+        if (!module->bindings) goto allocation_failure;
+    }
+    if (!bind_imports(module, metadata, end, offset)) {
+        if (!error_pending) set_error("invalid side module imports: ", path);
+        goto fail;
+    }
+    unsigned char *index = malloc(index_size);
+    if (!index) goto allocation_failure;
+    memcpy(index, metadata + end, index_size);
+    module->index = index;
+    module->index_size = index_size;
+
+    packet[2] = (uintptr_t)module;
+    packet[3] = 0;
+    int transaction = __kandelo_map_module_v2(packet, sizeof(packet), KANDELO_LOADER_MAP);
     if (transaction <= 0) {
         set_error("side module mapping failed: ", path);
-        goto done;
+        goto fail;
     }
+    free(bytes);
+    bytes = 0;
+    free(metadata);
+    metadata = 0;
     packet[0] = transaction;
     for (;;) {
-        int entry = __kandelo_map_module_v1(packet, sizeof(packet), KANDELO_LOADER_ADVANCE);
+        int entry = __kandelo_map_module_v2(packet, sizeof(packet), KANDELO_LOADER_ADVANCE);
         __wasm_posix_signal_checkpoint();
         if (entry < 0) {
             set_error("side module activation failed: ", path);
-            goto done;
+            goto fail;
         }
         if (entry == 0) break;
         ((void (*)(void))(uintptr_t)entry)();
     }
+    module->table_base = packet[1];
+    module->memory_base = packet[2];
+    module->mapped = 1;
+    return module;
 
-    side.index = index;
-    side.index_size = index_size;
-    side.path = path_copy;
-    side.table_base = packet[1];
-    side.memory_base = packet[2];
-    __atomic_store_n(&side.global, (flags & RTLD_GLOBAL) != 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&side.references, 1, __ATOMIC_RELEASE);
-    index = 0;
-    path_copy = 0;
-    result = &side;
-
-done:
+invalid:
+    set_error("invalid side module metadata: ", path);
+    goto fail;
+allocation_failure:
+    set_error("cannot allocate side module bindings: ", path);
+fail:
     if (fd >= 0) close(fd);
     free(bytes);
     free(metadata);
-    free(index);
-    free(path_copy);
-    __atomic_store_n(&side_busy, 0, __ATOMIC_RELEASE);
-    return result;
+    if (module) {
+        if (*link == module) {
+            *link = module->next;
+            --module_count;
+        }
+        free((void *)module->index);
+        free(module->bindings);
+        free(module->dependencies);
+        free(module->path);
+        free(module);
+    }
+    return 0;
 }
 
-static int find_side_symbol(const char *name, uintptr_t *address)
+static void promote_global(struct guest_module *module)
 {
-    uint32_t kind;
-    int found = find_symbol(side.index, side.index_size, name, address, &kind, 0);
-    if (found == 1) {
-        uintptr_t base = kind == 1 ? side.table_base : side.memory_base;
-        if (*address > UINTPTR_MAX - base) return -1;
-        *address += base;
+    if (module->global) return;
+    module->global = 1;
+    for (uint32_t i = 0; i < module->dependency_count; ++i)
+        promote_global(module->dependencies[i]);
+}
+
+static void *open_side(const char *path, int flags)
+{
+    if (!lock_modules()) return 0;
+    struct guest_module *module = load_side(path);
+    if (module) {
+        if (module->references == UINT32_MAX) {
+            set_error("side module reference count exhausted: ", path);
+            module = 0;
+        } else {
+            if (flags & RTLD_GLOBAL) promote_global(module);
+            ++module->references;
+        }
     }
-    return found;
+    unlock_modules();
+    return module;
+}
+
+static struct guest_module *resolve_handle(const void *handle)
+{
+    for (struct guest_module *module = modules; module; module = module->next)
+        if (module == handle && module->mapped && module->references) return module;
+    return 0;
 }
 #endif
 
@@ -331,21 +520,32 @@ void *dlsym(void *handle, const char *name)
     uintptr_t address = 0;
     uint32_t kind;
     int found;
+    if (!name) {
+        set_error("invalid dynamic symbol name", 0);
+        return 0;
+    }
+#ifdef KANDELO_DYNSYM_MAP
+    if (!lock_modules()) return 0;
+    const struct guest_module *provider = 0;
     if (global_scope) {
-        found = find_executable_symbol(name, &address, &kind, 0);
-#ifdef KANDELO_DYNSYM_MAP
-        if (!found && __atomic_load_n(&side.references, __ATOMIC_ACQUIRE) &&
-            __atomic_load_n(&side.global, __ATOMIC_ACQUIRE))
-            found = find_side_symbol(name, &address);
-#endif
-#ifdef KANDELO_DYNSYM_MAP
-    } else if (handle == &side && __atomic_load_n(&side.references, __ATOMIC_ACQUIRE)) {
-        found = find_side_symbol(name, &address);
-#endif
+        found = find_global_symbol(name, &address, &kind, 0, &provider);
     } else {
+        struct guest_module *module = resolve_handle(handle);
+        if (!module) {
+            unlock_modules();
+            set_error("invalid dynamic loader handle", 0);
+            return 0;
+        }
+        found = find_in_scope(&module, 1, name, &address, &kind, 0, &provider);
+    }
+    unlock_modules();
+#else
+    if (!global_scope) {
         set_error("invalid dynamic loader handle", 0);
         return 0;
     }
+    found = find_executable_symbol(name, &address, &kind, 0);
+#endif
 
     if (found == 1)
         return (void *)address;
@@ -360,13 +560,12 @@ void *dlsym(void *handle, const char *name)
 int dlclose(void *handle)
 {
 #ifdef KANDELO_DYNSYM_MAP
-    if (handle == &side) {
-        unsigned count = __atomic_load_n(&side.references, __ATOMIC_RELAXED);
-        while (count) {
-            if (__atomic_compare_exchange_n(&side.references, &count, count - 1, 1,
-                                            __ATOMIC_RELAXED, __ATOMIC_RELAXED))
-                return 0;
-        }
+    if (handle != &main_handle) {
+        if (!lock_modules()) return -1;
+        struct guest_module *module = resolve_handle(handle);
+        if (module) --module->references;
+        unlock_modules();
+        if (module) return 0;
     }
 #endif
     if (handle == &main_handle) {

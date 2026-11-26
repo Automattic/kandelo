@@ -91,9 +91,9 @@ pub mod klog_v1 {
 
 /// Experimental worker-local mapping transport. No POSIX scopes or handles
 /// are part of the transport. The packet fields are fixed-width offsets.
-pub mod loader_v1 {
-    pub const MODULE: &str = "kandelo.loader.prototype.v1";
-    pub const IMPORT: &str = "__kandelo_map_module_v1";
+pub mod loader_v2 {
+    pub const MODULE: &str = "kandelo.loader.prototype.v2";
+    pub const IMPORT: &str = "__kandelo_map_module_v2";
     pub const INSPECT: u32 = 1;
     pub const MAP: u32 = 2;
     pub const ADVANCE: u32 = 3;
@@ -126,7 +126,7 @@ pub mod memory_group_growth_v1 {
 pub const EXTENSIONS: &[(&str, &str)] = &[
     (stack_v1::MODULE, stack_v1::IMPORT),
     (klog_v1::MODULE, klog_v1::IMPORT),
-    (loader_v1::MODULE, loader_v1::IMPORT),
+    (loader_v2::MODULE, loader_v2::IMPORT),
 ];
 
 /// The function import a known extension module supplies.

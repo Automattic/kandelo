@@ -794,11 +794,13 @@ export interface DylinkForkReconcileOptions {
 export interface GuestModuleBindings {
   readonly functions: ReadonlyMap<string, Function>;
   readonly globals: ReadonlyMap<string, number>;
+  readonly providers: ReadonlySet<string>;
 }
 
 export interface LoadSharedLibraryOptions {
   programExtensionImports?: WebAssembly.Imports;
   takeGuestCompiledModule?: (moduleName: string) => WebAssembly.Module | undefined;
+  guestModuleDependencies?: (moduleName: string, count: number) => string[] | undefined;
   guestModuleBindings?: (
     moduleName: string,
     imports: readonly WebAssembly.ModuleImportDescriptor[],
@@ -1462,7 +1464,7 @@ function* instantiateSharedLibrarySteps(
   const gotImports = new Map<string, "mem" | "func">();
   const localGot = new Map<string, WebAssembly.Global>();
   const providerDependencies = new Set(
-    replay?.providerDependencies ?? [],
+    replay?.providerDependencies ?? guestBindings?.providers ?? [],
   );
   const recordProvider = (owner: string | undefined): void => {
     if (owner !== undefined && owner !== name) {
@@ -2572,6 +2574,9 @@ function* loadSharedLibrarySyncSteps(
   if (!metadata) {
     throw new Error(`${name}: not a shared library (no dylink.0 section)`);
   }
+
+  const selected = options.guestModuleDependencies?.(name, metadata.neededDynlibs.length);
+  if (selected) metadata.neededDynlibs = selected;
 
   // Parent archive entries are emitted in dependency-first load order. A
   // child must replay each dependency with its own exact layout/activation

@@ -29,6 +29,7 @@ it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
       programPath: program,
       argv: ["process-dynsym"],
       timeout: 30_000,
+      useDefaultRootfs: false,
       io: new NodePlatformIO(),
     });
     expect(result.exitCode, JSON.stringify(result)).toBe(0);
@@ -37,29 +38,59 @@ it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
   },
 );
 
-it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1")(
-  "maps a guest-bound plugin and forks with and within it",
+it.skipIf(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1").each([
+  { side: "process-dynsym-side.so", needed: false },
+  { side: "dynsym-needed-consumer.so", needed: true },
+])(
+  "maps $side and forks with and within it",
   { timeout: 120_000 },
-  async () => {
+  async ({ side, needed }) => {
     const programPath = join(root, ".scratch/process-dynsym-mapped.wasm");
     const module = new WebAssembly.Module(readFileSync(programPath));
     const imports = WebAssembly.Module.imports(module);
     expect(imports.filter(({ name }) => /^__wasm_dl/.test(name))).toEqual([]);
     expect(imports).toContainEqual({
-      module: "kandelo.loader.prototype.v1",
-      name: "__kandelo_map_module_v1",
+      module: "kandelo.loader.prototype.v2",
+      name: "__kandelo_map_module_v2",
       kind: "function",
     });
 
+    const path = "/lib/dynsym-fixture.so";
+    const execPrograms = new Map([[path, join(root, ".scratch", side)]]);
+    if (needed) execPrograms.set("/lib/dynsym-dependency.so", join(root, ".scratch/dynsym-dependency.so"));
     const result = await runCentralizedProgram({
       programPath,
-      argv: ["process-dynsym", "/lib/dynsym-fixture.so"],
-      execPrograms: new Map([["/lib/dynsym-fixture.so", join(root, ".scratch/process-dynsym-side.so")]]),
+      argv: ["process-dynsym", path, ...(needed ? ["dependency"] : [])],
+      execPrograms,
       useDefaultRootfs: false,
       timeout: 30_000,
     });
     expect(result.exitCode, JSON.stringify(result)).toBe(0);
     expect(result.stdout).toBe("before fork\nbefore plugin fork\nguest dynsym fork ok\n");
+    expect(result.stderr).toBe("");
+    expect(result.hostDiagnostics).toEqual([]);
+  },
+);
+
+it.skipIf(!process.env.KANDELO_ABI56_LOADER_FIXTURE)(
+  "loads a previously built ABI-56 plugin and calls it in the fork child",
+  { timeout: 120_000 },
+  async () => {
+    const fixture = process.env.KANDELO_ABI56_LOADER_FIXTURE!;
+    const programPath = join(fixture, "plugin-host.wasm");
+    const pluginPath = "/lib/scaled-dynsym.so";
+    const imports = WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(programPath)));
+    expect(imports).toContainEqual({ module: "env", kind: "function", name: "__wasm_dlopen" });
+    const result = await runCentralizedProgram({
+      programPath,
+      argv: ["scaled-dynsym", pluginPath],
+      execPrograms: new Map([[pluginPath, join(fixture, "plugin.so")]]),
+      useDefaultRootfs: false,
+      forkCopy: "sparse",
+      timeout: 30_000,
+    });
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toMatch(/^\d+ \d+ \d+ \d+\n$/);
     expect(result.stderr).toBe("");
     expect(result.hostDiagnostics).toEqual([]);
   },

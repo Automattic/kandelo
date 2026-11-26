@@ -66,8 +66,8 @@
     },
     {
       "kind": "function",
-      "module": "kandelo.loader.prototype.v1",
-      "name": "__kandelo_map_module_v1",
+      "module": "kandelo.loader.prototype.v2",
+      "name": "__kandelo_map_module_v2",
       "params": [
         "pointer",
         "i32",

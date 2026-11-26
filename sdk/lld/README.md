@@ -36,13 +36,17 @@ scripts/dev-shell.sh bash -c '
 '
 ```
 
-The fixture links the experimental libc entry points explicitly.
-The map extension currently accepts one instrumented wasm32 side module
-with no NEEDED objects or TLS exports. Its application imports can bind
-to executable functions and data, including GOT function and data
-addresses. The guest owns the references and
-lookup scopes. The adapter uses the existing archive for engine mapping
-and activation reconstruction. Final close withdraws the guest handle.
-The prototype retains the instance until process exit. This path has no
-in-guest wasm-ld build and has yet to establish package compatibility,
-general constructor/finalizer semantics, and pthread loader behavior.
+The fixtures link the experimental libc entry points explicitly. The v2
+mapping extension accepts instrumented wasm32 side modules and loads
+acyclic `dylink.0` dependencies in the guest. The dependency fixture
+forks inside the consumer and exercises a provider's direct import,
+GOT function pointer, and GOT data address in the restored frame. The
+adapter uses the existing fork archive for engine mapping and activation
+reconstruction. Final close withdraws the guest handle. This checkpoint
+retains mappings until process exit. It does not exercise side TLS or
+concurrent loader calls.
+
+To run the compatibility arm too, set `KANDELO_ABI56_LOADER_FIXTURE`
+to the directory containing the retained `plugin-host.wasm` and
+`plugin.so` from the legacy synthetic comparison. Pass that variable
+inside the dev shell like the other fixture variable above.

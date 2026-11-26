@@ -23,7 +23,7 @@ function range(offset: number, length: number, limit: number): void {
 export function processMemoryByteLength(memory: ProcessMemorySource): number {
   return memory instanceof GroupProcessAddressSpace ? memory.byteLength : nativeBuffer(memory).byteLength;
 }
-export function readProcessBytes(memory: ProcessMemorySource, address: number, length: number): Uint8Array {
+export function readProcessBytes(memory: ProcessMemorySource, address: number, length: number): Uint8Array<ArrayBuffer> {
   if (memory instanceof GroupProcessAddressSpace) return memory.readBytes(address, length);
   const buffer = nativeBuffer(memory); range(address, length, buffer.byteLength);
   return new Uint8Array(buffer, address, length).slice();

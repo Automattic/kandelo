@@ -305,3 +305,31 @@ link timings need matching relocatable link inputs. The conformance,
 browser-memory, full Node and browser benchmark suites, and canonical
 image integration remain pending. Named-module parity and runtime
 validation of the ABI-56 compatibility path gate the SDK cutover.
+
+
+## Dependency-chain checkpoint
+
+The cutover worktree starts at `origin/develop@d4b37e705`. The experimental
+v2 mapping extension carries the guest-selected dependency and provider
+coordinates in the mapping record. The guest resolves `dylink.0` names
+and searches a local handle's dependency closure. The worker attaches
+providers first, then supplies the recorded direct function references
+and GOT addresses to the consumer instance.
+
+A fixture links plugin A against plugin B using `dylink.0`. A forks
+during a plugin call. The child resumes in A, calls B both directly and
+through its saved function pointer, reads B's data by its saved address,
+and returns to the executable. The Node smoke run and Chromium suite
+passed with the freshly built kernel. Both also ran the retained ABI-56
+executable and plugin from the synthetic comparison with their original
+bytes. The legacy executable SHA-256 is
+`0a18d0fc919a584a41b5f2271f20098b48f7cade41855db78ff4fb78a3538a3b`.
+The legacy plugin SHA-256 is
+`1481dc5282264ec8a57c2d729bd1894a4b76f7afe41229e3e06fd704f4c4dfe4`.
+The focused Chromium run used the standard minimal test page and skipped
+the separate suite-wide reproduction of historical ABI fixtures.
+
+The core sysroots, kernel, image writer, host type check, ABI snapshot,
+and generated extension contract check passed. The executable-only
+fixture has fork capability `0x04` and the plugin host has `0x06`.
+This checkpoint leaves lifecycle, concurrency, and the SDK cutover open.

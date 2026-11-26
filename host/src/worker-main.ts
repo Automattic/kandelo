@@ -1807,9 +1807,20 @@ export function buildDlopenImports(
     return null;
   };
 
-  // For this prototype each binding selects an executable definition. The
-  // vector is libc-owned even when a fresh worker rebuilds engine objects.
-  const guestMappingName = "\0kandelo.loader.prototype.v1/1";
+  // The private archive key carries the address of a stable guest mapping
+  // record. Fork copies the record and each consumer's exact provider vector.
+  const guestMappingPrefix = `\0${LOADER_MODULE}/`;
+  const guestMappingName = (address: number) => `${guestMappingPrefix}${address}`;
+  const guestRecord = (name: string): ProcessDataView | undefined => {
+    if (!name.startsWith(guestMappingPrefix)) return undefined;
+    const address = Number(name.slice(guestMappingPrefix.length));
+    if (!Number.isInteger(address) || address <= 0 || address > 0xffff_ffff ||
+        guestMappingName(address) !== name) {
+      throw new Error("invalid guest mapping key");
+    }
+    const range = checkedWasmMemoryRange(memory, address, 16, ptrWidth, "guest mapping record");
+    return processDataView(memory, range.offset, range.length);
+  };
   const guestBindingImports = (imports: readonly WebAssembly.ModuleImportDescriptor[]) => {
     const bindings: { name: string; kind: number }[] = [];
     for (const { module, name, kind } of imports) {
@@ -1824,8 +1835,8 @@ export function buildDlopenImports(
     }
     return bindings;
   };
-  let inspected: { bytes: Uint8Array; module: WebAssembly.Module } | undefined;
-  let preparedGuestModule: WebAssembly.Module | undefined;
+  let inspected: { source: number; bytes: Uint8Array; module: WebAssembly.Module } | undefined;
+  let preparedGuestModule: { name: string; module: WebAssembly.Module } | undefined;
 
   function mapGuestModule(packetPtr: number, packetLength: number, action: number): number {
     if (!acquireMainDlopenLock()) return -22;
@@ -1837,20 +1848,20 @@ export function buildDlopenImports(
       );
       if (packet.length !== 16) return -22;
       const readWord = (offset: number): number =>
-        new DataView(memory.buffer).getUint32(packet.offset + offset, true);
+        processDataView(memory, packet.offset, packet.length).getUint32(offset, true);
       if (action === LOADER_INSPECT) {
         inspected = undefined;
-        if (loadedLibraries.has(guestMappingName) || readWord(4) > 64 * 1024 * 1024) return -22;
+        if (readWord(4) > 64 * 1024 * 1024) return -22;
         const source = checkedWasmMemoryRange(
           memory, readWord(0), readWord(4), ptrWidth, "guest module bytes",
         );
         const output = checkedWasmMemoryRange(
           memory, readWord(8), readWord(12), ptrWidth, "guest module metadata",
         );
-        const bytes = new Uint8Array(memory.buffer, source.offset, source.length).slice();
+        const bytes = readProcessBytes(memory, source.offset, source.length);
         const metadata = parseDylinkSection(bytes);
-        if (!metadata || metadata.neededDynlibs.length || metadata.tlsExports.size)
-          return -22;
+        if (!metadata || metadata.tlsExports.size ||
+            metadata.neededDynlibs.length > LOADER_MAX_IMPORTS) return -22;
         const compiled = new WebAssembly.Module(bytes);
         const imports = WebAssembly.Module.imports(compiled);
         const rows = guestBindingImports(imports).map(({ name, kind }) =>
@@ -1858,37 +1869,55 @@ export function buildDlopenImports(
         if (rows.length > LOADER_MAX_IMPORTS) return -22;
         const [symtab, duplicate] = WebAssembly.Module.customSections(compiled, "kandelo.dynsym.v1");
         if (!symtab || duplicate) return -22;
-        const size = 8 + rows.reduce((size, { name }) => size + 8 + name.length + 1, 0)
-          + symtab.byteLength;
+        const dependencies = metadata.neededDynlibs.map(name => encoder.encode(name));
+        const size = 12 + rows.reduce((size, { name }) => size + 8 + name.length + 1, 0)
+          + dependencies.reduce((size, name) => size + 4 + name.length + 1, 0) + symtab.byteLength;
         if (size > output.length) return -105;
-        const dest = new Uint8Array(memory.buffer, output.offset, size);
+        const dest = new Uint8Array(size);
         const view = new DataView(dest.buffer, dest.byteOffset, dest.byteLength);
         view.setUint32(0, rows.length, true);
         view.setUint32(4, symtab.byteLength, true);
-        let offset = 8;
-        for (const { name, kind } of rows) {
+        view.setUint32(8, dependencies.length, true);
+        let offset = 12;
+        const writeName = (name: Uint8Array): void => {
           view.setUint32(offset, name.length + 1, true);
-          view.setUint32(offset + 4, kind, true);
-          dest.set(name, offset + 8);
-          offset += 8 + name.length + 1;
+          dest.set(name, offset + 4);
+          offset += 4 + name.length + 1;
           dest[offset - 1] = 0;
+        };
+        for (const dependency of dependencies) writeName(dependency);
+        for (const { name, kind } of rows) {
+          view.setUint32(offset, kind, true);
+          offset += 4;
+          writeName(name);
         }
         dest.set(new Uint8Array(symtab), offset);
-        inspected = { bytes, module: compiled };
+        writeProcessBytes(memory, output.offset, dest);
+        inspected = { source: source.offset, bytes, module: compiled };
         return size;
       }
       const linker = getLinker();
       if (action === LOADER_MAP) {
-        if (!inspected || preparedGuestModule || loadedLibraries.has(guestMappingName)) return -22;
+        const name = guestMappingName(readWord(8));
+        if (!guestRecord(name) || preparedGuestModule || loadedLibraries.has(name) ||
+            readWord(4) > 64 * 1024 * 1024) return -22;
+        const source = checkedWasmMemoryRange(
+          memory, readWord(0), readWord(4), ptrWidth, "guest module bytes",
+        );
         const prepared = inspected;
         inspected = undefined;
+        const reuse = prepared?.source === source.offset && prepared.bytes.length === source.length;
+        // A dependency's INSPECT replaces the one-entry cache. The caller
+        // retains the original bytes through MAP, including across a fork.
+        const bytes = reuse ? prepared.bytes :
+          readProcessBytes(memory, source.offset, source.length);
         claimLoaderOwnership();
-        transaction = linker.beginDlopenSync(guestMappingName, prepared.bytes, false);
+        transaction = linker.beginDlopenSync(name, bytes, false);
         if (transaction <= 0) {
           releaseLoaderOwnershipIfIdle();
           return -22;
         }
-        preparedGuestModule = prepared.module;
+        if (reuse) preparedGuestModule = { name, module: prepared.module };
         ownedDlopenTransactions.add(transaction);
         return transaction;
       }
@@ -1901,17 +1930,21 @@ export function buildDlopenImports(
         return entry;
       }
       const mapped = entry === 0 ? linker.finishGuestMapping(transaction) : undefined;
-      if (!mapped) linker.abortDlopenTransaction(transaction);
+      if (!mapped) {
+        preparedGuestModule = undefined;
+        linker.abortDlopenTransaction(transaction);
+      }
       ownedDlopenTransactions.delete(transaction);
       releaseLoaderOwnershipIfIdle();
       notifyCommit(forkArchive.sync(linker.forkState()));
       if (!mapped) return -22;
-      const result = new DataView(memory.buffer);
-      result.setUint32(packet.offset + 4, mapped.tableBase, true);
-      result.setUint32(packet.offset + 8, mapped.memoryBase, true);
+      const result = processDataView(memory, packet.offset, packet.length);
+      result.setUint32(4, mapped.tableBase, true);
+      result.setUint32(8, mapped.memoryBase, true);
       return 0;
     } catch (error) {
       if (transaction && ownedDlopenTransactions.delete(transaction)) {
+        preparedGuestModule = undefined;
         getLinker().abortDlopenTransaction(transaction, error);
         releaseLoaderOwnershipIfIdle();
         notifyCommit(forkArchive.sync(getLinker().forkState()));
@@ -1988,58 +2021,83 @@ export function buildDlopenImports(
       got: new Map(),
       loadedLibraries,
       takeGuestCompiledModule: (moduleName) => {
-        if (moduleName !== guestMappingName) return undefined;
-        // The transaction only retains bytes from this exact inspected module.
-        const compiled = preparedGuestModule;
+        if (preparedGuestModule?.name !== moduleName) return undefined;
+        const compiled = preparedGuestModule.module;
         preparedGuestModule = undefined;
         return compiled;
       },
-      guestModuleBindings: (moduleName, imports, replaying) => {
-        if (moduleName !== guestMappingName) return undefined;
-        const coordinates = inst?.exports.__kandelo_loader_bindings;
-        if (!(coordinates instanceof WebAssembly.Global) || typeof coordinates.value !== "number")
-          throw new Error("guest mapping has no executable binding vector");
-        const names = guestBindingImports(imports);
-        if (names.length > LOADER_MAX_IMPORTS)
-          throw new Error("guest mapping import count exceeds its binding vector");
+      guestModuleDependencies: (moduleName, expectedCount) => {
+        const record = guestRecord(moduleName);
+        if (!record) return undefined;
+        const count = record.getUint32(12, true);
+        if (count !== expectedCount || count > LOADER_MAX_IMPORTS)
+          throw new Error("guest mapping dependency count differs from dylink metadata");
         const range = checkedWasmMemoryRange(
-          memory, coordinates.value, names.length * 8, ptrWidth, "guest binding vector",
+          memory, record.getUint32(8, true), count * 4, ptrWidth, "guest dependency vector",
         );
-        const view = new DataView(memory.buffer, range.offset, range.length);
+        const vector = processDataView(memory, range.offset, range.length);
+        return Array.from({ length: count }, (_, i) => {
+          const name = guestMappingName(vector.getUint32(i * 4, true));
+          if (!loadedLibraries.has(name))
+            throw new Error("guest mapping requires an existing dependency");
+          return name;
+        });
+      },
+      guestModuleBindings: (moduleName, imports, replaying) => {
+        const record = guestRecord(moduleName);
+        if (!record) return undefined;
+        const names = guestBindingImports(imports);
+        if (names.length > LOADER_MAX_IMPORTS || names.length !== record.getUint32(4, true))
+          throw new Error("guest mapping import count differs from its binding vector");
+        const range = checkedWasmMemoryRange(
+          memory, record.getUint32(0, true), names.length * 12, ptrWidth, "guest binding vector",
+        );
+        const view = processDataView(memory, range.offset, range.length);
         const functions = new Map<string, Function>();
         const globals = new Map<string, number>();
+        const providers = new Set<string>();
         names.forEach(({ name, kind }, index) => {
-          const slot = view.getUint32(index * 8, true);
+          const address = view.getUint32(index * 12, true);
+          const provider = view.getUint32(index * 12 + 8, true);
+          let exports = inst?.exports;
+          if (provider) {
+            const providerName = guestMappingName(provider);
+            const library = loadedLibraries.get(providerName);
+            if (!library) throw new Error(`guest mapping import ${name} has no mapped provider`);
+            providers.add(providerName);
+            exports = library.instance.exports;
+          }
           if (kind !== LOADER_BIND_DIRECT) {
             const key = `${kind === LOADER_BIND_DATA ? "mem" : "func"}:${name}`;
             const prior = globals.get(key);
-            if (prior !== undefined && prior !== slot)
+            if (prior !== undefined && prior !== address)
               throw new Error(`guest mapping import ${name} has inconsistent GOT values`);
-            globals.set(key, slot);
+            globals.set(key, address);
             return;
           }
-          const nameAddress = view.getUint32(index * 8 + 4, true);
-          if (!slot || !nameAddress || nameAddress >= memory.buffer.byteLength)
+          const nameAddress = view.getUint32(index * 12 + 4, true);
+          const memoryLength = processMemoryByteLength(memory);
+          if (!address || !nameAddress || nameAddress >= memoryLength)
             throw new Error(`guest mapping import ${name} has an invalid binding`);
-          const nameBuffer = new Uint8Array(
-            memory.buffer, nameAddress, Math.min(4096, memory.buffer.byteLength - nameAddress),
+          const nameBuffer = readProcessBytes(
+            memory, nameAddress, Math.min(4096, memoryLength - nameAddress),
           );
           const end = nameBuffer.indexOf(0);
           if (end <= 0)
             throw new Error(`guest mapping import ${name} has no provider export name`);
           const exportName = decoder.decode(nameBuffer.slice(0, end));
-          const target = inst?.exports[exportName];
-          // The child attaches providers before it applies the copied table.
-          // Bind its fresh export directly, then restore the canonical slot.
+          const target = exports?.[exportName];
+          // Fork reconstructs dependencies first and applies the table overlay
+          // later. Use the already-attached provider's fresh engine reference.
           if (typeof target !== "function" || (!replaying &&
-              (slot >= table.length || table.get(slot) !== target)))
+              (address >= table.length || table.get(address) !== target)))
             throw new Error(`guest mapping import ${name} has no callable provider`);
           const prior = functions.get(name);
           if (prior && prior !== target)
             throw new Error(`guest mapping import ${name} has inconsistent bindings`);
           functions.set(name, target);
         });
-        return { functions, globals };
+        return { functions, globals, providers };
       },
       programExtensionImports: extensionImports,
       withModuleInstantiation: <T>(operation: () => T): T => {

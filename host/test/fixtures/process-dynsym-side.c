@@ -7,6 +7,14 @@ unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
 
 extern int process_value(void);
 
+#ifdef PROCESS_DYNSYM_NEEDED
+extern int dependency_value(void);
+extern int dependency_data;
+
+static int (*volatile dependency_slot)(void);
+static int *volatile dependency_address;
+#endif
+
 __attribute__((visibility("hidden"), export_name("plugin_value")))
 int plugin_value(int additional)
 {
@@ -23,7 +31,18 @@ __attribute__((visibility("default")))
 pid_t plugin_fork(void)
 {
     volatile int preserved = process_value();
+#ifdef PROCESS_DYNSYM_NEEDED
+    dependency_slot = dependency_value;
+    dependency_address = &dependency_data;
+#endif
     pid_t child = fork();
+#ifdef PROCESS_DYNSYM_NEEDED
+    /* Re-enter the provider from inside the consumer's restored frame.
+     * Exercise the direct import and both kinds of GOT binding. */
+    if (child == 0 && (dependency_value() != 19 || dependency_slot() != 19 ||
+                       *dependency_address != 19))
+        _exit(23);
+#endif
     return preserved == 42 ? child : -1;
 }
 

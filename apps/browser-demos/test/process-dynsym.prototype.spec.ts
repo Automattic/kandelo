@@ -24,13 +24,51 @@ test("guest executable symbol lookup preserves addresses through fork", async ({
   });
 });
 
-test("guest-bound plugin forks from an active side frame", async ({ page }) => {
-  test.skip(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1", "requires the prototype linker");
+for (const needed of [false, true]) {
+  test(`guest-bound plugin forks from an active side frame (dependency: ${needed})`, async ({ page }) => {
+    test.skip(process.env.KANDELO_PROCESS_DYNSYM_PROTOTYPE !== "1", "requires the prototype linker");
+    await page.goto("/pages/test-runner/?minimal=1");
+    await page.waitForFunction(() => (window as Window & { __testRunnerReady?: boolean }).__testRunnerReady);
+    const executable = new URL("process-dynsym-mapped.wasm", fixture);
+    const plugin = new URL(needed ? "dynsym-needed-consumer.so" : "process-dynsym-side.so", fixture);
+    const path = "/lib/dynsym-fixture.so";
+    const dataFiles = [{ path, data: Array.from(readFileSync(fileURLToPath(plugin))) }];
+    if (needed) dataFiles.push({
+      path: "/lib/dynsym-dependency.so",
+      data: Array.from(readFileSync(fileURLToPath(new URL("dynsym-dependency.so", fixture)))),
+    });
+    const argv = ["process-dynsym", path, ...(needed ? ["dependency"] : [])];
+    const result = await page.evaluate(async ({ main, argv, dataFiles }) => {
+      const runner = window as Window & {
+        __runTest: (wasm: ArrayBuffer, argv: string[], timeout: number, options: {
+          seedEtc: boolean;
+          dataFiles: { path: string; data: number[] }[];
+        }) => Promise<{ exitCode: number; stdout: string; stderr: string; hostDiagnostics: unknown[] }>;
+      };
+      return runner.__runTest(new Uint8Array(main).buffer, argv, 30_000, {
+        seedEtc: false,
+        dataFiles,
+      });
+    }, {
+      main: Array.from(readFileSync(fileURLToPath(executable))),
+      argv,
+      dataFiles,
+    });
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "before fork\nbefore plugin fork\nguest dynsym fork ok\n",
+      stderr: "",
+      hostDiagnostics: [],
+    });
+  });
+}
+
+test("a previously built ABI-56 plugin is callable in the fork child", async ({ page }) => {
+  const directory = process.env.KANDELO_ABI56_LOADER_FIXTURE;
+  test.skip(!directory, "requires the retained ABI-56 loader fixture");
   await page.goto("/pages/test-runner/?minimal=1");
   await page.waitForFunction(() => (window as Window & { __testRunnerReady?: boolean }).__testRunnerReady);
-  const executable = new URL("process-dynsym-mapped.wasm", fixture);
-  const plugin = new URL("process-dynsym-side.so", fixture);
-  const path = "/lib/dynsym-fixture.so";
+  const path = "/lib/scaled-dynsym.so";
   const result = await page.evaluate(async ({ main, side, path }) => {
     const runner = window as Window & {
       __runTest: (wasm: ArrayBuffer, argv: string[], timeout: number, options: {
@@ -38,19 +76,15 @@ test("guest-bound plugin forks from an active side frame", async ({ page }) => {
         dataFiles: { path: string; data: number[] }[];
       }) => Promise<{ exitCode: number; stdout: string; stderr: string; hostDiagnostics: unknown[] }>;
     };
-    return runner.__runTest(new Uint8Array(main).buffer, ["process-dynsym", path], 30_000, {
+    return runner.__runTest(new Uint8Array(main).buffer, ["scaled-dynsym", path], 30_000, {
       seedEtc: false,
       dataFiles: [{ path, data: side }],
     });
   }, {
-    main: Array.from(readFileSync(fileURLToPath(executable))),
-    side: Array.from(readFileSync(fileURLToPath(plugin))),
+    main: Array.from(readFileSync(directory + "/plugin-host.wasm")),
+    side: Array.from(readFileSync(directory + "/plugin.so")),
     path,
   });
-  expect(result).toMatchObject({
-    exitCode: 0,
-    stdout: "before fork\nbefore plugin fork\nguest dynsym fork ok\n",
-    stderr: "",
-    hostDiagnostics: [],
-  });
+  expect(result).toMatchObject({ exitCode: 0, stderr: "", hostDiagnostics: [] });
+  expect(result.stdout).toMatch(/^\d+ \d+ \d+ \d+\n$/);
 });

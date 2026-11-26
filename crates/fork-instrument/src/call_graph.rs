@@ -1,9 +1,9 @@
 //! Original function identities used by analysis reports and loader discovery.
 
 pub(crate) fn is_dynamic_linker_function_import(module: &str, name: &str) -> bool {
-    use wasm_posix_program_abi::program_extensions::loader_v1;
+    use wasm_posix_program_abi::program_extensions::loader_v2;
     is_legacy_dynamic_linker_import(module, name)
-        || (module == loader_v1::MODULE && name == loader_v1::IMPORT)
+        || (module == loader_v2::MODULE && name == loader_v2::IMPORT)
 }
 
 fn is_legacy_dynamic_linker_import(module: &str, name: &str) -> bool {
