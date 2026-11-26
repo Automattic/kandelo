@@ -141,6 +141,35 @@ arm. Median guest engine-open times were 426.41 ms and 428.37 ms.
 Timing ranges overlapped. The minimal `--version` runs emitted the
 same XDG runtime-directory and absent-config warnings in both arms.
 
+### Size and indirect calls
+
+A synthetic named-plugin host isolates data size from executable code.
+Each arm used the same compiler settings and input objects for that
+variant. The ordinary link had no fork import. The `-ldl` arm enabled
+fork and was prepared to allow a fork child to return through any side
+module entry. The generated indirect calls all used a callback obtained
+from the plugin. Counts come from the ordinary final Wasm.
+
+| Variant | Ordinary final Wasm bytes | Indirect calls | Extra Wasm bytes | Extra zstd bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Base | 57,392 | 20 | 41,644 | 14,305 |
+| Base plus 24 MiB of referenced data | 25,223,267 | 20 | 41,650 | 13,570 |
+| 512 more indirect calls | 75,167 | 532 | 122,725 | 22,404 |
+| 2,048 more indirect calls | 129,923 | 2,068 | 365,804 | 43,376 |
+| 2,048 more indirect calls plus 24 MiB of data | 25,295,796 | 2,068 | 365,806 | 52,285 |
+
+The fixed loader fixture changed by six extra uncompressed bytes when
+its data grew by 24 MiB. Growth was much larger when the instrumenter
+had more indirect calls and caller frames to prepare. This is a size
+probe on generated code, with each final module validated as Wasm.
+
+A second run compared both side-module policies on the same ScummVM link.
+The instrumenter selected the unrestricted policy in both arms, as
+recorded in the output's loader contract. The resulting executables
+were byte-identical. ScummVM therefore provides no estimate of the
+incremental cost of enabling fork support in a large host that did
+not previously have it.
+
 ### Transitive link flags
 
 - Cached target pkg-config metadata emits `-ldl` through Cairo's
