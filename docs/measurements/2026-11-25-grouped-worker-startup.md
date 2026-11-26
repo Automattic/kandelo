@@ -143,6 +143,102 @@ competing build load. The isolated audit passed in 208 seconds with its
 original five-minute deadline. The longer partial-shell app and replacement
 results above refer to the initial consolidation.
 
+## Retirement follow-up
+
+The retirement follow-up through `cc943b9eaef7` removes the session's exec
+predecessor Worker list.
+At the native join effect, the kernel adapter selects the exact group, PID and
+generation from the existing Worker bindings. A detached binding has already
+passed containment. On natural pthread exit, the kernel's logical notification
+starts one retirement. The later Worker exit message adds no second session
+request and the exact Worker stop observer still gates reclamation.
+
+This removes one per-thread Promise map and the second pending-thread scan in
+image transport detachment. Rust already waits for started thread retirement
+before issuing that detachment. Later thread requests join the exact image
+retirement. The remaining host receipt lookup joins the actual in-flight effect
+Rust selects. The session's TID map still serves exit routing and host-import
+sender checks. The continuation still yields before trying its next immediate
+kernel entry. An intermediate change skipped that yield for settled launches,
+which could force a later timer retry from the detached phase. The final
+production TypeScript diff fell by 23 lines in this pass, to 18 fewer lines
+than the pinned develop revision. It adds no kernel entries or wire fields.
+
+The initial Node SDK/public selection passed 37 cases, including threaded exec,
+rollback, forced exit and native waits. The final runtime passed 33 focused
+Node cases covering threaded exec, root launch/cancellation, kernel boundaries
+and native waits. Both pinned Node arms passed 24 public root launches and
+reaps and the ordinary and grouped 256-pthread workloads. Both grouped arms
+held physical extent at 170 pages in the final 128 samples, with no wait drains
+or quarantined replicas. After retirement each had one allocated backing page,
+zero images and zero native observers.
+
+Chromium, Firefox and WebKit each passed threaded exec, native-wait exit and
+40 native-wait cohorts. Chromium and WebKit also passed 256-pthread churn.
+The first Firefox candidate churn run finished all 256 retirements and returned
+to one allocated page, but failed the fixed-extent assertion because the last
+128 samples contained 164 and 170 pages. In order, the four Firefox reruns
+passed at 164 (develop), 170 (candidate), 164 (candidate) and 164 (develop)
+pages for that window. All five Firefox runs finished without retained waits,
+quarantined replicas or live images. The source of the first late increase
+remains unresolved. After restoring the detached-effect yield, all 12 SDK
+browser cases passed, including pthread churn and native waits on all three
+engines with the same extent assertion.
+
+The final Chromium comparison used the same pinned kernel and partial shell
+as the earlier blocks. Each run returned to 11 live tasks and nine images,
+with zero quarantined replicas or wait drains. Allocated pages rose from 1,755
+to 1,760 in all four runs. Each arm contributed 12 terminal opens and closes
+and 60 pointer-focus samples. The calculation uses the median and the
+nearest-rank p95.
+
+| Chromium, milliseconds | Pinned develop | Final runtime |
+| --- | ---: | ---: |
+| Terminal open, median | 1,509.55 | 1,399.06 |
+| Terminal close, median | 309.36 | 297.08 |
+| Pointer-to-focus frame, p95 | 115.69 | 131.68 |
+
+Machine load varied while other builds and tests ran. The timing effect of
+the patch remains unresolved. The raw sample file separately retains the
+intermediate comparison that omitted the yield.
+
+The retirement follow-up's parity run exposed a source assertion that still
+expected separate inline exec callbacks on pinned develop. It now verifies
+that both callbacks receive the opaque request through the actual shared
+entry and that the ordinary and grouped adapters take the same request. All
+12 parity checks passed the rerun.
+
+The final host build and 1,432-case source ownership suite passed. The
+focused ordinary teardown regressions passed three cases on Node and seven
+on Bun. The browser app passed typecheck and its seven source memory-boundary
+cases. The native run passed 111 memory-group and nine exec-controller tests.
+The ABI snapshot matches program ABI 56 and host adapter 40 on the pinned
+develop base.
+
+The final runtime passed all ten normal partial-shell app checks across
+Chromium and Firefox. They cover Sway input and ordinary file persistence,
+shell-to-Sway activation, Cage with Foot, Freeciv quit and relaunch, and
+ScummVM gameplay and native quit. Firefox's test-runner temporary-directory
+cleanup reported `EACCES` after passing the guest assertions. Full-gallery
+browser-memory validation of this runtime is queued behind the existing
+canonical source build.
+
+Chromium passed the final runtime's twelve same-page Cage, Sway and Sway/SFWBar
+replacements. The first Firefox run completed eight replacements before the
+ninth Sway/SFWBar boot timed out waiting for its first Foot process. Its
+screenshots show SFWBar and wallpaper downloads in progress at the deadline
+and the lazy Foot download at 40% afterward. The retained evidence includes
+the process snapshot, syslog and screenshots. The failure precedes that
+cycle's retirement checks.
+
+Normal retirement is still issuing a `BEGIN_REFERENCES` call after Rust's
+`DETACH_REFERENCES` effect has moved the selected receipt into detaching.
+Launch rollback uses the same disposer and still needs its own authorization.
+A follow-up could share the exact disposal and acknowledgement while honoring
+both sources of authorization. It would need to keep one disposer when
+rollback and retirement meet on the same receipt, including refusal before
+entry and failure after platform disposal starts.
+
 ## Retained failures
 
 The first partial build refused a changed package registry snapshot. A retry
