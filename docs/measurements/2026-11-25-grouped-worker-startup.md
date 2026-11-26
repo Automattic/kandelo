@@ -137,9 +137,11 @@ block leaves the cause of the timing difference unresolved. The raw sample
 file records the block separately from the two earlier measurements.
 
 The follow-up passed 66 targeted Node cases, 36 browser SDK cases across
-the three engines, the host boundary audit, and app typecheck. The longer
-partial-shell app and replacement results above refer to the initial
-consolidation.
+the three engines, the host boundary audit, and app typecheck. The ownership
+suite passed 1,431 cases and timed out in the static scratch audit under
+competing build load. The isolated audit passed in 208 seconds with its
+original five-minute deadline. The longer partial-shell app and replacement
+results above refer to the initial consolidation.
 
 ## Retained failures
 
