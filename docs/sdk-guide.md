@@ -449,8 +449,12 @@ Some C type differences, such as two different pointer parameter types, have
 the same Wasm representation. A warning alone does not establish that the
 program will trap.
 
-In the supported-registry build at `d4b37e705b`, the compiler emitted this
-warning in at least 54 packages across 57 package/architecture builds.
+In the completed supported-registry run at `d4b37e705b`, the compiler emitted
+this warning in 55 of 338 package names, across 58 package/architecture
+builds. Of 359 scheduled nodes, 329 succeeded, 29 used cached source packages
+or composed products, and one failed. The failed package, `graphics-cts`,
+emitted warnings during compilation and reached its fork-instrumentation
+budget after linking.
 Repeated header and generated-code diagnostics can dominate the output.
 For example, wasm32 libffi emitted 6,289 warnings in its generated dispatch
 code, where a runtime signature selects the typed call.
