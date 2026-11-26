@@ -10,12 +10,15 @@ which re-reads the whole conversation. 370 waits used `until ! pgrep -f
 second runs started in the same checkout broke the first. This tool removes
 those choices:
 
-  agent-job start [--name N] [--allow-concurrent] -- <command...>
+  agent-job start [--name N] [--allow-concurrent] [--discard-on-success] -- <command...>
       Start <command> (run by bash in the current directory) detached, with
       its output in a log file. Prints the job id. Several words run as
       that exact argv; one quoted word runs as a shell string. Refuses to
       start a second locked run (vitest, run.sh test, ci-run-test-suite.sh,
       npm ci, setup, local-build) while one is running in the same worktree.
+      --discard-on-success declares the full log and scratch disposable after
+      success. A later start or tidy releases them once all writers exit;
+      status, log tail and health summary remain. Failed runs are retained.
   agent-job wait <id> [--timeout SECONDS]
   agent-job wait --peer <text> [--timeout SECONDS]
       Block until the job ends (keyed on its supervisor PID), then print the
@@ -61,7 +64,10 @@ those choices:
       Close this checkout/worktree to new runs, refuse active writers, then
       release its managed payloads. Run before removing a worktree in any IDE
       or plain Git workflow. Never stops a process or touches build caches.
-      Fail if remaining retained context exceeds its size/file-count budget.
+      Warn about oversized retained context; --strict makes warnings fail.
+  agent-job tidy [--dry-run]
+      Release inactive successful jobs explicitly marked disposable, without
+      closing the worktree. Never release failed, active or unmarked runs.
   agent-job reopen
       Allow new runs after a refused cleanup or workspace restore.
   agent-job gc [--dry-run]
@@ -365,7 +371,7 @@ def jobs_in(worktree):
     for name in names:
         d = os.path.join(JOBS, name)
         meta = read_json(os.path.join(d, "meta.json"))
-        if meta and (worktree is None or meta.get("worktree") == worktree):
+        if isinstance(meta, dict) and meta and (worktree is None or meta.get("worktree") == worktree):
             out.append((meta.get("started", 0), name, d))
     return [x[1:] for x in sorted(out)]
 
@@ -492,6 +498,10 @@ def cmd_start_locked(args):
     cmd = shell_command(args.command)
     cwd = os.getcwd()
     worktree = worktree_of(cwd)
+    artifacts.workspace(worktree)  # Refuse a closed worktree before housekeeping.
+    retired, _ = tidy_successful_jobs(worktree)
+    if retired:
+        print(f"agent-job: released {retired} disposable successful runs; summaries retained", file=sys.stderr)
     # Refuse a second locked run instead of letting it start. Two such runs
     # fail each other (program-index races alone did so 44 times in Aug-Sep
     # 2026), wasting both runs plus the diagnosis and a re-run.
@@ -520,7 +530,8 @@ def cmd_start_locked(args):
                 artifact_id=record["id"], workspace_id=record["workspace_id"], payload_dir=payload,
                 usual_duration=usual_duration(key), head=head,
                 dirty=None if dirty_paths is None else bool(dirty_paths),
-                dirty_paths=(dirty_paths or [])[:DIRTY_PATHS_KEPT])
+                dirty_paths=(dirty_paths or [])[:DIRTY_PATHS_KEPT],
+                discard_on_success=args.discard_on_success)
     write_json(os.path.join(d, "meta.json"), meta)
     # Detach the supervisor fully: new session, no inherited stdio, so the
     # Bash tool call that ran `start` returns immediately instead of
@@ -889,7 +900,52 @@ def cmd_cleanup(args):
     print(f"{'would release' if args.dry_run else 'released'} {count + len(legacy)} runs for {path}")
     # Legacy registered payloads can live in .context: release them through
     # their owners first, then check what Conductor would actually retain.
-    retained_context.check(os.path.join(path, '.context'), **budgets)
+    retained_context.check(os.path.join(path, '.context'), strict=args.strict, **budgets)
+
+
+def tidy_successful_jobs(worktree, dry_run=False):
+    """Caller holds lifecycle.lock; only explicit disposable declarations count."""
+    ws = artifacts.workspace(worktree, create=False, allow_closed=True)
+    if ws is None:
+        return 0, 0
+    count = deferred = 0
+    for job_id, directory in jobs_in(worktree):
+        meta = read_json(os.path.join(directory, 'meta.json')) or {}
+        result = read_json(os.path.join(directory, 'result.json')) or {}
+        if not isinstance(meta, dict) or not isinstance(result, dict):
+            continue
+        if (meta.get('discard_on_success') is not True or not meta.get('artifact_id')
+                or type(result.get('exit_code')) is not int or result['exit_code'] != 0
+                or not isinstance(result.get('log_tail'), list)):
+            continue
+        try:
+            record = artifacts.load(meta['artifact_id'])
+            # A reused workspace path or corrupt cross-job pointer must never
+            # turn a declaration about one run into deletion of another.
+            if (meta.get('workspace_id') != ws['id'] or record['workspace_id'] != ws['id']
+                    or record['worktree'] != worktree or record['kind'] != 'job'
+                    or record.get('job_id') != job_id
+                    or record['roots'] != [f'.scratch/agent-jobs/{job_id}']):
+                raise artifacts.CleanupError('disposable job ownership mismatch')
+            if record.get('released_at') or artifacts.busy(record):
+                continue
+            artifacts.release(record, dry_run)
+            count += 1
+        except (artifacts.CleanupError, OSError, ValueError, KeyError) as error:
+            deferred += 1
+            if deferred <= 10:
+                print(f'agent-job: tidy deferred {job_id}: {error}', file=sys.stderr)
+    if deferred > 10:
+        print(f'agent-job: tidy deferred {deferred} runs in total', file=sys.stderr)
+    return count, deferred
+
+
+def cmd_tidy(args):
+    with artifacts.locked():
+        count, deferred = tidy_successful_jobs(worktree_of(os.getcwd()), args.dry_run)
+    print(f"{'would release' if args.dry_run else 'released'} {count} disposable successful runs; summaries retained")
+    if deferred:
+        raise artifacts.CleanupError(f'tidy deferred {deferred} runs; resolve the reported ownership/read errors')
 
 
 def cmd_reopen(args):
@@ -926,6 +982,8 @@ def main():
     p = sub.add_parser("start", help="run a command detached; prints the job id")
     p.add_argument("--name")
     p.add_argument("--allow-concurrent", action="store_true")
+    p.add_argument("--discard-on-success", action="store_true",
+                   help="declare full log and scratch disposable after success; failed runs are retained")
     p.add_argument("command", nargs=argparse.REMAINDER)
     p = sub.add_parser("wait", help="block until a job ends (any worktree's job)")
     p.add_argument("id", nargs="?")
@@ -951,13 +1009,16 @@ def main():
     p = sub.add_parser("cleanup", help="close this worktree to new runs and release its inactive evidence")
     p.add_argument("--dry-run", action="store_true")
     retained_context.add_budget_arguments(p)
+    p.add_argument('--strict', action='store_true', help='fail on retained-context size warnings')
+    p = sub.add_parser('tidy', help='release completed disposable successful runs without closing the worktree')
+    p.add_argument('--dry-run', action='store_true')
     sub.add_parser("reopen", help="allow new runs after refused cleanup or workspace restore")
     p = sub.add_parser("gc", help="recover orphaned payloads without touching active writers or shared build caches")
     p.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.sub == "start" and args.command and args.command[0] == "--":
         args.command = args.command[1:]
-    {"start": cmd_start, "wait": cmd_wait, "status": cmd_status, "result": cmd_result, "list": cmd_list, "release": cmd_release, "cleanup": cmd_cleanup,
+    {"start": cmd_start, "wait": cmd_wait, "status": cmd_status, "result": cmd_result, "list": cmd_list, "release": cmd_release, "cleanup": cmd_cleanup, 'tidy': cmd_tidy,
      "reopen": cmd_reopen, "gc": cmd_gc}[args.sub](args)
 
 

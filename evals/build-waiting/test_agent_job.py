@@ -213,14 +213,15 @@ class RetainedContextTest(JobsDirCase):
         large = root / 'build-tree.tar.gz'
         with large.open('wb') as f:
             f.truncate(25 * 1024 * 1024 + 1)
-        result = self.check_context('--json')
-        self.assertEqual(result.returncode, 1, result.stderr)
+        result = self.check_context('--json', '--max-file-mib', '25')
+        self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
-        self.assertTrue(report['violations'])
+        self.assertTrue(report['warnings'])
         self.assertEqual(report['bytes'], large.stat().st_size)
         self.assertEqual(report['largest'][0]['path'], large.name)
         self.assertEqual(large.stat().st_size, 25 * 1024 * 1024 + 1)
-        self.assertEqual(self.check_context('--max-file-mib', '26').returncode, 0)
+        self.assertEqual(self.check_context('--strict', '--max-file-mib', '25').returncode, 1)
+        self.assertEqual(self.check_context('--strict', '--max-file-mib', '26').returncode, 0)
 
     def test_total_and_count_limits_catch_many_small_files_with_bounded_output(self):
         root = pathlib.Path(self.cwd, '.context')
@@ -228,11 +229,11 @@ class RetainedContextTest(JobsDirCase):
         for i in range(20):
             (root / f'log-{i}.txt').write_bytes(b'a' * 100)
         result = self.check_context('--json', '--max-files', '10', '--max-mib', '0.001')
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0)
         report = json.loads(result.stdout)
         self.assertEqual(report['files'], 20)
         self.assertEqual(report['bytes'], 2000)
-        self.assertEqual(len(report['violations']), 2)
+        self.assertEqual(len(report['warnings']), 2)
         self.assertEqual(len(report['largest']), 10)
         self.assertEqual(len(list(root.iterdir())), 20)
 
@@ -397,21 +398,99 @@ class PeerJobTest(JobsDirCase):
         report.write_text("{}")
         self.assertEqual(self.git(self.main, "status", "--porcelain", "--untracked-files=all"), "")
 
-    def test_cleanup_releases_owned_payload_but_preserves_oversized_retained_data(self):
+    def test_cleanup_warns_and_strict_cleanup_fails_without_deleting_oversized_data(self):
         _, payload = self.finish(self.main, 'owned-build-log')
         context = pathlib.Path(self.main, '.context')
         large = context / 'caller-build.tar.gz'
         with large.open('wb') as f:
             f.truncate(26 * 1024 * 1024)
-        refused = self.agent_job('cleanup', cwd=self.main, check=False)
+        warned = self.agent_job('cleanup', '--max-file-mib', '25', cwd=self.main)
+        self.assertIn('WARNING:', warned.stdout)
+        refused = self.agent_job('cleanup', '--strict', '--max-file-mib', '25', cwd=self.main, check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('retained context budget exceeded', refused.stderr)
+        self.assertIn('retained context warning threshold exceeded', refused.stderr)
         self.assertIn(large.name, refused.stdout)
         self.assertFalse(payload.exists())
         self.assertEqual(large.stat().st_size, 26 * 1024 * 1024)
         # A reviewed exception is explicit, rather than deleting evidence or
         # silently raising the default budget for every future workspace.
         self.agent_job('cleanup', '--max-file-mib', '26', cwd=self.main)
+
+    def test_tidy_releases_only_inactive_disposable_success_and_keeps_summaries(self):
+        disposable = self.agent_job('start', '--discard-on-success', '--',
+                                    'echo disposable-success; echo "[suite-health] kept"', cwd=self.main).stdout.splitlines()[0]
+        self.agent_job('wait', disposable, '--timeout', '30', cwd=self.main)
+        payload = pathlib.Path(self.meta(disposable)['payload_dir'])
+        self.assertTrue(payload.exists())
+        dry_run = self.agent_job('tidy', '--dry-run', cwd=self.main)
+        self.assertIn('would release 1', dry_run.stdout)
+        self.assertTrue(payload.exists())
+        # An ordinary subsequent start performs the automatic maintenance.
+        _, unmarked = self.finish(self.main, 'keep-full-unmarked-log')
+        self.assertFalse(payload.exists())
+        self.assertTrue(unmarked.exists())
+        result = self.agent_job('result', disposable, cwd=self.main)
+        self.assertIn('succeeded', result.stdout)
+        self.assertIn('disposable-success', result.stdout)
+        self.assertIn('[suite-health] kept', result.stdout)
+        self.assertIn('retained summary', result.stdout)
+        # Tidy must not close the workspace or remove the ordinary job.
+        self.agent_job('tidy', cwd=self.main)
+        self.finish(self.main, 'work-continues')
+        self.assertTrue(unmarked.exists())
+
+    def test_tidy_keeps_failed_active_peer_and_unfinished_disposable_jobs(self):
+        failed = self.agent_job('start', '--discard-on-success', '--', 'echo failure-evidence; exit 7',
+                                cwd=self.main).stdout.splitlines()[0]
+        self.agent_job('wait', failed, '--timeout', '30', check=False)
+        active = self.agent_job('start', '--discard-on-success', '--', 'sleep 60',
+                                cwd=self.main).stdout.splitlines()[0]
+        self.addCleanup(self.stop, active)
+        peer = self.agent_job('start', '--discard-on-success', '--', 'echo peer-evidence',
+                              cwd=self.peer).stdout.splitlines()[0]
+        self.agent_job('wait', peer, '--timeout', '30')
+        unfinished, _ = self.finish(self.main, 'unknown-completion')
+        meta = self.meta(unfinished)
+        meta['discard_on_success'] = True
+        pathlib.Path(self.jobs_dir, 'jobs', unfinished, 'meta.json').write_text(json.dumps(meta))
+        pathlib.Path(self.jobs_dir, 'jobs', unfinished, 'result.json').unlink()
+        self.agent_job('tidy', cwd=self.main)
+        for job in (failed, active, peer, unfinished):
+            self.assertTrue(pathlib.Path(self.meta(job)['payload_dir']).exists(), job)
+        self.assertIn('failure-evidence', (pathlib.Path(self.meta(failed)['payload_dir']) / 'output.log').read_text())
+        pathlib.Path(self.jobs_dir, 'jobs', unfinished, 'result.json').write_text('[]')
+        self.agent_job('tidy', cwd=self.main)
+        self.assertTrue(pathlib.Path(self.meta(unfinished)['payload_dir']).exists())
+
+    def test_tidy_does_not_trust_cross_job_pointers_or_inherited_writer_leases(self):
+        _, victim = self.finish(self.main, 'not-disposable')
+        disposable = self.agent_job('start', '--discard-on-success', '--', 'echo disposable',
+                                    cwd=self.main).stdout.splitlines()[0]
+        self.agent_job('wait', disposable, '--timeout', '30')
+        meta = self.meta(disposable)
+        payload = pathlib.Path(meta['payload_dir'])
+        meta_path = pathlib.Path(self.jobs_dir, 'jobs', disposable, 'meta.json')
+        module = load_agent_job()
+        artifact_path = pathlib.Path(self.jobs_dir, 'artifacts', meta['artifact_id'] + '.json')
+        record = json.loads(artifact_path.read_text())
+        # A completed result is insufficient while a descendant holds its
+        # inherited lease. Exercise the actual flock, not a fake busy answer.
+        with mock.patch.object(module.artifacts, 'ROOT', pathlib.Path(self.jobs_dir)):
+            lease = module.artifacts.open_lease(record)
+            try:
+                self.agent_job('tidy', cwd=self.main)
+                self.assertTrue(payload.exists())
+            finally:
+                os.close(lease)
+        other_record = next(p for p in pathlib.Path(self.jobs_dir, 'artifacts').glob('*.json')
+                            if json.loads(p.read_text()).get('roots') == [str(victim.relative_to(self.main))])
+        meta['artifact_id'] = other_record.stem
+        meta_path.write_text(json.dumps(meta))
+        result = self.agent_job('tidy', cwd=self.main, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ownership mismatch', result.stderr)
+        self.assertTrue(victim.exists())
+        self.assertTrue(payload.exists())
 
     def test_removing_worktree_removes_payload_without_external_bulk(self):
         jid, payload = self.finish(self.peer, "removed-owner")

@@ -116,12 +116,20 @@ registered validation evidence through the ownership-aware cleanup below.
 
 `python3 scripts/retained_context.py` checks the retained directory before a
 handoff; `scripts/agent-job cleanup` runs the same check after releasing its
-owned payloads. The defaults are 50 MiB total, 25 MiB per file and 5,000 files.
-The check never moves or deletes content. Its output is bounded to a summary
-and the ten largest entries, including with `--json`. An explicit directory
+owned payloads. The defaults are advisory warnings at 250 MiB total, 100 MiB
+per file and 20,000 files; `--strict` opts into failure on size. The check
+never moves or deletes content. Its output is bounded to a summary and the
+ten largest entries, including with `--json`. An explicit directory
 argument can audit an archived context or external handoff. See the
 [contributor workflow](../CONTRIBUTING.md#retain-and-clean-validation-evidence)
 for reviewed overrides and Conductor archive-hook setup.
+
+Jobs explicitly started with `--discard-on-success` can have their entire
+successful payload retired by the next job start or `agent-job tidy` once
+their writers exit. Summaries remain in the registry. This provides ongoing
+cleanup in `.scratch/` without guessing which source or evidence is useful;
+failed and unmarked runs remain until reviewed. Never mark required outputs
+or unique source experiments disposable.
 
 Keep private agent progress ledgers and handoffs in `.context/`, not in
 tracked tool-specific directories. Keep reusable design rationale in `docs/`

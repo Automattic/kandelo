@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only budget check for retained notes, including archived contexts."""
+"""Read-only size warnings for retained notes, including archived contexts."""
 import argparse
 import heapq
 import json
@@ -10,9 +10,9 @@ import stat
 import sys
 
 MIB = 1024 * 1024
-MAX_BYTES = 50 * MIB
-MAX_FILE_BYTES = 25 * MIB
-MAX_FILES = 5000
+MAX_BYTES = 250 * MIB
+MAX_FILE_BYTES = 100 * MIB
+MAX_FILES = 20000
 
 
 def inspect(path):
@@ -54,7 +54,7 @@ def inspect(path):
             'largest': [{'bytes': n, 'path': p} for n, p in sorted(largest, reverse=True)]}
 
 
-def violations(report, max_bytes=MAX_BYTES, max_file_bytes=MAX_FILE_BYTES, max_files=MAX_FILES):
+def warnings_for(report, max_bytes=MAX_BYTES, max_file_bytes=MAX_FILE_BYTES, max_files=MAX_FILES):
     issues = []
     if report['bytes'] > max_bytes:
         issues.append(f"total {report['bytes'] / MIB:.2f} MiB exceeds {max_bytes / MIB:g} MiB")
@@ -69,7 +69,8 @@ def describe(report, issues):
     lines = [f"retained context: {report['bytes'] / MIB:.2f} MiB, {report['files']} files, "
              f"{report['symlinks']} symlinks (targets not followed): {report['path']}"]
     if issues:
-        lines += [*issues, 'Largest retained entries:']
+        lines += ['WARNING: ' + issue for issue in issues]
+        lines += ['Largest retained entries:']
         lines += [f"  {r['bytes'] / MIB:8.2f} MiB  {r['path']!r}" for r in report['largest']]
         lines += ['Retain notes, source patches, receipts and selected logs. Put disposable build data in .scratch.',
                   'Preserve unique source/evidence before removal; use agent-job release for registered payloads.',
@@ -77,12 +78,12 @@ def describe(report, issues):
     return '\n'.join(lines)
 
 
-def check(path, **budgets):
+def check(path, strict=False, **budgets):
     report = inspect(path)
-    issues = violations(report, **budgets)
+    issues = warnings_for(report, **budgets)
     print(describe(report, issues))
-    if issues:
-        raise ValueError('retained context budget exceeded; review before archival')
+    if strict and issues:
+        raise ValueError('retained context warning threshold exceeded (--strict)')
 
 
 def add_budget_arguments(parser):
@@ -101,13 +102,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path', nargs='?', default='.context')
     parser.add_argument('--json', action='store_true', help='bounded summary, not a full file inventory')
+    parser.add_argument('--strict', action='store_true', help='fail on size warnings; default is advisory')
     add_budget_arguments(parser)
     args = parser.parse_args()
     limits = budgets(args)
     report = inspect(args.path)
-    report['violations'] = violations(report, **limits)
-    print(json.dumps(report, indent=2) if args.json else describe(report, report['violations']))
-    return bool(report['violations'])
+    report['warnings'] = warnings_for(report, **limits)
+    print(json.dumps(report, indent=2) if args.json else describe(report, report['warnings']))
+    return args.strict and bool(report['warnings'])
 
 
 if __name__ == '__main__':

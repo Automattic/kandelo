@@ -222,15 +222,34 @@ Conductor retains `.context/` on archive, so reserve it for notes,
 checkpoints, attachments, and selected evidence that should survive archival.
 
 Before a handoff, run `python3 scripts/retained_context.py`. It checks a
-50 MiB total budget, 25 MiB per file and 5,000 files, and reports the ten
-largest entries on failure. It is read-only and does not follow symlinks.
-For intentional larger evidence, review it explicitly; both the standalone
-check and `agent-job cleanup` accept `--max-mib`, `--max-file-mib` and
-`--max-files` overrides.
+250 MiB total warning threshold, 100 MiB per file and 20,000 files, and
+reports the ten largest entries when exceeded. Warnings do not block work
+or archival; `--strict` explicitly makes them fail. The check is read-only
+and does not follow symlinks. Both the standalone check and `agent-job cleanup`
+accept `--max-mib`, `--max-file-mib` and `--max-files` threshold overrides.
 Compressed build trees are still disposable build data. Do not duplicate
 them into an external handoff just to make `.context/` smaller.
 
-Evidence stays available until you release it or remove its worktree:
+For routine runs whose full success log and scratch are disposable, declare
+that when starting the job:
+
+```bash
+scripts/agent-job start --discard-on-success -- <command...>
+scripts/agent-job tidy --dry-run
+scripts/agent-job tidy
+```
+
+Each new job start automatically tidies earlier successful runs with that
+declaration in the same workspace. `tidy` can also run during a campaign;
+it does not close the worktree. Active runs, failed runs, unmarked runs and
+other workspaces are left alone. Exit status, command, bounded log tail and
+health summary stay in the registry. The existing lease, process and UUID
+checks must establish that every writer has exited before release.
+Do not use the flag for outputs needed by later jobs, required qualification
+evidence, or uncommitted source experiments. No arbitrary file truncation
+is performed. Browser-profile teardown keeps its existing lifecycle.
+
+Other evidence stays available until you release it or remove its worktree:
 
 ```bash
 scripts/agent-job release <job-id-or-playwright-run-uuid> --dry-run
@@ -245,8 +264,10 @@ the run and retry, or use `scripts/agent-job reopen` to resume work. Cleanup
 never stops a process. An optional editor or worktree-removal hook can call
 the same command, but must honor its failure before removing the worktree.
 After releasing managed payloads, `cleanup` also checks the retained-context
-budget and fails if remaining caller-owned data needs review. `--dry-run`
+size and warns if remaining caller-owned data needs review. `--dry-run`
 checks the current files, including legacy payloads it has not removed.
+Read/ownership errors and active writers remain failures, even without
+`--strict`; advisory sizing never weakens the deletion safety checks.
 In Conductor, set the repository's Archive script to
 `scripts/agent-job cleanup` (preserving any existing archive steps).
 Each teammate must configure the hook in their installed Conductor version;
