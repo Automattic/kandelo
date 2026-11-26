@@ -13,8 +13,9 @@ executable at `posix_spawn` with `ENOEXEC`. The same executable ran
 after the kernel was rebuilt with that extension. The SDK rejects
 links that mix the old imports and the new loader. Existing direct
 loaders can rebuild their executable and side modules together.
-The new loader refused a pre-cutover side module and identified it by
-path in `dlerror`.
+The new loader rejected a pre-cutover side module and a wrong-width
+side module before their constructors ran. The guest reported each
+path, expected architecture and loader version through `dlerror`.
 
 ## Runtime validation
 
@@ -36,8 +37,10 @@ path in `dlerror`.
   bytes and calls the plugin after fork on both hosts. The Node
   supported-program baseline also passed its nine checks, including
   artifacts from before the cutover and the rejection of ABI 55.
-- Four unchanged upstream Sortix loader tests passed on both hosts in
-  a minimal VFS. Five upstream libc-test cases and four Open POSIX
+- Four unchanged upstream Sortix loader cases passed in the standard
+  Node runner against canonical rootfs after the runner prepared its
+  side-module fixtures. The same four passed in Chromium with a
+  minimal VFS. Five upstream libc-test cases and four Open POSIX
   signal cases passed in Node. The libc-test `dlopen` case also passed
   in Chromium. It exercises promotion from local to global scope,
   data and function lookup, and `dlsym` of C's `main`. The last
@@ -55,6 +58,16 @@ path in `dlerror`.
   extended to see DOM insertions. The first partial-image attempt
   timed out waiting for the activity signal in Chromium. The
   release-image gesture still needs its original test run.
+- The ordinary C and C++ SDK suite passed eight checks, including
+  `-rdynamic` with no `-ldl` and an executable that loads a plugin
+  without retaining `kernel_fork`. A plain build called the plugin in
+  Chromium, Firefox and WebKit. When both the mapping import and
+  thread creation survive linking, wasm-ld retains the continuation
+  support for the existing table replication. A pthread calling the
+  parent's plugin pointer passed on Node and all three browsers.
+  The final loader matrix passed 16 wasm32 and eight memory64 cases
+  on Node, 24 wasm32 cases across the three browsers, and eight
+  memory64 cases in Chromium.
 - The SDK's 17 integration tests, Rust driver and artifact-policy
   tests, ABI snapshot comparison and host typecheck passed.
   The normal Clang package completed. Its in-guest Clang and wasm-ld
@@ -75,7 +88,7 @@ across builds.
 | Executable | Baseline raw | Cutover raw | Baseline instrumented | Cutover instrumented |
 | --- | ---: | ---: | ---: | ---: |
 | LÖVE | 67,490,683 | 67,513,373 | 9,254,482 | 4,002,914 |
-| `gtk3_smoke` | 108,663,902 | 108,692,162 | 26,311,535 | 26,322,259 |
+| `gtk3_smoke` | 108,663,902 | 108,692,200 | 26,311,535 | 26,322,285 |
 | Waybar | — | — | 34,101,427 | 34,104,654 |
 | CPython | — | — | 12,579,994 | 12,552,999 |
 | ScummVM executable, export-all | 95,533,011 | 96,945,544 | 27,343,513 | 28,737,715 |
@@ -90,8 +103,9 @@ Node run supports the image-size result more strongly than the exact
 timing change.
 
 Both GTK arms initialized GdkWaylandDisplay, drew a frame, and exited
-on Node and Chromium. A single run on each host provides a correctness
-check. Both images still use the side-loading fork role.
+on Node and Chromium. A repeat after relinking with the final SDK
+showed the same behavior. The cutover executable still imports thread
+creation, fork and the mapping extension.
 
 The Waybar package built with the normal SDK after provisioning its
 sysroot graphics archives. Both artifacts carry the side-loading
@@ -170,12 +184,17 @@ The full browser-memory gate requires provisioning the release browser
 products. Its dry run found 306 nodes to run and 18 cache hits, with
 a 7,837-second build estimate before the browser tests. Planning
 only the two products used by the specs, `browser-main-shell` and
-`browser-wordpress-family`, still found 258 nodes to run with a
-7,940-second estimate after provisioning the canonical rootfs and
-fbDOOM. Clang and Rust remain on the critical path. The release-image
-machine switch and DOOM audio gesture specs remain pending.
-The conformance runs used a minimal VFS. The standard Sortix runner
-stopped at its canonical rootfs preflight.
+`browser-wordpress-family`, found 308 nodes to run and no cache hits
+from the final SDK, with a 7,940-second estimate. Clang and Rust
+remain on the critical path. The release-image machine switch and
+DOOM audio gesture specs remain pending.
+The resolver rejected a pre-cutover release projection during Vite
+preflight because its package index format predates the current
+schema. The machine-switch test did not start with those images.
+The full Sortix, libc-test and Open POSIX suites were outside the
+targeted runs. The earlier packaged Clang test proves in-guest
+linking of a side module. The guest build-image Libtool, CMake and
+Meson suites still need a current build image.
 
 The [prototype report](2026-11-25-process-owned-dynamic-loading-prototype.md)
 retains the earlier SDL2 cohort, ScummVM, and synthetic timing runs.
