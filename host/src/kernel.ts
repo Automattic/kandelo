@@ -4059,7 +4059,9 @@ export class WasmPosixKernel {
             // guest context resets. These paths do not execute guest GL work.
             written = op === QOP_CONTEXT_RESET_SCOPE || journalRead || errorReceiptRead || retainedCleanup && rendererLost(b) ? queryWork()
               : withNativeBatch(b, `query 0x${op.toString(16)}`, queryWork,
-                op !== QOP_GET_ERROR && !retainedCleanup);
+                // Publishing reserved journal slots is usually CPU-only. A muxer replay or
+                // native deletion still marks the batch for its boundary error check.
+                op !== QOP_GET_ERROR && !retainedCleanup && !(journalQuery && inBuf[0] === 3));
           } catch (caught) {
             preparedFence?.candidate?.cancel();
             rethrowNativeGlFault(caught);

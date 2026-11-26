@@ -108,8 +108,8 @@ function runNativeBatch(owner: Owner, label: string, work: () => number | void, 
   active = { owner, label, sequence: ++sequence, nativeWork: false, bookkeeping: 0 };
   try {
     const result = work() ?? 0;
-    // A host-owned glGetError answer has no native batch of its own. A replay
-    // or utility performed along that path still requires its boundary sample.
+    // A host-only result can finish without sampling the GPU. Any replay or
+    // cleanup issued inside that same batch still needs its boundary sample.
     if (!sampleWhenIdle && !active.nativeWork) return rendererLost(owner) ? RENDERER_LOST : result;
     // One sample on the common NO_ERROR path. Drain only after a failure,
     // before another logical context can acquire the shared renderer.
