@@ -1810,8 +1810,11 @@ parks the other threads of the parent: a thread in a syscall is parked,
 and a running thread parks at its next store through its stop words
 (`__memory_stop_base`). When a thread does not park in 10 ms, or while a
 vfork child borrows the Memory, the child gets a copy of every page
-inside the same Memory. No page of a group Memory is freed before the
-last process of the group exits.
+inside the same Memory. When a fork child exits and its Workers have
+stopped, its pages return to the group and later forks and copies use
+them. The pages of the first process of a group, and of a child that the
+host terminated by force, stay in use until the last process of the group
+exits.
 
 A device mapping (the `/dev/fb0` framebuffer or a DRI buffer) is a guest
 range that the host reads and writes outside a syscall.

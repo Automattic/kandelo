@@ -20,6 +20,7 @@ import {
 import {
   GROUP_HEADER_BYTES,
   STOP_WORDS_BYTES,
+  type ForkShareAddressSpace,
   type PageTableLocation,
 } from "./fork-share-address-space";
 
@@ -544,6 +545,12 @@ export interface ProcessMemoryLease {
    */
   retainAddressSpace(): ProcessMemoryLease;
   /**
+   * Name the address space of the `"share"` fork child that holds this
+   * lease. `release()` gives its pages back to the group. A forced release
+   * keeps them: a terminated Worker can still write its own pages.
+   */
+  ownAddressSpace(space: ForkShareAddressSpace): void;
+  /**
    * Release this alias after its Worker and channel have crossed their exact
    * quiescence fence. The backing retires only after every retained alias is
    * released. Each lease is one ownership token and may be consumed once.
@@ -745,6 +752,7 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
     | ((retirementMode: "quiescent" | "forced") => void)
     | undefined;
   private writerReservation: WriterReservationState | undefined;
+  private addressSpace: ForkShareAddressSpace | undefined;
   readonly executionOwner: ProcessMemoryExecutionOwner;
 
   constructor(
@@ -866,6 +874,10 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
     return this.retain(true);
   }
 
+  ownAddressSpace(space: ForkShareAddressSpace): void {
+    this.addressSpace = space;
+  }
+
   private retain(afterForcedTermination: boolean): ProcessMemoryLease {
     if (!this.retainOwnedRecord || !this.ownedMemory) {
       throw new Error("Process memory lease was already consumed");
@@ -886,6 +898,8 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
     if (!consumeOwnedRecord || !this.ownedMemory) {
       throw new Error("Process memory lease was already consumed");
     }
+    if (retirementMode === "quiescent") this.addressSpace?.release();
+    this.addressSpace = undefined;
     consumeOwnedRecord(retirementMode);
     if (this.writerReservation) {
       this.writerReservation.phase = "consumed-lease";

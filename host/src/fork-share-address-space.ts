@@ -3,6 +3,8 @@ import { ProcessAddressFault } from "./process-address-space";
 
 /** Byte size of one page table: one 4-byte entry per 64 KiB wasm32 page. */
 export const PAGE_TABLE_BYTES = 4 * 65536;
+/** Byte offset of the free-page list head inside a group header. */
+const GROUP_FREE_OFFSET = 8;
 /** Byte offset of the per-page sharer counts inside a group header. */
 export const GROUP_SHARERS_OFFSET = WASM_PAGE_SIZE;
 /** Byte size of a group header: allocator page, then one count per page. */
@@ -12,6 +14,8 @@ const COW_BIT = 1;
 const BUSY_BIT = 2;
 const PAGE_SHIFT = 16;
 const PAGE_INDEX_MASK = 0xffff;
+/** Marks a page number in the free list, so that page 0 differs from "none". */
+const FREE_PAGE = 0x10000;
 const PAGE_OFFSET_MASK = WASM_PAGE_SIZE - 1;
 const STOPPED_OWNED = 1;
 const STOPPED_SHARED = 2;
@@ -26,6 +30,8 @@ const IntrinsicBigUint64Array = BigUint64Array;
 const intrinsicApply = Reflect.apply;
 const intrinsicMathMin = Math.min;
 const intrinsicMathCeil = Math.ceil;
+const IntrinsicBigInt = BigInt;
+const IntrinsicNumber = Number;
 const intrinsicNumberIsSafeInteger = Number.isSafeInteger;
 const intrinsicUint8ArraySet = IntrinsicUint8Array.prototype.set;
 const intrinsicUint8ArraySubarray = IntrinsicUint8Array.prototype.subarray;
@@ -95,6 +101,14 @@ export function bindPageTable(instance: WebAssembly.Instance, location: PageTabl
   (instance.exports.__memory_stop_base as WebAssembly.Global).value = location.stop!;
 }
 
+/** One physical run that a process took as a whole from its group. */
+interface OwnedRun {
+  page: number;
+  count: number;
+  /** Pages of the run that no process maps any more. */
+  free: number;
+}
+
 /** Byte size of the stop words of one thread: the request and its echo. */
 export const STOP_WORDS_BYTES = 8;
 
@@ -114,7 +128,11 @@ export const STOP_WORDS_BYTES = 8;
  */
 export class ForkShareAddressSpace {
   #words: Int32Array | null = null;
+  #longs: BigUint64Array | null = null;
   #bytes: Uint8Array | null = null;
+  #owned: OwnedRun[] = [];
+  /** Free runs of the group, shared by the address spaces of one thread. */
+  #pool: PageRun[] = [];
   #pages = 0;
   #stopped: Uint8Array | null = null;
 
@@ -151,17 +169,49 @@ export class ForkShareAddressSpace {
    */
   grow(endOffset: number): void {
     const pages = intrinsicMathCeil(endOffset / WASM_PAGE_SIZE);
-    const count = pages - this.#pages;
-    if (count <= 0) return;
-    const fresh = this.#allocate(count);
-    const delta = (fresh - this.#pages) << PAGE_SHIFT;
-    const words = this.#view();
-    for (let page = this.#pages; page < pages; page++) {
-      const address = page << PAGE_SHIFT;
-      intrinsicAtomicsStore(words, this.#slot(address, 0), delta);
-      intrinsicAtomicsStore(words, this.#slot(address, PAGE_TABLE_BYTES), delta);
+    if (pages <= this.#pages) return;
+    let page = this.#pages;
+    for (; page < pages; page++) {
+      const reused = this.#pop();
+      if (reused < 0) break;
+      intrinsicApply(intrinsicUint8ArrayFill, this.#byteView(), [
+        0,
+        reused << PAGE_SHIFT,
+        (reused + 1) << PAGE_SHIFT,
+      ]);
+      this.#map(page, reused);
+    }
+    if (page < pages) {
+      const fresh = this.#bump(pages - page);
+      for (let index = 0; page + index < pages; index++) this.#map(page + index, fresh + index);
     }
     this.#pages = pages;
+  }
+
+  /**
+   * Give the pages of an exited process back to its group.
+   *
+   * WHY: no Worker of the process may run during or after this call. A
+   * Worker that still runs would write pages that another process now owns.
+   */
+  release(): void {
+    const { table, group } = this.location;
+    const words = this.#view();
+    const sharers = (group + GROUP_SHARERS_OFFSET) / 4;
+    for (let page = 0; page < this.#pages; page++) {
+      const entry = words[this.#slot(page << PAGE_SHIFT, PAGE_TABLE_BYTES)];
+      this.#unmap((page + (entry >> PAGE_SHIFT)) & PAGE_INDEX_MASK, sharers);
+    }
+    const tablePages = 2 * PAGE_TABLE_BYTES / WASM_PAGE_SIZE;
+    const tableRun = this.#ownedRun(table >>> PAGE_SHIFT);
+    if (tableRun !== null) tableRun.free += tablePages;
+    for (let index = 0; index < this.#owned.length; index++) {
+      const { page, count, free } = this.#owned[index];
+      // A run with a page that another process still maps stays out of use.
+      if (free === count) this.#pool[this.#pool.length] = { page, count };
+    }
+    this.#owned = [];
+    this.#pages = 0;
   }
 
   /**
@@ -183,19 +233,12 @@ export class ForkShareAddressSpace {
     if (kept) return page + (first >> PAGE_SHIFT);
 
     const fresh = this.#allocate(count);
-    const delta = (fresh - page) << PAGE_SHIFT;
     const words = this.#view();
     const sharers = (this.location.group + GROUP_SHARERS_OFFSET) / 4;
     for (let index = 0; index < count; index++) {
-      const address = (page + index) << PAGE_SHIFT;
-      const slot = this.#slot(address, PAGE_TABLE_BYTES);
-      const entry = intrinsicAtomicsLoad(words, slot);
-      if (entry & COW_BIT) {
-        const physical = (page + index + (entry >> PAGE_SHIFT)) & PAGE_INDEX_MASK;
-        intrinsicAtomicsSub(words, sharers + physical, 1);
-      }
-      intrinsicAtomicsStore(words, this.#slot(address, 0), delta);
-      intrinsicAtomicsStore(words, slot, delta);
+      const entry = intrinsicAtomicsLoad(words, this.#slot((page + index) << PAGE_SHIFT, PAGE_TABLE_BYTES));
+      this.#unmap((page + index + (entry >> PAGE_SHIFT)) & PAGE_INDEX_MASK, sharers);
+      this.#map(page + index, fresh + index);
     }
     return fresh;
   }
@@ -281,7 +324,7 @@ export class ForkShareAddressSpace {
     let privateCount = 0;
     for (let run = 0; run < privateRuns.length; run++) privateCount += privateRuns[run].count;
     this.#stopped = null;
-    const fresh = this.#allocate(tablePages + privateCount);
+    const fresh = this.#takeRun(tablePages + privateCount);
     const childTable = fresh << PAGE_SHIFT;
     const bytes = this.#byteView();
     intrinsicApply(intrinsicUint8ArrayCopyWithin, bytes, [
@@ -291,6 +334,8 @@ export class ForkShareAddressSpace {
     ]);
     const child = new ForkShareAddressSpace(this.memory, { table: childTable, group });
     child.#pages = this.#pages;
+    child.#pool = this.#pool;
+    child.#owned = [{ page: fresh, count: tablePages + privateCount, free: 0 }];
 
     const words = this.#view();
     const sharers = (group + GROUP_SHARERS_OFFSET) / 4;
@@ -413,8 +458,107 @@ export class ForkShareAddressSpace {
     return intrinsicAtomicsNotify(signal, 0, count);
   }
 
-  /** Take `count` contiguous physical pages from the group allocator. */
+  /** Take one physical run of `count` pages that this process owns as a whole. */
   #allocate(count: number): number {
+    const fresh = this.#takeRun(count);
+    this.#owned[this.#owned.length] = { page: fresh, count, free: 0 };
+    return fresh;
+  }
+
+  /**
+   * Take one physical run of `count` pages from the group: a free run of
+   * that size, or new pages. The run reads as zero.
+   */
+  #takeRun(count: number): number {
+    let fresh = 0;
+    for (let index = 0; fresh === 0 && index < this.#pool.length; index++) {
+      if (this.#pool[index].count !== count) continue;
+      fresh = this.#pool[index].page;
+      this.#pool[index] = this.#pool[this.#pool.length - 1];
+      this.#pool.length -= 1;
+      intrinsicApply(intrinsicUint8ArrayFill, this.#byteView(), [
+        0,
+        fresh << PAGE_SHIFT,
+        (fresh + count) << PAGE_SHIFT,
+      ]);
+    }
+    return fresh || this.#bump(count);
+  }
+
+  /** Map the guest page `page` to the unshared physical page `physical`. */
+  #map(page: number, physical: number): void {
+    const address = page << PAGE_SHIFT;
+    const delta = (physical - page) << PAGE_SHIFT;
+    const words = this.#view();
+    intrinsicAtomicsStore(words, this.#slot(address, 0), delta);
+    intrinsicAtomicsStore(words, this.#slot(address, PAGE_TABLE_BYTES), delta);
+  }
+
+  /**
+   * Drop one mapping of the physical page `physical`. The page becomes free
+   * when no process maps it: it joins its owned run, or the free list.
+   */
+  #unmap(physical: number, sharers: number): void {
+    if (intrinsicAtomicsSub(this.#view(), sharers + physical, 1) !== 0) return;
+    const run = this.#ownedRun(physical);
+    if (run === null) {
+      this.#push(physical);
+      return;
+    }
+    intrinsicAtomicsStore(this.#view(), sharers + physical, 0);
+    run.free += 1;
+  }
+
+  #ownedRun(physical: number): OwnedRun | null {
+    for (let index = 0; index < this.#owned.length; index++) {
+      const run = this.#owned[index];
+      if (physical >= run.page && physical < run.page + run.count) return run;
+    }
+    return null;
+  }
+
+  /**
+   * Take one page from the free list of the group, or -1 when it is empty.
+   *
+   * WHY: the head holds the page in its low half and a change count in its
+   * high half. The count makes a compare-exchange fail when another thread
+   * took and returned the same page in between. The count word of a free
+   * page holds the next free page.
+   */
+  #pop(): number {
+    const { group } = this.location;
+    const head = (group + GROUP_FREE_OFFSET) / 8;
+    const sharers = (group + GROUP_SHARERS_OFFSET) / 4;
+    for (;;) {
+      const longs = this.#longView();
+      const current = intrinsicAtomicsLoad(longs, head);
+      const marked = IntrinsicNumber(current & 0xffffffffn);
+      if (marked === 0) return -1;
+      const page = marked & PAGE_INDEX_MASK;
+      const next = intrinsicAtomicsLoad(this.#view(), sharers + page) >>> 0;
+      const changed = ((current >> 32n) + 1n & 0xffffffffn) << 32n | IntrinsicBigInt(next);
+      if (intrinsicAtomicsCompareExchange(longs, head, current, changed) !== current) continue;
+      intrinsicAtomicsStore(this.#view(), sharers + page, 0);
+      return page;
+    }
+  }
+
+  /** Put the page `physical`, which no process maps, on the free list. */
+  #push(physical: number): void {
+    const { group } = this.location;
+    const head = (group + GROUP_FREE_OFFSET) / 8;
+    const sharers = (group + GROUP_SHARERS_OFFSET) / 4;
+    for (;;) {
+      const longs = this.#longView();
+      const current = intrinsicAtomicsLoad(longs, head);
+      intrinsicAtomicsStore(this.#view(), sharers + physical, IntrinsicNumber(current & 0xffffffffn));
+      const changed = ((current >> 32n) + 1n & 0xffffffffn) << 32n | IntrinsicBigInt(physical | FREE_PAGE);
+      if (intrinsicAtomicsCompareExchange(longs, head, current, changed) === current) return;
+    }
+  }
+
+  /** Take `count` contiguous new physical pages from the group allocator. */
+  #bump(count: number): number {
     const allocator = this.location.group / 4;
     for (;;) {
       const fresh = intrinsicAtomicsLoad(this.#view(), allocator);
@@ -472,6 +616,14 @@ export class ForkShareAddressSpace {
     return this.#words;
   }
 
+  #longView(): BigUint64Array {
+    const buffer = intrinsicMemoryBuffer(this.memory);
+    if (this.#longs === null || intrinsicTypedArrayBuffer(this.#longs) !== buffer) {
+      this.#longs = new IntrinsicBigUint64Array(buffer);
+    }
+    return this.#longs;
+  }
+
   #byteView(): Uint8Array {
     const buffer = intrinsicMemoryBuffer(this.memory);
     if (this.#bytes === null || intrinsicTypedArrayBuffer(this.#bytes) !== buffer) {
@@ -511,8 +663,8 @@ export class ForkShareAddressSpace {
       return delta;
     }
 
-    const fresh = intrinsicAtomicsAdd(this.#view(), group / 4, 1);
-    this.#growPhysical(fresh + 1);
+    let fresh = this.#pop();
+    if (fresh < 0) fresh = this.#bump(1);
     intrinsicApply(intrinsicUint8ArrayCopyWithin, this.#byteView(), [
       fresh << PAGE_SHIFT,
       physical << PAGE_SHIFT,
@@ -522,7 +674,8 @@ export class ForkShareAddressSpace {
     const words = this.#view();
     intrinsicAtomicsStore(words, readSlot, copied);
     intrinsicAtomicsStore(words, writeSlot, copied);
-    intrinsicAtomicsSub(words, sharers, 1);
+    // The other owner left during the copy: no process maps the old page.
+    if (intrinsicAtomicsSub(words, sharers, 1) === 0) this.#push(physical);
     return copied;
   }
 }

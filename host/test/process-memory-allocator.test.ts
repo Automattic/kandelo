@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { WASM_PAGE_SIZE } from "../src/constants";
+import type { ForkShareAddressSpace } from "../src/fork-share-address-space";
 import {
   acquireForkMemoryClone,
   copyArrayBufferInChunks,
@@ -164,6 +165,28 @@ describe("ProcessMemoryAllocator", () => {
       liveAliases: 0,
       pendingRetirements: 1,
     });
+    allocator.clear();
+  });
+
+  it("gives the pages of a fork child back only on a quiescent release", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: 4 * WASM_PAGE_SIZE,
+    });
+    const owner = allocator.acquire(request(4));
+    const foo = { release: vi.fn() } as unknown as ForkShareAddressSpace;
+    const bar = { release: vi.fn() } as unknown as ForkShareAddressSpace;
+    const quiescent = owner.retainAddressSpace();
+    const forced = owner.retainAddressSpace();
+    quiescent.ownAddressSpace(foo);
+    forced.ownAddressSpace(bar);
+
+    quiescent.release();
+    forced.releaseAfterForcedTermination();
+
+    expect(foo.release).toHaveBeenCalledTimes(1);
+    expect(bar.release).not.toHaveBeenCalled();
+    owner.release();
     allocator.clear();
   });
 

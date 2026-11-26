@@ -2409,6 +2409,7 @@ async function handleOrdinaryFork(
         { page: controlPage, count: childLayout.channelPage + CHANNEL_PAGES - controlPage },
         ...parentInfo.threadAllocator.liveSlotRuns(),
       ]);
+      childMemoryLease.ownAddressSpace(childAddressSpace);
       // WHY: the child's copy of the control pages holds the stop request
       // of a parent thread that this fork parked.
       fillProcessBytes(childAddressSpace, channelStopOffset(childChannelOffset), STOP_WORDS_BYTES, 0);

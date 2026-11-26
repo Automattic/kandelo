@@ -111,6 +111,7 @@ const programs: Program[] = [
     forkInstrumentArgs: ["--side-modules", "assume-all-entries-fork-returning"],
     libraryPath: "/usr/local/lib/fork-share-dlopen-library.so",
   },
+  { name: "reuse", stdout: ["reaped=64 bounded=1"] },
   { name: "dumb-buffer", stdout: ["parent child=42 failed=0"] },
   { name: "framebuffer", stdout: ["parent child=42 failed=0"] },
 ];

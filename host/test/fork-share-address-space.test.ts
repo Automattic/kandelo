@@ -282,6 +282,63 @@ describe("ForkShareAddressSpace", () => {
     expect([parent.readBytes(16 * PAGE, 1)[0], child.readBytes(16 * PAGE, 1)[0]]).toEqual([1, 2]);
   });
 
+  it("gives the pages of an exited child back to the group", () => {
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 1024, shared: true });
+    const groupBase = 4 * PAGE;
+    const parent = new ForkShareAddressSpace(memory, { table: groupBase + GROUP_HEADER_BYTES, group: groupBase });
+    const foo = parent.fork([{ page: 2, count: 2 }]);
+    foo.writeBytes(100, new Uint8Array([9]));
+    parent.writeBytes(PAGE, new Uint8Array([7]));
+    const words = new Int32Array(memory.buffer);
+    const sharers = (groupBase + GROUP_SHARERS_OFFSET) / 4;
+    expect(words[groupBase / 4]).toBe(16 + 8 + 2 + 2);
+
+    foo.release();
+
+    expect([0, 5].map((page) => words[sharers + page])).toEqual([0, 0]);
+    expect(parent.writable(100)).toBe(100);
+
+    const bar = parent.fork([{ page: 2, count: 2 }]);
+    bar.writeBytes(100, new Uint8Array([8]));
+    parent.writeBytes(5 * PAGE, new Uint8Array([6]));
+
+    expect(bar.location.table).toBe(16 * PAGE);
+    expect([bar.readable(100), parent.readable(5 * PAGE)]).toEqual([PAGE + 100, 26 * PAGE]);
+    expect([bar.readBytes(100, 1)[0], parent.readBytes(100, 1)[0], parent.readBytes(PAGE, 1)[0]]).toEqual([8, 0, 7]);
+    expect(words[groupBase / 4]).toBe(16 + 8 + 2 + 2);
+  });
+
+  it("maps new pages to freed pages that read as zero", () => {
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 1024, shared: true });
+    const groupBase = 4 * PAGE;
+    const parent = new ForkShareAddressSpace(memory, { table: groupBase + GROUP_HEADER_BYTES, group: groupBase });
+    const child = parent.fork([{ page: 2, count: 1 }]);
+    child.writeBytes(100, new Uint8Array([9]));
+    child.release();
+
+    parent.grow(18 * PAGE);
+
+    expect(parent.readable(16 * PAGE)).toBe(25 * PAGE);
+    expect(parent.readable(17 * PAGE)).toBe(26 * PAGE);
+    expect(parent.readBytes(16 * PAGE + 100, 1)[0]).toBe(0);
+  });
+
+  it("keeps a page of an exited child that another process still maps", () => {
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 1024, shared: true });
+    const groupBase = 4 * PAGE;
+    const parent = new ForkShareAddressSpace(memory, { table: groupBase + GROUP_HEADER_BYTES, group: groupBase });
+    const foo = parent.fork([{ page: 2, count: 1 }]);
+    foo.writeBytes(100, new Uint8Array([9]));
+    const bar = foo.fork([{ page: 2, count: 1 }]);
+
+    foo.release();
+
+    expect(bar.readBytes(100, 1)[0]).toBe(9);
+    bar.writeBytes(100, new Uint8Array([8]));
+    expect(bar.writable(100)).toBe(25 * PAGE + 100);
+    expect(parent.readBytes(100, 1)[0]).toBe(0);
+  });
+
   it("keeps pages that already form one unshared run", () => {
     const memory = new WebAssembly.Memory({ initial: 16, maximum: 1024, shared: true });
     const groupBase = 4 * PAGE;
