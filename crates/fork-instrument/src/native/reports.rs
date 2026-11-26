@@ -51,6 +51,42 @@ pub(crate) fn discover(input: &[u8], options: &Options) -> Result<Analysis> {
     fork_path.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(Analysis { fork_path })
 }
+/// For each named function, the shortest call chain that puts it in the
+/// instrumented set, as `(function, edge to the next function)` pairs.
+pub(crate) fn explain(
+    input: &[u8],
+    options: &Options,
+    targets: &[String],
+) -> Result<Vec<(String, Option<Vec<(String, &'static str)>>)>> {
+    let local = crate::streaming::local_continuation::prepare(input, Default::default())?;
+    let input = local.as_ref().map_or(input, |artifact| artifact.bytes());
+    let analysis = native::analyze(input, options, Default::default())?;
+    let seeds: std::collections::BTreeSet<u32> =
+        analysis.decision.entry_imports.iter().copied().collect();
+    let mut out = Vec::new();
+    for target in targets {
+        let index = analysis
+            .scan
+            .functions
+            .iter()
+            .position(|f| f.name.as_deref() == Some(target.as_str()));
+        let chain = index.and_then(|index| {
+            analysis
+                .scan
+                .explain(&seeds, &analysis.reaching.activations, index as u32)
+        });
+        out.push((
+            target.clone(),
+            chain.map(|chain| {
+                chain
+                    .into_iter()
+                    .map(|(f, edge)| (name(&analysis, f), edge.as_str()))
+                    .collect()
+            }),
+        ));
+    }
+    Ok(out)
+}
 fn name(analysis: &native::Analysis<'_>, function: u32) -> String {
     analysis.scan.functions[function as usize]
         .name

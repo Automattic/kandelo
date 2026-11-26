@@ -2463,6 +2463,12 @@ Flags:
 - `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts>`),
   the facts' coverage, and the instrumented set and boundaries as
   `A\t<name>`/`B\t<name>` rows.
+- `--explain FUNCTION` (hidden, with `--sink-report`, repeatable) adds the
+  shortest call chain from FUNCTION to the fork entry, one
+  `W\t<function>\t<step>\t<name>\t<edge>` row per step. The edge to the
+  next step is `call`, `tail-call` or `indirect`; a function outside the
+  instrumented set prints one `not instrumented or not found` row. Use it to
+  find the edge that pulls a function into the instrumented set.
 
 When the analysis moved into this crate (#1471) it was checked against the
 research tools it replaced, on their research links, with the per-object

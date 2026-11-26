@@ -215,6 +215,17 @@ fn main() -> Result<()> {
         for name in &report.boundaries {
             println!("B\t{name}");
         }
+        for (function, chain) in fork_instrument::sink_explain(input, &opts, &cli.explain)? {
+            match chain {
+                None => println!("W\t{function}\t-\tnot instrumented or not found\t-"),
+                Some(chain) => {
+                    for (step, (name, edge)) in chain.iter().enumerate() {
+                        let edge = if step + 1 == chain.len() { "-" } else { edge };
+                        println!("W\t{function}\t{step}\t{name}\t{edge}");
+                    }
+                }
+            }
+        }
         return Ok(());
     }
 
