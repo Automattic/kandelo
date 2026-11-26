@@ -1,5 +1,8 @@
 # Process-owned dynamic loading prototype
 
+See the [SDK cutover validation](2026-11-25-process-owned-dynamic-loading-cutover.md)
+for the normal SDK and named-module lifecycle results.
+
 The first milestone runs on `develop@af25e6e57300`, which includes
 #1748 and the fork facts fix from #1778. The prototype uses a patched
 wasm-ld 23.1.3 and the experimental `kandelo.loader.prototype.v1`
