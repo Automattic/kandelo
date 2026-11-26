@@ -41,8 +41,15 @@ locks and validates every returned entry before publication or reclamation;
 this is not a coherent snapshot of concurrently changing tables. TypeScript
 retains the instance's callable function with the exact backing resource.
 `xtask dump-abi` generates/checks the embedded scanner, including a read-only
-instruction check. This kernel-host interface requires adapter 40 and leaves
-program ABI 56 unchanged.
+instruction check. Host adapter 40 introduced the scanner. The kernel manifest
+requires an exact adapter version. The program ABI remains 56.
+
+Mapping setup and reclamation read the backing size once for each root-locked
+page-table scan. Physical WebAssembly memory can only grow. When checking a
+live peer, Rust reads the size again if it sees a frame beyond the last known
+extent. A frame outside the current backing still fails validation.
+The [mapping scan measurements](measurements/2026-11-26-group-mapping-extent.md)
+count these queries during a real terminal launch.
 
 Image-mutating mappings, fork and pthread-control reservations enter a kernel-owned operation queue. Rust issues exact task-bound tokens and permits only the earliest live operation on an image to begin its pause. Cancelling an operation from the middle cannot let its successor bypass an earlier operation. Outstanding operations prevent image reclamation; an owning task's scratch cannot retire while its operation remains live. Host promises wake continuations, which must recheck Rust readiness before proceeding.
 
