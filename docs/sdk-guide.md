@@ -44,8 +44,12 @@ post-link job is decided by the same code.
    `--arch wasm64posix` selects the other architecture. `--core-only`
    omits graphics refresh during dependency resolution to avoid recursion.
    Without `--ensure`, the command always rebuilds musl. After libc changes,
-   also rebuild linked programs and fixtures before testing; `setup --all` refreshes
-   package programs, while `scripts/build-programs.sh` builds test fixtures.
+   also rebuild linked programs and fixtures before testing. `setup --all`
+   refreshes package programs, and `scripts/build-programs.sh` builds test
+   fixtures. The fixture build needs the full SDK, including its graphics
+   libraries. It stages fixture headers and libraries such as GTK, glib
+   and SDL2 into a temporary copy of the wasm32 sysroot and uses that copy
+   for wasm32 fixture builds only.
    (`bash build.sh` still works as a deprecated delegator to the same
    command.)
 
@@ -1179,10 +1183,7 @@ The archive's sysroot holds only the SDK's declared content: the files in
 the musl output receipt (checked against their recorded digests), the
 other files `scripts/build-musl.sh` installs, the
 [platform graphics libraries](#sysroot-platform-libraries), and libc++
-from the declared `libcxx` dependency. The build machine's `sysroot/` is
-shared and also holds libraries other tools stage there, such as the
-GTK, glib and SDL2 archives `scripts/build-programs.sh` copies in for its
-fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind.
+from the declared `libcxx` dependency.
 The `kandelo-sdk` image's package build stages its sysroot through the
 same script and passes the `libcxx` output separately. Its image builder,
 `images/vfs/scripts/build-kandelo-sdk-vfs-image.sh`, has no default
