@@ -121,3 +121,14 @@ A private kernel experiment retained every legacy PS/2 byte and reported whether
 Two further controls used the same package bodies. Copying the GPU scanout through a retained 2D canvas before transferring its bitmap increased median two-Worker frame time from 8.11 to 14.16 ms in Firefox and from 11.29 to 16.76 ms in WebKit. Replacing the development process Worker's module graph with the normal host build's bundled process Worker reduced median warm creation-to-module-evaluation time from 130 to 112 ms in Firefox and from 73 to 66 ms in WebKit. Chromium went from 67 to 91 ms. The bundled desktop still took seconds to paint; the extra copy and the alternate Worker packaging were excluded from the review changes.
 
 On a separate control sweep, timing the synchronous body of every broad wake accounted for 78 ms during 2,248 ms of Firefox input and 84 ms during 2,172 ms of WebKit input. The longest individual body took 9.1 and 10.2 ms respectively. This excludes deferred work after the call returns. The number of retries is large, but the synchronous body alone cannot explain the long gaps observed in other runs.
+
+## Ordinary database and stdin workloads
+
+Three rounds of the ordinary wasm32 and wasm64 MariaDB Aria and InnoDB suites and stdin throughput ran on Node and Chromium against pinned develop `dffcfca532`. The database table below shows the largest time increase and decrease on each host. Concurrent builds affected both arms. These workloads exercise ordinary processes, so the differences do not measure grouped desktop latency. [All 42 comparisons](2026-11-26-grouped-syscall-desktop-latency-ordinary-apps.csv).
+
+| Host | Largest elapsed time decrease | Largest elapsed time increase |
+| --- | --- | --- |
+| Node | mariadb-aria/bootstrap_ms 5104.17 → 4569.77 ms (-10.5%) | mariadb-innodb-64/query_insert_ms 1227.72 → 2655.53 ms (+116.3%) |
+| Chromium | mariadb-innodb-64/query_create_ms 27.63 → 11.89 ms (-57.0%) | mariadb-aria-64/query_insert_ms 137.81 → 150.59 ms (+9.3%) |
+
+The full browser WordPress comparison remains unmeasured. Provisioning the standard WordPress image reached an unresolved `mprotect` symbol while linking its SpiderMonkey Node dependency. The browser benchmark needs that image.
