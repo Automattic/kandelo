@@ -14,6 +14,16 @@ export interface KmsCursor {
   premultiplied?: Uint8ClampedArray<ArrayBuffer> | null;
 }
 
+type CursorImage = Pick<KmsCursor, "version" | "x" | "y" | "width" | "height" | "pixels">;
+
+/** Owned cursor pixels and their placement within the current scanout. */
+export interface KmsCursorUpdate {
+  cursor: CursorImage;
+  width: number;
+  height: number;
+  composited: boolean;
+}
+
 export class KmsCursorPlane {
   private context: OffscreenCanvasRenderingContext2D;
   private version = -1;
@@ -34,7 +44,7 @@ export class KmsCursorPlane {
   /** `composited`: the CRTC has a color stage, so its presenter blends the
    *  cursor into the primary before the LUT (see kms-gamma.ts) and this
    *  overlay must show nothing, or the cursor would appear twice. */
-  present(cursor: KmsCursor, width: number, height: number, composited = false): boolean {
+  present(cursor: CursorImage, width: number, height: number, composited = false): boolean {
     const resized = this.canvas.width !== width || this.canvas.height !== height;
     if (!resized && cursor.version === this.version && composited === this.composited) return false;
     this.composited = composited;
@@ -56,5 +66,11 @@ export class KmsCursorPlane {
         width: cursor.width, height: cursor.height };
     }
     return true;
+  }
+
+  clear(): void {
+    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.painted = null;
+    this.version = -1;
   }
 }

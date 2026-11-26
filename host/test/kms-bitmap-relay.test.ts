@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { KmsCursorUpdate } from '../src/dri/cursor-plane';
 import { KmsBitmapRelay } from '../src/dri/kms-bitmap-relay';
 import { startKmsBitmapDisplay } from '../src/dri/kms-bitmap-display-bootstrap';
 import { attachKmsBitmapDisplay } from '../src/dri/kms-bitmap-display';
@@ -22,12 +23,11 @@ function setup(useDefaultCapture = false, ready = true) {
     const error = deferred<Error>();
     const fail = vi.fn((value: Error) => error.resolve(value));
     const relay = useDefaultCapture
-        ? new KmsBitmapRelay(port as unknown as MessagePort, fail)
-        : new KmsBitmapRelay(port as unknown as MessagePort, fail, source => createImageBitmap(source));
-    relay.changed(0);
-    relay.changed(1);
+        ? new KmsBitmapRelay(port as unknown as MessagePort, fail, true)
+        : new KmsBitmapRelay(port as unknown as MessagePort, fail, true, source => createImageBitmap(source));
+    relay.changed();
     const canvas = { width: 3072, height: 1728 } as OffscreenCanvas;
-    const cursor = { width: 3072, height: 1728 } as OffscreenCanvas;
+    const cursor = cursorUpdate();
     const receive = (value: any) => port.onmessage?.({ data: value });
     if (ready) receive({ type: 'ready' });
     const next = () => packets.length ? Promise.resolve(packets.shift()) : new Promise<any>(resolve => waiters.push(resolve));
@@ -41,6 +41,12 @@ function setup(useDefaultCapture = false, ready = true) {
     cleanups.push(() => relay.close().catch(() => { }));
     return { relay, port, canvas, cursor, fail, error, next, receive, close, ack: (sequence: number) => receive({ type: 'ack', sequence }) };
 }
+function cursorUpdate(version = 1, x = 20): KmsCursorUpdate {
+    return {
+        width: 3072, height: 1728, composited: false,
+        cursor: { version, x, y: 30, width: 1, height: 1, pixels: new Uint8ClampedArray([120, 19, 61, 255]) },
+    };
+}
 let cleanups: (() => Promise<void>)[] = [];
 function bitmap() { return { width: 3072, height: 1728, close: vi.fn() } as unknown as ImageBitmap; }
 beforeEach(() => vi.useFakeTimers());
@@ -51,12 +57,12 @@ describe('bounded KMS bitmap device ownership and retirement', () => {
         const create = vi.fn().mockResolvedValue(bitmap());
         vi.stubGlobal('createImageBitmap', create);
         s.relay.present(s.canvas, s.cursor);
-        s.relay.changed(0);
+        s.relay.changed();
         expect(create).not.toHaveBeenCalled();
         expect(s.port.postMessage).not.toHaveBeenCalled();
         s.receive({ type: 'ready' });
         s.relay.present(s.canvas, s.cursor);
-        expect((await s.next()).planes).toEqual([0, 1]);
+        expect(await s.next()).toMatchObject({ frame: expect.anything(), cursor: s.cursor });
         s.ack(1);
         await s.close();
     });
@@ -101,14 +107,14 @@ describe('bounded KMS bitmap device ownership and retirement', () => {
         vi.stubGlobal('createImageBitmap', vi.fn(() => Object.assign(bitmap(), { pixels: [...source.pixels] })));
         s.relay.present(source);
         const first = await s.next();
-        expect(first.frames[0].pixels).toEqual([36, 36, 36]);
+        expect(first.frame.pixels).toEqual([36, 36, 36]);
         s.ack(first.sequence);
         // A swap/commit can present a cached frame without redrawing the
         // retained producer canvas. Device capture must preserve those pixels.
-        s.relay.changed(0);
+        s.relay.changed();
         s.relay.present(source);
         const second = await s.next();
-        expect(second.frames[0].pixels).toEqual([36, 36, 36]);
+        expect(second.frame.pixels).toEqual([36, 36, 36]);
         expect(source.pixels).toEqual([36, 36, 36]);
         s.ack(second.sequence);
         await s.close();
@@ -143,58 +149,60 @@ describe('bounded KMS bitmap device ownership and retirement', () => {
         }));
         await expect(worker.closeKmsBitmapRelays()).rejects.toThrow('KMS bitmap retirement failed');
     });
-    it('requires exact ack and captures only a changed plane after publication', async () => {
-        const s = setup();
-        const images = [bitmap(), bitmap(), bitmap()];
-        const create = vi.fn().mockResolvedValueOnce(images[0]).mockResolvedValueOnce(images[1]).mockResolvedValueOnce(images[2]);
+    it('requires an exact acknowledgement and publishes cursor changes without native capture', async () => {
+        const s = setup(), image = bitmap();
+        const create = vi.fn().mockResolvedValue(image);
         vi.stubGlobal('createImageBitmap', create);
         s.relay.present(s.canvas, s.cursor);
-        s.relay.present(s.canvas, s.cursor);
-        expect((await s.next()).planes).toEqual([0, 1]);
-        expect(create).toHaveBeenCalledTimes(2);
-        s.relay.changed(1);
-        s.relay.present(s.canvas, s.cursor);
-        expect(create).toHaveBeenCalledTimes(2);
+        expect(await s.next()).toMatchObject({ sequence: 1, frame: image, cursor: s.cursor });
+
+        const moved = cursorUpdate(2, 44);
+        s.relay.present(s.canvas, moved);
+        expect(s.port.postMessage).toHaveBeenCalledTimes(1);
         s.ack(1);
-        s.relay.present(s.canvas, s.cursor);
-        expect((await s.next()).planes).toEqual([1]);
-        expect(create).toHaveBeenNthCalledWith(3, s.cursor);
+        s.relay.present(s.canvas, moved);
+        expect(await s.next()).toEqual({ type: 'frame', sequence: 2, frame: undefined, cursor: moved });
+        expect(s.port.postMessage).toHaveBeenLastCalledWith(expect.anything(), []);
         s.ack(2);
-        s.relay.present(s.canvas, s.cursor);
-        expect(create).toHaveBeenCalledTimes(3);
+        s.relay.present(s.canvas, moved);
+        expect(s.port.postMessage).toHaveBeenCalledTimes(2);
+
+        const composited = { ...moved, width: 1280, height: 720, composited: true };
+        s.relay.present(s.canvas, composited);
+        expect(await s.next()).toMatchObject({
+            sequence: 3, cursor: { ...composited, cursor: { ...moved.cursor, pixels: null } },
+        });
+        expect(create).toHaveBeenCalledExactlyOnceWith(s.canvas);
+        s.ack(3);
         await s.close();
     });
     it('preserves updates arriving while a prior native capture is unresolved', async () => {
-        const s = setup();
-        const one = deferred<ImageBitmap>(), two = deferred<ImageBitmap>();
-        const create = vi.fn().mockReturnValueOnce(one.promise).mockReturnValueOnce(two.promise).mockResolvedValueOnce(bitmap());
-        vi.stubGlobal('createImageBitmap', create);
+        const s = setup(), capture = deferred<ImageBitmap>();
+        const first = bitmap(), second = bitmap();
+        vi.stubGlobal('createImageBitmap', vi.fn().mockReturnValueOnce(capture.promise).mockResolvedValueOnce(second));
         s.relay.present(s.canvas, s.cursor);
-        s.relay.changed(0);
-        one.resolve(bitmap());
-        two.resolve(bitmap());
-        await s.next();
+        s.relay.changed();
+        const moved = cursorUpdate(2, 44);
+        s.relay.present(s.canvas, moved);
+        capture.resolve(first);
+        expect(await s.next()).toMatchObject({ frame: first, cursor: s.cursor });
         s.ack(1);
-        s.relay.present(s.canvas, s.cursor);
-        expect((await s.next()).planes).toEqual([0]);
+        s.relay.present(s.canvas, moved);
+        expect(await s.next()).toMatchObject({ frame: second, cursor: moved });
         s.ack(2);
         await s.close();
     });
-    it('awaits late captures, closes them, then fences the display without publishing', async () => {
-        const s = setup();
-        const one = deferred<ImageBitmap>(), two = deferred<ImageBitmap>();
-        vi.stubGlobal('createImageBitmap', vi.fn().mockReturnValueOnce(one.promise).mockReturnValueOnce(two.promise));
+    it('awaits late capture, closes it, then fences the display without publishing', async () => {
+        const s = setup(), capture = deferred<ImageBitmap>();
+        vi.stubGlobal('createImageBitmap', vi.fn().mockReturnValue(capture.promise));
         s.relay.present(s.canvas, s.cursor);
         const done = s.relay.close();
         expect(s.relay.close()).toBe(done);
-        const a = bitmap(), b = bitmap();
-        one.resolve(a);
         expect(s.port.postMessage).not.toHaveBeenCalled();
-        two.resolve(b);
-        const retire = await s.next();
-        expect(retire).toEqual({ type: 'retire', sequence: 0 });
-        expect(a.close).toHaveBeenCalledOnce();
-        expect(b.close).toHaveBeenCalledOnce();
+        const image = bitmap();
+        capture.resolve(image);
+        expect(await s.next()).toEqual({ type: 'retire', sequence: 0 });
+        expect(image.close).toHaveBeenCalledOnce();
         expect(s.port.close).not.toHaveBeenCalled();
         s.receive({ type: 'retired', sequence: 0 });
         await done;
@@ -215,35 +223,35 @@ describe('bounded KMS bitmap device ownership and retirement', () => {
         s.relay.present(s.canvas);
         expect(s.port.postMessage).toHaveBeenCalledTimes(2);
     });
-    it.each(['reject', 'throw'])('releases a successful sibling after native capture %s', async (kind) => {
+    it.each(['reject', 'throw'])('publishes neither plane after native capture %s', async (kind) => {
         const s = setup();
-        const image = bitmap();
-        vi.stubGlobal('createImageBitmap', vi.fn().mockImplementationOnce(() => { if (kind === 'throw')
-            throw Error('capture refused'); return Promise.reject(Error('capture refused')); }).mockResolvedValueOnce(image));
+        vi.stubGlobal('createImageBitmap', vi.fn(() => {
+            if (kind === 'throw') throw Error('capture refused');
+            return Promise.reject(Error('capture refused'));
+        }));
         s.relay.present(s.canvas, s.cursor);
         await s.error.promise;
-        const done = s.relay.close();
-        const rejected = expect(done).rejects.toThrow('capture failed');
+        const rejected = expect(s.relay.close()).rejects.toThrow('capture failed');
         expect(await s.next()).toEqual({ type: 'retire', sequence: 0 });
-        expect(image.close).toHaveBeenCalledOnce();
+        expect(s.port.postMessage).toHaveBeenCalledTimes(1);
         s.receive({ type: 'retired', sequence: 0 });
         await rejected;
     });
-    it('releases both images after frame transfer refusal and preserves the failure', async () => {
-        const s = setup();
-        const a = bitmap(), b = bitmap();
-        vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValueOnce(a).mockResolvedValueOnce(b));
+    it('releases the image after frame transfer refusal and preserves the failure', async () => {
+        const s = setup(), image = bitmap();
+        vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(image));
         const original = s.port.postMessage.getMockImplementation()!;
-        s.port.postMessage.mockImplementation((packet, transfer) => { if (packet.type === 'frame')
-            throw Error('port refused'); return original(packet, transfer); });
+        s.port.postMessage.mockImplementation((packet, transfer) => {
+            if (packet.type === 'frame') throw Error('port refused');
+            return original(packet, transfer);
+        });
         s.relay.present(s.canvas, s.cursor);
         await s.error.promise;
         const rejected = expect(s.relay.close()).rejects.toThrow('transfer failed');
         expect(await s.next()).toEqual({ type: 'retire', sequence: 0 });
         s.receive({ type: 'retired', sequence: 0 });
         await rejected;
-        expect(a.close).toHaveBeenCalledOnce();
-        expect(b.close).toHaveBeenCalledOnce();
+        expect(image.close).toHaveBeenCalledOnce();
     });
     it('refuses an acknowledgement before native capture has published the sequence', async () => {
         const s = setup(), capture = deferred<ImageBitmap>();
@@ -271,7 +279,7 @@ describe('bounded KMS bitmap device ownership and retirement', () => {
         const retire = await s.next();
         s.receive({ type: 'retired', sequence: retire.sequence });
         await rejected;
-        s.relay.changed(0);
+        s.relay.changed();
         s.relay.present(s.canvas);
         expect(s.port.postMessage).toHaveBeenCalledTimes(2);
     });
@@ -325,51 +333,85 @@ describe('display consumption and exact retirement', () => {
     }
     function display() {
         vi.stubGlobal('ImageBitmap', Bitmap);
-        const contexts = [{ transferFromImageBitmap: vi.fn() }, { transferFromImageBitmap: vi.fn() }];
-        const canvases = contexts.map(context => ({ width: 1280, height: 720, getContext: () => context }));
+        vi.stubGlobal('ImageData', class {
+            constructor(readonly data: Uint8ClampedArray, readonly width: number, readonly height: number) {}
+        });
+        const primary = { transferFromImageBitmap: vi.fn() };
+        const overlay = { putImageData: vi.fn(), clearRect: vi.fn() };
+        const cursorEvents = new EventTarget();
+        const canvases = [primary, overlay].map(context => ({
+            width: 1280, height: 720, getContext: () => context,
+            addEventListener: cursorEvents.addEventListener.bind(cursorEvents),
+            removeEventListener: cursorEvents.removeEventListener.bind(cursorEvents),
+        }));
         const port = { onmessage: null as ((event: any) => void) | null, onmessageerror: null as (() => void) | null, start: vi.fn(), close: vi.fn(), postMessage: vi.fn() };
         attachKmsBitmapDisplay(canvases as unknown as OffscreenCanvas[], port as unknown as MessagePort);
         expect(port.postMessage).toHaveBeenCalledExactlyOnceWith({type: 'ready'});
         port.postMessage.mockClear();
-        return { contexts, canvases, port, send: (data: any) => port.onmessage?.({ data }) };
+        return { primary, overlay, canvases, port, cursorEvents, send: (data: any) => port.onmessage?.({ data }) };
     }
-    it('consumes both planes before acknowledgement, clears both before retirement', () => {
-        const s = display(), frames = [new Bitmap(), new Bitmap()];
-        s.send({ type: 'frame', sequence: 1, planes: [0, 1], frames });
+    it('paints both planes before acknowledgement and clears both before retirement', () => {
+        const s = display(), frame = new Bitmap(), cursor = cursorUpdate();
+        s.port.postMessage.mockImplementation(({ type }) => {
+            if (type === 'ack') {
+                expect(s.primary.transferFromImageBitmap).toHaveBeenCalledWith(frame);
+                expect(s.overlay.putImageData).toHaveBeenCalledWith(expect.objectContaining({ data: cursor.cursor.pixels }), 20, 30);
+            } else {
+                expect(s.primary.transferFromImageBitmap).toHaveBeenLastCalledWith(null);
+                expect(s.overlay.clearRect).toHaveBeenLastCalledWith(0, 0, 3072, 1728);
+            }
+        });
+        s.send({ type: 'frame', sequence: 1, frame, cursor });
         expect(s.port.postMessage).toHaveBeenLastCalledWith({ type: 'ack', sequence: 1 });
-        for (let i = 0; i < 2; i++) {
-            expect(s.contexts[i].transferFromImageBitmap).toHaveBeenCalledWith(frames[i]);
-            expect(frames[i].close).toHaveBeenCalledOnce();
-            expect(s.canvases[i].width).toBe(3072);
-        }
+        expect(frame.close).toHaveBeenCalledOnce();
+        expect(s.canvases.map(canvas => canvas.width)).toEqual([3072, 3072]);
         s.send({ type: 'retire', sequence: 1 });
         expect(s.port.postMessage).toHaveBeenLastCalledWith({ type: 'retired', sequence: 1 });
-        for (const context of s.contexts)
-            expect(context.transferFromImageBitmap).toHaveBeenLastCalledWith(null);
         expect(s.port.onmessage).toBeNull();
         expect(s.port.close).toHaveBeenCalledOnce();
+        s.cursorEvents.dispatchEvent(new Event('contextrestored'));
+        expect(s.overlay.putImageData).toHaveBeenCalledOnce();
+    });
+    it('updates and restores the cursor without replacing the primary image', () => {
+        const s = display(), first = cursorUpdate(), moved = cursorUpdate(2, -3);
+        s.send({ type: 'frame', sequence: 1, frame: new Bitmap(), cursor: first });
+        s.send({ type: 'frame', sequence: 2, cursor: moved });
+        expect(s.overlay.clearRect).toHaveBeenLastCalledWith(20, 30, 1, 1);
+        expect(s.overlay.putImageData).toHaveBeenLastCalledWith(expect.anything(), -3, 30);
+        s.cursorEvents.dispatchEvent(new Event('contextrestored'));
+        expect(s.overlay.putImageData).toHaveBeenCalledTimes(3);
+        expect(s.overlay.putImageData).toHaveBeenLastCalledWith(expect.anything(), -3, 30);
+        s.send({ type: 'frame', sequence: 3, cursor: { ...moved, composited: true,
+            cursor: { ...moved.cursor, pixels: null } } });
+        expect(s.overlay.clearRect).toHaveBeenLastCalledWith(-3, 30, 1, 1);
+        expect(s.overlay.putImageData).toHaveBeenCalledTimes(3);
+        expect(s.primary.transferFromImageBitmap).toHaveBeenCalledOnce();
+        expect(s.port.postMessage).toHaveBeenLastCalledWith({ type: 'ack', sequence: 3 });
     });
     it('retires a never-painted display with sequence zero', () => { const s = display(); s.send({ type: 'retire', sequence: 0 }); expect(s.port.postMessage).toHaveBeenCalledWith({ type: 'retired', sequence: 0 }); });
     it('rejects mismatched retirement without acknowledging or dropping the owner', () => { const s = display(); expect(() => s.send({ type: 'retire', sequence: 1 })).toThrow('retirement sequence'); expect(s.port.close).not.toHaveBeenCalled(); expect(s.port.postMessage).not.toHaveBeenCalled(); });
-    it.each(['duplicate-plane', 'oversize', 'wrong-sequence'])('releases malformed bundle siblings and never partially displays %s', kind => {
-        const s = display(), frames = [new Bitmap(), new Bitmap()];
-        if (kind === 'oversize')
-            frames[1].width = 3841;
-        expect(() => s.send({ type: 'frame', sequence: kind === 'wrong-sequence' ? 2 : 1, planes: kind === 'duplicate-plane' ? [0, 0] : [0, 1], frames })).toThrow('Invalid KMS bitmap');
-        for (const context of s.contexts)
-            expect(context.transferFromImageBitmap).not.toHaveBeenCalled();
-        for (const frame of frames)
-            expect(frame.close).toHaveBeenCalledOnce();
+    it.each(['oversize', 'shared-pixels', 'wrong-sequence'])('rejects the whole bundle and closes its bitmap for %s', kind => {
+        const s = display(), frame = new Bitmap(), cursor = cursorUpdate();
+        if (kind === 'oversize') cursor.width = 3841;
+        if (kind === 'shared-pixels') {
+            // Malformed inbound message. The trusted producer only sends owned arrays.
+            Object.assign(cursor.cursor, { pixels: new Uint8ClampedArray(new SharedArrayBuffer(4)) });
+        }
+        expect(() => s.send({ type: 'frame', sequence: kind === 'wrong-sequence' ? 2 : 1, frame, cursor })).toThrow(/Invalid KMS (bitmap|cursor)/);
+        expect(s.primary.transferFromImageBitmap).not.toHaveBeenCalled();
+        expect(s.overlay.putImageData).not.toHaveBeenCalled();
+        expect(frame.close).toHaveBeenCalledOnce();
         expect(s.port.postMessage).not.toHaveBeenCalled();
     });
-    it('releases an unconsumed sibling when native display transfer fails', () => {
-        const s = display(), frames = [new Bitmap(), new Bitmap()];
-        s.contexts[0].transferFromImageBitmap.mockImplementation(() => { throw Error('display refused'); });
-        expect(() => s.send({ type: 'frame', sequence: 1, planes: [0, 1], frames })).toThrow('display refused');
-        for (const frame of frames)
-            expect(frame.close).toHaveBeenCalledOnce();
+    it('closes the bitmap and leaves the cursor unchanged when native transfer fails', () => {
+        const s = display(), frame = new Bitmap();
+        s.primary.transferFromImageBitmap.mockImplementation(() => { throw Error('display refused'); });
+        expect(() => s.send({ type: 'frame', sequence: 1, frame, cursor: cursorUpdate() })).toThrow('display refused');
+        expect(frame.close).toHaveBeenCalledOnce();
+        expect(s.overlay.putImageData).not.toHaveBeenCalled();
         expect(s.port.postMessage).not.toHaveBeenCalled();
     });
+
 });
 
 
