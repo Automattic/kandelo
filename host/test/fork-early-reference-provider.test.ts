@@ -1,3 +1,4 @@
+import { groupMemoryLayout } from './support/group-memory-layout';
 import { describe, expect, it } from "vitest";
 import {
   WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER,
@@ -257,6 +258,32 @@ function nullGraph(): ForkReferenceRecipeGraph {
 }
 
 describe("early child reference provider", () => {
+  it("clears virtual scratch and retains a reservation when protected output refuses release", () => {
+    const receipt = { group: 7, pid: 100, tid: 100, serial: 1n, generation: 0n };
+    const { source, launch, close } = groupMemoryLayout({ receipt, initialPages: 8 });
+    const base = providerOptions(recordsFor(nullGraph(), [1]), [{ activationId: 1 }], externrefs(new Map()).provider, new TestTransit());
+    const released: number[] = []; let next = 65536;
+    const provider = new ForkEarlyChildReferenceProvider({ ...base, memory: source,
+      allocateScratch(size) { const address = next; next += size; return address; },
+      deallocateScratch(address) { released.push(address); },
+    });
+    const pointer = provider.reserveScratch(65553);
+    source.fillBytes(pointer, 65553, 0x77);
+    provider.releaseScratch(pointer, 65553);
+    expect(source.readBytes(pointer, 65553).every(byte => byte === 0)).toBe(true);
+    const second = provider.reserveScratch(32);
+    source.fillBytes(second, 32, 0x5a);
+    const pte = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
+    const page = Math.floor(second / 65536), entry = pte[page]!;
+    pte[page] = entry & ~2;
+    expect(() => provider.releaseScratch(second, 32)).toThrow();
+    expect(source.readBytes(second, 32)).toEqual(new Uint8Array(32).fill(0x5a));
+    pte[page] = entry;
+    provider.releaseScratch(second, 32);
+    expect(source.readBytes(second, 32).every(byte => byte === 0)).toBe(true);
+    provider.abort(); expect(released).toEqual([65536]); close();
+  });
+
   it("materializes funcref, externref, and static-root recipes once", () => {
     const callback = (() => 73) as CallableFunction;
     const token = Object.freeze({ token: "child" });

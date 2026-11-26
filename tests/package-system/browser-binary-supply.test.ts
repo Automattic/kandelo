@@ -33,7 +33,7 @@ describe("browser binary supply", () => {
   it("collects the browser app's required imports, not local fixtures", () => {
     const binaries = browserImportDemands(repoRoot).map((demand) => demand.binary);
     // The exec test runner's /bin/sh is the image's Bash, not a separate dash.
-    expect(binaries).toContain("programs/wasm32/bash.wasm");
+    expect(binaries).toContain("programs/wasm32/bash/bash.wasm");
     expect(binaries).not.toContain("programs/wasm32/dash.wasm");
     // A local conformance fixture, not a package output.
     expect(binaries).not.toContain("programs/wasm32/fbtest.wasm");

@@ -1,0 +1,13 @@
+script_path = "packages/registry/desktop-data/build-desktop-data.sh"
+inputs = [
+  "scripts/package-build-roots.sh",
+  "packages/registry/desktop-data/build-desktop-data.sh",
+  "packages/registry/wayland-demo/desktops/data/sway",
+  "packages/registry/wayland-demo/desktops/data/foot",
+  "packages/registry/wayland-demo/desktops/data/fonts/fonts.conf",
+  "third_party/Inconsolata-Regular.ttf",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"

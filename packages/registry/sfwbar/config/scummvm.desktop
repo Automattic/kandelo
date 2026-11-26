@@ -2,6 +2,7 @@
 Type=Application
 Name=ScummVM
 Comment=Adventure game launcher
-Exec=/usr/bin/scummvm
+Exec=/usr/bin/scummvm-static
+TryExec=/usr/bin/scummvm-static
 Terminal=false
 Categories=Game;

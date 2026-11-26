@@ -895,3 +895,88 @@ fn an_execute_only_path_descriptor_does_not_grant_reads_of_the_prepared_image() 
     assert_eq!(stat.st_mode & 0o777, 0o111);
     assert_eq!(stat.st_size, fixture.image.len() as u64);
 }
+
+
+fn group_variant_for(source: &[u8]) -> Vec<u8> {
+    let mut bytes = crate::grouped_exec::tests::grouped(3);
+    let label = b"\"sourceSha256\":\"";
+    let offset = bytes.windows(label.len()).position(|part| part == label).unwrap() + label.len();
+    let digest = alloc::format!("{:x}", Sha256::digest(source));
+    bytes[offset..offset + 64].copy_from_slice(digest.as_bytes());
+    bytes
+}
+
+#[test]
+fn memory_group_image_keeps_source_identity_and_survives_temporary_image_target_close() {
+    let _namespace = NamespaceGuard::enter();
+    let mut proc = Process::new(100);
+    let mut locks = AdvisoryLockManager::new();
+    let source = include_bytes!("../../../../../abi/program-fixtures/v56/echo.wasm");
+    let variant = group_variant_for(source);
+    let source_fd = install(&mut proc, b"/source", source);
+    let image_fd = install(&mut proc, b"/image", &variant);
+    let owner = PreparedExecOwner::Process { pid: 100, caller_tid: 100, generation: 0 };
+    let target = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/source", 0).unwrap();
+    let image = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/image", 0).unwrap();
+    observe(&mut proc, &mut NoopHost, target); observe(&mut proc, &mut NoopHost, image);
+    let original_stat = proc.prepared_exec_targets.get(target).unwrap().stat;
+    bind_memory_group_image(&mut proc, &mut locks, &mut NoopHost, 100, target, image).unwrap();
+    cancel(&mut proc, &mut locks, &mut NoopHost, 100, image).unwrap();
+    sys_close(&mut proc, &mut NoopHost, image_fd).unwrap();
+    sys_unlink(&mut proc, &mut NoopHost, b"/image").unwrap();
+    assert_eq!(observe(&mut proc, &mut NoopHost, target), variant);
+    let retained = proc.prepared_exec_targets.get(target).unwrap();
+    assert_eq!(retained.stat.st_ino, original_stat.st_ino);
+    assert_eq!(retained.stat.st_mode, original_stat.st_mode);
+    assert_eq!(retained.diagnostic_path.as_ref(), b"/source");
+    cancel(&mut proc, &mut locks, &mut NoopHost, 100, target).unwrap();
+    sys_close(&mut proc, &mut NoopHost, source_fd).unwrap();
+}
+
+#[test]
+fn memory_group_image_rejects_wrong_source_without_replacing_the_target() {
+    let _namespace = NamespaceGuard::enter();
+    let mut proc = Process::new(100);
+    let mut locks = AdvisoryLockManager::new();
+    let source = include_bytes!("../../../../../abi/program-fixtures/v56/echo.wasm");
+    let source_fd = install(&mut proc, b"/source", source);
+    let image_fd = install(&mut proc, b"/image", &group_variant_for(b"different source"));
+    let owner = PreparedExecOwner::Process { pid: 100, caller_tid: 100, generation: 0 };
+    let target = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/source", 0).unwrap();
+    let image = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/image", 0).unwrap();
+    observe(&mut proc, &mut NoopHost, target); observe(&mut proc, &mut NoopHost, image);
+    assert_eq!(bind_memory_group_image(&mut proc, &mut locks, &mut NoopHost, 100, target, image), Err(Errno::ENOEXEC));
+    assert_eq!(observe(&mut proc, &mut NoopHost, target), source);
+    cancel(&mut proc, &mut locks, &mut NoopHost, 100, image).unwrap();
+    cancel(&mut proc, &mut locks, &mut NoopHost, 100, target).unwrap();
+    sys_close(&mut proc, &mut NoopHost, source_fd).unwrap();
+    sys_close(&mut proc, &mut NoopHost, image_fd).unwrap();
+}
+
+#[test]
+fn memory_group_executable_proc_link_exposes_original_file_bytes_and_identity() {
+    let _namespace = NamespaceGuard::enter();
+    let mut proc = Process::new(100);
+    let mut locks = AdvisoryLockManager::new();
+    let source = include_bytes!("../../../../../abi/program-fixtures/v56/echo.wasm");
+    let variant = group_variant_for(source);
+    let source_fd = install(&mut proc, b"/source", source);
+    let image_fd = install(&mut proc, b"/image", &variant);
+    let owner = PreparedExecOwner::Process { pid: 100, caller_tid: 100, generation: 0 };
+    let target = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/source", 0).unwrap();
+    let image = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/image", 0).unwrap();
+    observe(&mut proc, &mut NoopHost, target); observe(&mut proc, &mut NoopHost, image);
+    bind_memory_group_image(&mut proc, &mut locks, &mut NoopHost, 100, target, image).unwrap();
+    cancel(&mut proc, &mut locks, &mut NoopHost, 100, image).unwrap();
+    assert_eq!(observe(&mut proc, &mut NoopHost, target), variant);
+    let original = sys_fstat(&mut proc, &mut NoopHost, source_fd).unwrap();
+    commit_process(&mut proc, &mut locks, &mut NoopHost, 100, 100, target).unwrap();
+    let public = sys_stat(&mut proc, &mut NoopHost, b"/proc/self/exe").unwrap();
+    assert_eq!((public.st_dev, public.st_ino, public.st_size), (original.st_dev, original.st_ino, original.st_size));
+    let fd = sys_open(&mut proc, &mut NoopHost, b"/proc/self/exe", O_RDONLY, 0).unwrap();
+    let mut bytes = alloc::vec![0; source.len()];
+    assert_eq!(sys_read(&mut proc, &mut NoopHost, fd, &mut bytes).unwrap(), source.len());
+    assert_eq!(bytes, source);
+    sys_exit_with_locks(&mut proc, &mut locks, &mut NoopHost, 0);
+    let _ = image_fd;
+}

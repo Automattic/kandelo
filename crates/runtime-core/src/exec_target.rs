@@ -14,6 +14,7 @@ use crate::ofd::FileType;
 use crate::process::{HostIO, Process};
 
 mod prepared_image;
+pub(crate) use prepared_image::bind_memory_group_image;
 mod host_program;
 pub use host_program::prepare_host_program;
 
@@ -804,6 +805,25 @@ pub fn admit(
     token: u32,
     expected_abi: u32,
 ) -> Result<Admission, Errno> {
+    admit_profile(proc, owner_pid, token, expected_abi, false)
+}
+
+pub(crate) fn admit_grouped(
+    proc: &Process,
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+) -> Result<Admission, Errno> {
+    admit_profile(proc, owner_pid, token, expected_abi, true)
+}
+
+fn admit_profile(
+    proc: &Process,
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+    grouped: bool,
+) -> Result<Admission, Errno> {
     let bytes = artifact_bytes(proc, owner_pid, token)?;
     if let Some(script) = parse_shebang(&bytes[..bytes.len().min(SHEBANG_HEADER_MAX_BYTES)]) {
         return Ok(Admission::Script(script));
@@ -812,7 +832,17 @@ pub fn admit(
         expected_abi: Some(expected_abi),
         ..wasm_artifact::ArtifactPolicy::default()
     };
-    let report = wasm_artifact::describe_artifact_policy_failures(bytes, &policy);
+    let report = if grouped {
+        match wasm_artifact::read_artifact_facts(bytes) {
+            Ok(facts) => wasm_artifact::grouped_memory::describe_failures(bytes, &facts, &policy),
+            Err(error) => wasm_artifact::policy::ArtifactPolicyReport {
+                failures: alloc::vec![error.0],
+                warnings: Vec::new(),
+            },
+        }
+    } else {
+        wasm_artifact::describe_artifact_policy_failures(bytes, &policy)
+    };
     if report.failures.is_empty() {
         Ok(Admission::Program)
     } else {
@@ -1127,6 +1157,7 @@ fn finish_commit(
     // unreadable or drifted fails the exec outright instead of committing an
     // image under the outgoing image's width.
     let image_pointer_width = wasm_artifact::detect_pointer_width(target.observed_bytes()?);
+    let grouped_artifact = crate::group_layout::Artifact::read(target.observed_bytes()?).ok();
     match caller_tid {
         Some(tid) => crate::syscalls::commit_exec_state_with_locks(proc, locks, host, tid)?,
         None => crate::syscalls::commit_spawn_exec_state_with_locks(proc, locks, host)?,
@@ -1138,15 +1169,18 @@ fn finish_commit(
     // image has stopped being the one that runs, and before the host launches
     // the incoming one. An exec may legitimately change the width.
     proc.pointer_width = image_pointer_width;
+    proc.grouped_artifact = grouped_artifact;
     // The incoming image's channel is placed by the host with its layout and
     // registered before that image runs; the outgoing one's address means
     // nothing to it.
     proc.main_channel_addr = 0;
+    proc.grouped_main_entry = None;
     proc.exec_generation = next_generation;
     proc.entropy_reads.clear();
 
-    let competing: Vec<_> = proc.prepared_exec_targets.drain().collect();
-    for stale in competing {
+    // A committed image cannot recover from a descriptor-sized allocation
+    // failure. Pop each remaining exact target before releasing its OFD.
+    while let Some((_, stale)) = proc.prepared_exec_targets.entries.pop_first() {
         release_target(proc, locks, host, &stale);
     }
     Ok(())
@@ -1243,6 +1277,7 @@ fn install_exe(
     host: &mut dyn HostIO,
     opened: OpenFileDescRef,
 ) {
+    proc.grouped_artifact = None;
     if let Some(previous) = proc.exe.replace(opened) {
         let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, previous);
     }
@@ -1610,4 +1645,25 @@ mod tests {
         assert_eq!(spawn_owner.validate_spawn(3, 6, 13), Err(Errno::ESRCH),);
         assert_eq!(spawn_owner.validate_spawn(3, 5, 14), Err(Errno::EINVAL),);
     }
+}
+
+/// Only direct byte-supplied host roots lack the metadata retained at normal
+/// exec commit. Read their attached object without changing its file offset.
+pub(crate) fn attached_group_artifact(proc: &Process, host: &mut dyn HostIO) -> Result<crate::group_layout::Artifact, Errno> {
+    if let Some(artifact) = proc.grouped_artifact { return Ok(artifact); }
+    let ofd = proc.ofd_table.get(proc.exe.ok_or(Errno::ENOENT)?.0).ok_or(Errno::EBADF)?;
+    let stat = target_fstat(host, ofd.host_handle)?;
+    let size = usize::try_from(stat.st_size).map_err(|_| Errno::EFBIG)?;
+    if size > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES { return Err(Errno::EFBIG); }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| Errno::ENOMEM)?;
+    bytes.resize(size, 0);
+    let mut offset = 0;
+    while offset < size {
+        let end = size.min(offset.saturating_add(32768));
+        let count = target_pread(host, ofd.host_handle, &mut bytes[offset..end], offset as i64)?;
+        if count == 0 || count > end - offset { return Err(Errno::EIO); }
+        offset += count;
+    }
+    crate::group_layout::Artifact::read(&bytes)
 }

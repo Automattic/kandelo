@@ -3,7 +3,7 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
 
 const dashBinary = tryResolveBinary("programs/dash.wasm");
-const bashBinary = tryResolveBinary("programs/bash.wasm");
+const bashBinary = tryResolveBinary("programs/bash/bash.wasm");
 const shellBinary = dashBinary ?? bashBinary;
 const shellArgv0 = dashBinary ? "dash" : "bash";
 

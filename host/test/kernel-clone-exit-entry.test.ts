@@ -56,6 +56,7 @@ afterEach(() => {
 interface TestChannel {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   readonly channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -88,6 +89,7 @@ function makeHarness(
     shared: true,
   });
   const channel: TestChannel = {
+    source: processMemory,
     pid: 41,
     memory: processMemory,
     channelOffset: 0,
@@ -150,7 +152,7 @@ function makeHarness(
     pendingSelectRetries: new Map(),
     processes: new Map([[channel.pid, {
       pid: channel.pid,
-      memory: channel.memory,
+      memory: channel.memory, source: channel.source,
       execGeneration: 0n,
       channels: [channel],
       ptrWidth: pointerWidth,
@@ -223,7 +225,7 @@ async function flushLifecycleContinuations(): Promise<void> {
 }
 
 describe("clone and exit entry authority", () => {
-  it.each([false, true])("rejects an obsolete clone completion after retirement (reject=%s)", async rejectLaunch => {
+  it.each([false, true])("rolls back an unattached clone without publishing into its retired request (reject=%s)", async rejectLaunch => {
     let resolveLaunch!: () => void;
     let rejectLaunchPromise!: (error: Error) => void;
     const launch = new Promise<void>((resolve, reject) => {

@@ -7,7 +7,7 @@ import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine"
 import { cageShellTextColumns } from "./support/cage-shell-frame";
 import { screenshotPixelDelta } from "./support/screenshot-pixels";
 import { setInternalsOpen } from "./support/dock";
-import { bootStoredComputer } from "./support/computer-library";
+import { configureNewComputer } from "./support/computer-library";
 import { typePhysicalText } from "./support/physical-typing";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";
 
@@ -32,7 +32,7 @@ async function syslogText(page: Page): Promise<string> {
   return lines.join("\n");
 }
 
-/** The machine's terminal: cage and wlterm write their stdout there. */
+/** The launching shell's terminal, including the actual foreground exit status. */
 async function terminalText(page: Page): Promise<string> {
   const terminal = page.locator(".kshell-terminal-slot:not([hidden])");
   if ((await terminal.locator(".xterm-screen:visible").count()) === 0) return "";
@@ -54,6 +54,8 @@ async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
 
 const canvasLocator = (page: Page) =>
   page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
+
+test.use({ headless: true });
 
 test("Cage reports computer storage bootstrap failure before launching a guest", async ({ page }) => {
   const workers: string[] = [];
@@ -84,31 +86,52 @@ async function chipText(page: Page): Promise<string> {
   return texts.join(" ");
 }
 
-/**
- * Browser gate for the cage machine: upstream cage on wlroots, with no
- * WLR_RENDERER override. The card has a render node, so wlroots takes its
- * GLES2 renderer, which reaches the host's WebGL2 bridge through libEGL's
- * GBM platform. The Node host has no WebGL2, so this spec is the only gate
- * on that path.
- *
- * Gates:
- *   1. The machine runs cage, and wlterm maps (WLTERM_READY, which wlterm
- *      prints after its first committed frame).
- *   2. cage's GL context owns the canvas: the Modeset chip reports the
- *      `webgl2-gl` renderer, which only a GL session that claimed the CRTC
- *      shows. Every frame on screen is therefore a gbm buffer wlroots
- *      rendered with GLES2 and the page flip blitted.
- *   3. The canvas shows a frame, not a blank: wlterm's window compresses
- *      to a PNG far larger than an all-black canvas.
- *   4. After the shell's first output appears, only typing changes the
- *      frame: the frame holds still for a second
- *      (wlterm draws nothing on a timer), then a keystroke goes through
- *      libinput, cage's seat, wl_keyboard and wlterm's PTY, and the
- *      shell's echo is drawn into wlterm's wl_shm buffer, which wlroots
- *      uploads as a texture.
- *   5. `exit` ends the shell, and wlterm reports a clean exit.
- */
-test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async ({ page }) => {
+/** Wait for the real Foot and its Bash child before checking rendered output. */
+async function waitForFoot(page: Page): Promise<number[]> {
+  await openSurface(page, "Internals");
+  await page.getByRole("tab", { name: "Procs", exact: true }).click();
+  let pids: number[] = [];
+  await expect.poll(async () => {
+    const rows = await page.locator(".ktable tbody tr").evaluateAll(elements => elements.flatMap(row => {
+      const cells = row.querySelectorAll("td");
+      return cells.length === 5 ? [{
+        pid: Number(cells[0].textContent?.match(/\d+/)?.[0]),
+        ppid: Number(cells[1].textContent), command: cells[4].textContent ?? "",
+      }] : [];
+    }));
+    const foot = rows.filter(row => /^(?:\/\S*\/)?foot(?:\s|$)/.test(row.command));
+    const shell = rows.find(row => row.ppid === foot[0]?.pid && /^(?:-?(?:\/\S*\/)?(?:bash|sh))(?:\s|$)/.test(row.command));
+    if (foot.length !== 1 || !shell) return false;
+    pids = [foot[0].pid, shell.pid];
+    return true;
+  }, { timeout: 120_000 }).toBe(true);
+  return pids;
+}
+
+async function expectCleanCageExit(page: Page, marker: string, children: number[]) {
+  const surface = page.locator(".kmachine-primary .kmodeset-surface");
+  await expect(surface).toHaveAttribute("data-kms-owner-pid", "0", { timeout: 60_000 });
+  await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
+  await page.locator(".kshell-host:visible .xterm").first().click();
+  await typePhysicalText(page, `echo ${marker}=$?\n`, { delay: 40 });
+  await expectTerminal(page, new RegExp(`${marker}=0(?:\\s|$)`), 30_000);
+  await openSurface(page, "Internals");
+  await page.getByRole("tab", { name: "Procs", exact: true }).click();
+  // Loading/empty tables cannot establish that the graphical processes retired.
+  await expect.poll(async () => page.locator(".ktable tbody tr td:first-child").evaluateAll(
+    cells => cells.filter(cell => Number(cell.textContent?.match(/\d+/)?.[0]) === 1).length,
+  ), { timeout: 30_000 }).toBe(1);
+  await expect(page.locator(".ktable tbody tr > td:last-child").filter({ hasText: /^(?:\/\S*\/)?(?:cage|foot)(?:\s|$)/ }))
+    .toHaveCount(0, { timeout: 60_000 });
+  await expect.poll(async () => page.locator(".ktable tbody tr td:first-child").evaluateAll(
+    (cells, children) => cells.filter(cell => children.includes(Number(cell.textContent?.match(/\d+/)?.[0]))).length,
+    children,
+  ), { timeout: 60_000 }).toBe(0);
+}
+
+/** Normal image, GLES pixels, idle/input behavior, real shell exit and cleanup. */
+test("Kandelo cage renders a Foot session with wlroots' GLES2 renderer", async ({ page }) => {
   test.setTimeout(300_000);
 
   await gotoMachine(page, "cage");
@@ -119,8 +142,8 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     .toMatch(/running .*\/usr\/bin\/cage/);
   expect(await syslogText(page)).not.toMatch(/configured command failed/);
 
-  // Gate 1.
-  await expectTerminal(page, /WLTERM_READY/, 120_000);
+  // Gate 1: real Foot and child shell.
+  const children = await waitForFoot(page);
 
   // Gate 2.
   await openSurface(page, "Graphics");
@@ -131,31 +154,30 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     .toMatch(/webgl2-gl/i);
 
   // Gate 3. PNG size varies with mode and browser encoder; prove real shell
-  // pixels rather than rejecting a valid lower-resolution frame by byte size.
-  // The first committed frame is an empty grid. Wait for actual shell
-  // output before testing idle stability: loading the shell and drawing its
-  // prompt is a legitimate change after WLTERM_READY, without any input.
+  // pixels with the configured Foot font.
+  // Process creation precedes the prompt; wait for actual shell pixels
+  // before testing idle stability.
   const mode = (await chipText(page)).match(/(\d+)×(\d+)/);
   expect(mode, "the Modeset chip reports the connector mode").not.toBeNull();
   const output = { width: Number(mode![1]), height: Number(mode![2]) };
   await expect.poll(
     async () => cageShellTextColumns(page, await canvas.screenshot(), output),
-    { timeout: 60_000, message: "wlterm has rendered the shell's first output" },
+    { timeout: 60_000, message: "Foot has rendered the shell's first output" },
   ).toBeGreaterThan(24);
-  // Browser focus must not inject a guest click and change wlterm or
+  // Browser focus must not inject a guest click and change Foot or
   // compositor state before the typing-only framebuffer assertion.
   await canvas.focus();
   await expect(canvas).toBeFocused();
   // Locator screenshots include DOM overlays above the canvas. The initial
   // lazy-download toasts can finish after the shell prompt is painted; their
-  // disappearance is not a change in wlterm's framebuffer.
+  // disappearance is not a change in Foot's framebuffer.
   await expect(page.getByRole("complementary", { name: "Download status" }))
     .toBeHidden({ timeout: 60_000 });
   const frame = () => canvas.screenshot({ animations: "disabled" });
   const before = await frame();
   await page.waitForTimeout(1_000);
   const idleDelta = await screenshotPixelDelta(page, before, await frame());
-  expect(idleDelta, "wlterm's rendered pixels remain unchanged while idle").toMatchObject({ same: true, changed: 0 });
+  expect(idleDelta, "Foot's rendered pixels remain unchanged while idle").toMatchObject({ same: true, changed: 0 });
   await page.keyboard.type("echo cage-gles2-ok\n", { delay: 40 });
   await expect
     .poll(
@@ -168,7 +190,7 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
   // invisible text. A zero exit proves the shell parsed the actual uppercase
   // and shifted punctuation, beyond merely repainting the typed command.
   await typePhysicalText(page, 'test "CAGE" = "CAGE" && test "$((5+7))" -eq 12; exit $?\n', { delay: 40 });
-  await expectTerminal(page, /WLTERM_EXIT code=0/, 60_000);
+  await expectCleanCageExit(page, "CAGE_EXIT_STATUS", children);
 });
 
 test("Cage resizes, releases its display on exit and survives repeated live restarts", async ({ page }) => {
@@ -183,28 +205,34 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
   });
   await gotoMachine(page, "cage", { search: { memoryProfile: "constrained" } });
   await waitForMachineBootInput(page);
-  const id = new URL(page.url()).searchParams.get("computer");
-  expect(id).not.toBeNull();
+  let id = new URL(page.url()).searchParams.get("computer");
+  expect(id, "desktop uses the normal computer store").toMatch(/^[0-9a-f-]{36}$/);
   const realm = await memoryBoundaryRealmId(page);
   const display = page.locator(".kmachine-primary .kmodeset-surface");
   const owner = async () => Number(await display.getAttribute("data-kms-owner-pid"));
   for (let cycle = 0; cycle < 6; cycle++) {
     if (cycle > 0) {
-      await page.getByRole("button", { name: "Library", exact: true }).click();
-      await bootStoredComputer(page, id!);
+      await configureNewComputer(page, "cage");
+      await expect(page.getByRole("radio", { name: "Temporary", exact: true })).toBeChecked();
+      await page.getByRole("button", { name: "Create and boot", exact: true }).click();
       // Why: the old machine can still say Running until asynchronous unload
       // starts. Observe this restart before accepting the next Running state.
       await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
       await waitForMachineBootInput(page);
+      await expect.poll(() => {
+        const next = new URL(page.url()).searchParams.get("computer");
+        return next !== id && /^[0-9a-f-]{36}$/.test(next ?? "");
+      }, { timeout: 240_000 }).toBe(true);
+      id = new URL(page.url()).searchParams.get("computer");
     }
-    await expectTerminal(page, /WLTERM_READY/, 120_000);
+    const children = await waitForFoot(page);
     await openSurface(page, "Graphics");
     const canvas = canvasLocator(page);
     await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);
     await expect.poll(owner, { timeout: 60_000 }).toBeGreaterThan(0);
     // A small valid frame may compress below the old PNG-size heuristic.
-    // Why: WLTERM_READY marks the first committed grid, before its shell has
-    // necessarily loaded. Early keys can precede the PTY's initial setup.
+    // Why: Foot and Bash can exist before the first prompt is rendered.
+    // Early keys can precede the PTY's initial setup.
     const mode = (await chipText(page)).match(/(\d+)×(\d+)/)!;
     await expect.poll(async () => cageShellTextColumns(page, await canvas.screenshot(),
       { width: Number(mode[1]), height: Number(mode[2]) }), { timeout: 60_000 }).toBeGreaterThan(24);
@@ -224,16 +252,13 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
     await expect.poll(async () => (await screenshotPixelDelta(page, before, await canvas.screenshot())).same,
       { timeout: 60_000 }).toBe(false);
     if (cycle % 2 === 1 && cycle < 5) continue;
-    // Why: alternate restarts keep Cage and wlterm alive, exercising machine
+    // Why: alternate restarts keep Cage and Foot alive, exercising machine
     // teardown as well as client-driven release. The final cycle exits cleanly.
     await typePhysicalText(page, "exit\n", { delay: 40 });
     await expect.poll(owner, { timeout: 60_000 }).toBe(0);
     await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
       .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
-    await expect.poll(() => terminalText(page), { timeout: 60_000 }).toMatch(/WLTERM_EXIT code=0/);
-    await page.locator(".kshell-host:visible .xterm").first().click();
-    await typePhysicalText(page, `echo CAGE_STATUS_${cycle}=$?\n`, { delay: 40 });
-    await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(new RegExp(`CAGE_STATUS_${cycle}=0(?:\\s|$)`));
+    await expectCleanCageExit(page, `CAGE_STATUS_${cycle}`, children);
   }
   expect(await memoryBoundaryRealmId(page)).toBe(realm);
   expect(await memoryBoundaryFailures(page)).toEqual([]);
@@ -279,7 +304,7 @@ for (const density of [1, 2]) {
     test(`Cage uses its CSS pane size at browser density ${density}`, async ({ page, browserName }) => {
       test.setTimeout(240_000);
       await gotoMachine(page, "cage");
-      await expectTerminal(page, /WLTERM_READY/, 120_000);
+      const children = await waitForFoot(page);
       await openSurface(page, "Graphics");
       const canvas = canvasLocator(page);
       await expect(canvas).toBeVisible({ timeout: 30_000 });
@@ -322,7 +347,7 @@ for (const density of [1, 2]) {
       await expect.poll(async () => (await screenshotPixelDelta(page, before, await canvas.screenshot())).same,
         { timeout: 60_000 }).toBe(false);
       await page.keyboard.type("exit\n", { delay: 40 });
-      await expectTerminal(page, /WLTERM_EXIT code=0/, 60_000);
+      await expectCleanCageExit(page, "CAGE_EXIT_STATUS", children);
     });
   });
 }

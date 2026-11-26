@@ -19,7 +19,7 @@ name = "login"
 install = "eager"
 
 [[packages.outputs]]
-binary = "programs/wasm32/login.wasm"
+binary = "programs/wasm32/login/login.wasm"
 path = "/bin/login"
 mode = "4755"
 uid = 0
@@ -49,7 +49,7 @@ gid = 0
 name = "bash"
 
 [[packages.outputs]]
-binary = "programs/wasm32/bash.wasm"
+binary = "programs/wasm32/bash/bash.wasm"
 path = "/bin/bash"
 # bash is /bin/sh in every Kandelo image, and the interactive login shell.
 # /bin/sh is what system(), popen() and a `#!/bin/sh` script exec, so it must
@@ -107,7 +107,7 @@ path = "/usr/bin/infotocap"
 name = "coreutils"
 
 [[packages.outputs]]
-binary = "programs/wasm32/coreutils.wasm"
+binary = "programs/wasm32/coreutils/coreutils.wasm"
 path = "/bin/coreutils"
 aliases = [
   "/usr/bin/[",
@@ -225,7 +225,7 @@ aliases = ["/usr/bin/awk"]
 name = "grep"
 
 [[packages.outputs]]
-binary = "programs/wasm32/grep.wasm"
+binary = "programs/wasm32/grep/grep.wasm"
 path = "/bin/grep"
 aliases = ["/bin/egrep", "/bin/fgrep"]
 
@@ -233,7 +233,7 @@ aliases = ["/bin/egrep", "/bin/fgrep"]
 name = "sed"
 
 [[packages.outputs]]
-binary = "programs/wasm32/sed.wasm"
+binary = "programs/wasm32/sed/sed.wasm"
 path = "/bin/sed"
 
 [[packages]]

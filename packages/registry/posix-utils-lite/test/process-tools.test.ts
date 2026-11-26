@@ -5,7 +5,7 @@ import { runCentralizedProgram } from "../../../../host/test/centralized-test-he
 const dash = tryResolveBinary("programs/dash.wasm");
 const pgrep = tryResolveBinary("programs/posix-utils-lite/pgrep.wasm");
 const ps = tryResolveBinary("programs/posix-utils-lite/ps.wasm");
-const coreutils = tryResolveBinary("programs/coreutils.wasm");
+const coreutils = tryResolveBinary("programs/coreutils/coreutils.wasm");
 const artifactsAvailable = !!dash && !!pgrep && !!ps && !!coreutils;
 
 describe.skipIf(!artifactsAvailable)("posix-utils-lite process tools", () => {

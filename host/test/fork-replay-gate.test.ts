@@ -93,6 +93,19 @@ describe("fork replay readiness coordinator", () => {
 });
 
 describe("fork replay Worker lifecycle observer", () => {
+  it("releases its callbacks and retirement association without removing another observer", () => {
+    const adapter = new MockWorkerAdapter(), worker = adapter.createWorker({ pid: 41 });
+    const old = new ForkReplayGateCoordinator('old'), current = new ForkReplayGateCoordinator('current');
+    const releaseOld = observeForkReplayWorker(old, worker, 41, () => true, true);
+    const releaseCurrent = observeForkReplayWorker(current, worker, 41, () => true, true);
+    releaseOld(); releaseOld();
+    worker.simulateMessage({ type: 'fork_replay_ready', pid: 41 });
+    expect(old.currentPhase).toBe('pending'); expect(current.currentPhase).toBe('ready');
+    releaseCurrent();
+    worker.simulateError(new Error('after cleanup')); worker.simulateExit(1);
+    expect(current.currentPhase).toBe('ready');
+    expect(retireForkReplayWorker(worker, Promise.resolve())).toBe(false);
+  });
   function observed(isCurrentGeneration = () => true, retireWithProcessExit = true) {
     const adapter = new MockWorkerAdapter();
     const worker = adapter.createWorker({ pid: 41 });

@@ -5,7 +5,7 @@ kind = "program"
 # gdk-pixbuf, so it reads PNG images through cairo; without man pages.
 name = "swaybg"
 version = "1.2.1"
-kernel_abi = 52
+kernel_abi = 56
 depends_on = [
   "libwayland@1.26.0",
   "wayland-protocols@1.47",
@@ -50,3 +50,10 @@ script_path = "packages/registry/swaybg/build-swaybg.sh"
 [[outputs]]
 name = "swaybg"
 wasm = "swaybg.wasm"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "swaybg-shared"
+wasm = "swaybg-shared.zip"
+shared_memory_from = "swaybg"
+fork_instrumentation = "disabled"

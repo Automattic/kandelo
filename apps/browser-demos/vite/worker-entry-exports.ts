@@ -1,3 +1,5 @@
+import type { Plugin } from "vite";
+
 /** The graph fields this build invariant consumes. Native bundler handles
  * remain owned by Vite/Rolldown; neither the policy nor its fixtures invents
  * those handles or depends on their representation. */
@@ -65,4 +67,38 @@ export function assertTerminalWorkerEntries(
       );
     }
   }
+}
+
+/**
+ * [RUNTIME-WORKAROUND: WEBKIT-WORKER-ENTRY-EXPORTS]
+ * WebKit 26.6 re-evaluates a module Worker entry when its dynamic import
+ * imports a helper back from that entry. The standalone registry regression
+ * proves the installed handler loses initialization after reporting ready.
+ * Keep terminal entries self-contained and reject imports of an
+ * entry whose synthetic unused exports this build transform removes.
+ *
+ * Earlier Vite 8 builds did not honor preserveEntrySignatures here. The graph
+ * invariant remains required if a future bundler makes this transform dead.
+ */
+export function dropWorkerEntryExports(): Plugin {
+  const strippedEntryFacades = new Set<string>();
+  return {
+    name: "drop-worker-entry-exports",
+    enforce: "post",
+    renderChunk(code, chunk) {
+      if (!chunk.isEntry) return null;
+      const stripped = code.replace(/\bexport\s*\{[^}]*\}\s*;?\s*$/, "");
+      if (stripped === code) return null;
+      if (chunk.facadeModuleId === null) {
+        this.error(
+          `stripped worker entry ${chunk.fileName} lacks a stable facade identity`,
+        );
+      }
+      strippedEntryFacades.add(chunk.facadeModuleId);
+      return { code: stripped, map: null };
+    },
+    generateBundle(_options, bundle) {
+      assertTerminalWorkerEntries(strippedEntryFacades, bundle, message => this.error(message));
+    },
+  };
 }

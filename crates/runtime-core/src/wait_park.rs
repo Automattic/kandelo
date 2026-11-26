@@ -289,6 +289,11 @@ impl Parks {
         self.queue.is_empty()
     }
 
+    pub(crate) fn owns_task(&self, pid: u32, tid: u32) -> bool {
+        self.queue.iter().any(|sleeper| sleeper.pid == pid && sleeper.tid == tid)
+            || self.completions.iter().any(|completion| completion.pid == pid && completion.tid == tid)
+    }
+
     pub fn pending_completions(&self) -> usize {
         self.completions.len()
     }

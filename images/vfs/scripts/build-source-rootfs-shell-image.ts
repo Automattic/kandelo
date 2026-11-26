@@ -1,3 +1,4 @@
+import { installSharedMemoryOutputs, sharedMemoryOutputsFromEnvironment, type SharedMemoryOutput } from './shared-memory-outputs';
 /** Compose the canonical browser shell from resolver-owned package outputs. */
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -12,6 +13,7 @@ import {
   parseKandeloDemoConfig,
   resolveDemoDockActions,
   resolveDemoInit,
+  resolveDemoRuntime,
   validateKandeloDemoConfig,
   type DemoDockMenuEntryConfig,
   type KandeloDemoConfig,
@@ -97,21 +99,20 @@ export interface SourceRootfsShellInputs {
   rootfsPath: string;
   caBundlePath: string;
   bashPath: string;
-  /** The five wayland-demo outputs; required when wayland-demo is selected. */
-  wldesktopPath?: string;
-  omarchydesktopPath?: string;
+  /** Data-only desktop archives, required when desktop-data is selected. */
   desktopDataPath?: string;
   libinputQuirksPath?: string;
   xkeyboardConfigPath?: string;
   /** Required when espeak-ng is selected. */
   espeakNgDataPath?: string;
   demoConfigPath: string;
-  demoProfileOverlayPath: string;
+  demoProfileOverlayPath?: string;
   /** The checked-in eager-content budget (packages/registry/shell/eager-budget.json). */
   eagerBudgetPath: string;
   outFile: string;
   resolveArtifact: ShellLazyArchiveResolver;
   resolveOriginal?: ProgramOriginalResolver;
+  sharedMemoryOutputs?: readonly SharedMemoryOutput[];
   sourceDateEpoch?: string;
   /**
    * Which shell packages the image carries. Absent is the canonical shell
@@ -284,6 +285,21 @@ function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
 }
 
 const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  "cage": {
+    executable: "/usr/bin/cage",
+    command: "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/cage -- /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini",
+    executionBackend: "memory-group",
+  },
+  "sway": {
+    executable: "/usr/bin/sway",
+    command: "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /usr/share/kandelo/sway/config",
+    executionBackend: "memory-group",
+  },
+  "sway-sfwbar": {
+    executable: "/usr/bin/sway",
+    command: "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /etc/xdg/sfwbar/sway.config",
+    executionBackend: "memory-group",
+  },
   "dos-games": {
     executable: "/usr/bin/dos-play",
     command: "/usr/bin/dos-play keen1",
@@ -514,10 +530,11 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{
  * which the engine does not ignore (SDL turns it into a normal quit), and
  * waits for it, so the shell prompt returns only once the display is free.
  */
-const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
+function scummvmLaunchScript(program: "scummvm" | "scummvm-static"): string {
+  return `#!/bin/sh
 set -e
 GAMES=/var/games/scummvm
-INI="\${HOME:-/home/maker}/scummvm.ini"
+INI="\${HOME:-/home/maker}/${program}.ini"
 if [ ! -f "$INI" ]; then
     printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
 fi
@@ -529,11 +546,13 @@ fi
 set +e
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/libexec/scummvm --config="$INI" "$@" <&3 3<&- &
+    /usr/libexec/${program} --config="$INI" "$@" <&3 3<&- &
     engine=$!
 }
-supervise /run/user/1000/scummvm-launch.pid "$@"
+supervise /run/user/1000/${program}-launch.pid "$@"
 `;
+}
+const SCUMMVM_LAUNCH_SCRIPT = scummvmLaunchScript("scummvm");
 
 /**
  * The freeware games the ScummVM machine can fetch: one tracked data file,
@@ -724,7 +743,8 @@ function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
  * Every step announces itself as a `scummvm-play: ` line and the download
  * as a `#### N%` line: the dock shows both while the display is dark.
  */
-export const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
+function scummvmPlayScript(program: "scummvm" | "scummvm-static"): string {
+  return `#!/bin/sh
 set -e
 CATALOG=${SCUMMVM_PLAY_CATALOG}
 GAMES=/var/games/scummvm
@@ -863,17 +883,19 @@ if [ ! -f "$DIR/.targets" ]; then
     fi
     rm -f "$ZIP"
     say "Adding it to ScummVM..."
-    /usr/bin/scummvm --add --recursive -p "$DIR" \\
+    /usr/bin/${program} --add --recursive -p "$DIR" \\
         | sed -n 's/^  Target: *//p' > "$DIR/.targets.partial"
     mv "$DIR/.targets.partial" "$DIR/.targets"
 fi
 if [ "$(grep -c . "$DIR/.targets" || true)" = 1 ]; then
     say "Starting $TITLE..."
-    exec /usr/bin/scummvm "$(cat "$DIR/.targets")"
+    exec /usr/bin/${program} "$(cat "$DIR/.targets")"
 fi
 say "Opening the ScummVM launcher; $TITLE is in its game list"
-exec /usr/bin/scummvm
+exec /usr/bin/${program}
 `;
+}
+export const SCUMMVM_PLAY_SCRIPT = scummvmPlayScript("scummvm");
 
 export function composeSourceRootfsDemoConfig(
   basePath: string,
@@ -917,6 +939,11 @@ export function composeSourceRootfsDemoConfig(
       "source-rootfs demo profile overlay must contain exactly the " +
         `image-owned profiles: ${expectedProfileIds.join(", ")}`,
     );
+  }
+  for (const [id, expected] of Object.entries(SOURCE_ROOTFS_DEMO_COMMANDS)) {
+    if ("executionBackend" in expected && resolveDemoRuntime(overlay, id).executionBackend !== expected.executionBackend) {
+      throw new Error(`source-rootfs desktop profile ${id} must request the memory-group backend`);
+    }
   }
   const composedProfiles = { ...baseProfiles };
   for (const profileId of Object.keys(overlayProfiles)) {
@@ -1455,7 +1482,7 @@ function dependencyEnvKey(name: string): string {
   return name.replaceAll("-", "_").toUpperCase();
 }
 
-function strictResolverFromDependencyEnvironment(
+export function strictResolverFromDependencyEnvironment(
   env: NodeJS.ProcessEnv,
   declaredDependencies = SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCY_SET,
 ): ShellLazyArchiveResolver {
@@ -1737,10 +1764,8 @@ export async function buildSourceRootfsShellImage(
   // The rootfs owns its own eager programs (login); only what this composer
   // adds is held to the lazy default.
   const sourceEagerPrograms = eagerWasmPrograms(fs);
-  const composedDemo = composeSourceRootfsDemoConfig(
-    inputs.demoConfigPath,
-    inputs.demoProfileOverlayPath,
-  );
+  const composedDemo = composeSourceRootfsDemoConfig(inputs.demoConfigPath,
+    requiredInput(inputs.demoProfileOverlayPath, 'demo profile overlay'));
   const demoSelection = selectDemoConfig(composedDemo, selection);
   const demo = demoSelection.bytes;
   const includedProfiles = new Set(demoSelection.included);
@@ -1777,16 +1802,8 @@ export async function buildSourceRootfsShellImage(
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
   const caBundle = readRegularInput(inputs.caBundlePath, "rootfs CA bundle dependency");
-  const desktop = includes("wayland-demo")
+  const desktop = includes("desktop-data")
     ? {
-      wldesktop: readRegularInput(
-        requiredInput(inputs.wldesktopPath, "the wldesktop launcher"),
-        "wldesktop launcher dependency",
-      ),
-      omarchydesktop: readRegularInput(
-        requiredInput(inputs.omarchydesktopPath, "the omarchydesktop launcher"),
-        "omarchydesktop launcher dependency",
-      ),
       dataPath: requiredInput(inputs.desktopDataPath, "the desktop data archive"),
       xkeyboardConfigPath: requiredInput(inputs.xkeyboardConfigPath, "the xkeyboard-config archive"),
       libinputQuirks: readRegularInput(
@@ -1829,14 +1846,6 @@ export async function buildSourceRootfsShellImage(
   requireCompleteProductShellContract(fs, selection);
 
   ensureDirRecursive(fs, "/usr/bin");
-  // The desktops' launchers are small scripts, written eagerly. Every Wasm
-  // program they exec (wlcompositor, wlterm, foot, Quickshell, ...)
-  // is a lazy file registered by the overlay above, so a machine that never
-  // starts a desktop never fetches them.
-  if (desktop !== null) {
-    writeVfsBinary(fs, "/usr/bin/wldesktop", desktop.wldesktop, 0o755);
-    writeVfsBinary(fs, "/usr/bin/omarchydesktop", desktop.omarchydesktop, 0o755);
-  }
   // WHY: CA, speech, cursor, keymap and desktop data need not be fetched to boot a shell.
   // Register the exact package ZIPs at their compiled-in guest paths: normal
   // open/read triggers a verified first-use fetch on both Node and browser.
@@ -1875,17 +1884,18 @@ export async function buildSourceRootfsShellImage(
   // wrapper, scummvm-play and its catalog are eager. Game data is either the
   // user's own upload or a freeware game scummvm-play fetches; both land in
   // /var/games/scummvm; the image account owns that mutable game directory.
-  if (includes("scummvm")) {
+  for (const program of ["scummvm", "scummvm-static"] as const) {
+    if (!includes(program)) continue;
     writeVfsBinary(
       fs,
-      "/usr/bin/scummvm",
-      new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
+      `/usr/bin/${program}`,
+      new TextEncoder().encode(scummvmLaunchScript(program)),
       0o755,
     );
     writeVfsBinary(
       fs,
-      SCUMMVM_PLAY_COMMAND,
-      new TextEncoder().encode(SCUMMVM_PLAY_SCRIPT),
+      `/usr/bin/${program}-play`,
+      new TextEncoder().encode(scummvmPlayScript(program)),
       0o755,
     );
     ensureDirRecursive(fs, "/usr/share/scummvm-play");
@@ -1963,7 +1973,7 @@ export async function buildSourceRootfsShellImage(
     ["/var/games/quake", "tyrquake"],
     ["/var/games/quake/id1", "tyrquake"],
     ["/var/games/doom", "fbdoom"],
-    ["/var/games/scummvm", "scummvm"],
+    ["/var/games/scummvm", includes("scummvm") ? "scummvm" : "scummvm-static"],
   ] as const) {
     if (!includes(owner)) continue;
     fs.chown(path, 1000, 1000);
@@ -1982,6 +1992,8 @@ export async function buildSourceRootfsShellImage(
   // same layout contract as saveImage before publishing deferred archives.
   assertKandeloFilesystemLayout(fs);
   // Checked before saving so a rejected composition writes no output.
+  // Normal package outputs provide variants without a consumer-specific list.
+  installSharedMemoryOutputs(fs, inputs.sharedMemoryOutputs ?? sharedMemoryOutputsFromEnvironment(process.env));
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);
   // WHY: every visitor downloads and decompresses the eager content before
@@ -2071,11 +2083,9 @@ const REQUIRED_FLAGS = [
 
 /** Inputs only a selection that includes their package needs. */
 const SELECTED_INPUT_FLAGS: ReadonlyArray<{ flag: string; pkg: string }> = [
-  { flag: "--wldesktop", pkg: "wayland-demo" },
-  { flag: "--omarchydesktop", pkg: "wayland-demo" },
-  { flag: "--desktop-data", pkg: "wayland-demo" },
-  { flag: "--libinput-quirks", pkg: "wayland-demo" },
-  { flag: "--xkeyboard-config", pkg: "wayland-demo" },
+  { flag: "--desktop-data", pkg: "desktop-data" },
+  { flag: "--libinput-quirks", pkg: "desktop-data" },
+  { flag: "--xkeyboard-config", pkg: "desktop-data" },
   { flag: "--espeak-ng-data", pkg: "espeak-ng" },
 ];
 
@@ -2117,8 +2127,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
           "--rootfs <rootfs.vfs.zst> --ca-bundle <ca-certificates.zip> --bash <bash.wasm> " +
-          "--wldesktop <wldesktop> " +
-          "--omarchydesktop <omarchydesktop> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
           "--xkeyboard-config <xkeyboard-config.zip> " +
@@ -2160,8 +2168,6 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     rootfsPath: values.get("--rootfs")!,
     caBundlePath: values.get("--ca-bundle")!,
     bashPath: values.get("--bash")!,
-    wldesktopPath: values.get("--wldesktop"),
-    omarchydesktopPath: values.get("--omarchydesktop"),
     desktopDataPath: values.get("--desktop-data"),
     libinputQuirksPath: values.get("--libinput-quirks"),
     xkeyboardConfigPath: values.get("--xkeyboard-config"),

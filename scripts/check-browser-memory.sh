@@ -29,6 +29,9 @@ echo "=== Browser memory ownership and teardown: host regressions ==="
     cd host
     npm run build
     npx vitest run --config vitest.browser-memory.config.ts
+    # Prepared checks exercise Rust ownership through the real kernel artifact.
+    npx vitest run --config vitest.grouped-sdk.config.ts \
+        test/group-memory-kernel.test.ts test/group-memory-worker-boundary.test.ts
     npm run test:teardown:engines
 )
 

@@ -15,6 +15,7 @@ import { imageActivity, imageActivityPresentation } from "../../../../../web-lib
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import type { TrustedMemoryGroupOptions } from "@host/grouped-session-runtime";
 import { isNoValidOverlayGenerationError } from "@host/vfs/overlay-generation-selection";
 import { setWebMcpSession, type WebMcpIdentity } from "../webmcp/runtime";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
@@ -171,6 +172,7 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
 export const PARTIAL_IMAGE = partialImageModule as {
   imageUrl: string;
   manifest: {
+    productId: string;
     image: string;
     sha256: string;
     packages: string[];
@@ -1722,6 +1724,10 @@ async function bootProfile(
   profile = await bindVfsProduct(profile);
   assertCurrent();
 
+  // The embedder enables a backend, independently of image/product names.
+  // Allocation remains lazy; ordinary launches keep ordinary execution.
+  const experimentalMemoryGroup: TrustedMemoryGroupOptions = { maximumPages: 8192 };
+
   const persistence = experimentalPersistenceName === undefined
     ? null
     : {
@@ -1951,6 +1957,7 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      experimentalMemoryGroup,
       // Keep the host on the same memory profile as the app-side sizing
       // above (BrowserKernel auto-detects when this is undefined).
       memoryProfile: memoryProfileOverride(),
@@ -2183,6 +2190,11 @@ async function bootProfile(
       } });
     setWebMcpSession(host, agentIdentity());
     const terminalPolicy = experimentalTerminalSessionPolicy(terminalSession);
+    if (!deferActivityLaunch && machine.runtime.executionBackend === "memory-group") {
+      if (!experimentalMemoryGroup) throw new Error("This host does not allow the requested memory-group backend");
+      terminalPolicy.initial.executionBackend = "memory-group";
+      if (terminalPolicy.afterExit) terminalPolicy.afterExit.executionBackend = "memory-group";
+    }
     const runScriptId = requestedDescriptor.boot.parameters?.runScript;
     const scriptInput = typeof runScriptId === "string"
       ? bootInputManifest?.inputs.find((entry) => entry.id === runScriptId)

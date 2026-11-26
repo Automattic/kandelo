@@ -261,7 +261,7 @@ describe("browser binary dependencies", () => {
     // The images' lazy programs are not browser imports: a deployment serves
     // whatever the built images reference, from their own lazy entries.
     expect(sourceOnlySpecs).not.toContain(
-      "@binaries/programs/wasm32/bash.wasm",
+      "@binaries/programs/wasm32/bash/bash.wasm",
     );
     expect(sourceOnlySpecs).not.toEqual(
       expect.arrayContaining(

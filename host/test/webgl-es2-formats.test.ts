@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeAndDispatch } from "../src/webgl/bridge.js";
+import { decodeAndDispatch, validateCommandBuffer, GL_SUBMIT_EINVAL } from "../src/webgl/bridge.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
@@ -191,4 +191,60 @@ describe("ES2 RenderbufferStorage internalformat admission (section 4.4.3)", () 
       expect(b.errors).toEqual([INVALID_ENUM]);
       expect(nativeCalls(log, "renderbufferStorage")).toEqual([]);
     });
+});
+
+
+describe("version 18 BGRA8 upload transport", () => {
+  function upload(b: ReturnType<typeof binding>["b"], pixels: number[], format = RGBA,
+                  type = UNSIGNED_BYTE, opcode = O.OP_TEX_SUB_IMAGE_2D_BGRA8) {
+    const bytes = b.cmdbufView!, view = new DataView(bytes.buffer);
+    view.setUint16(0, opcode, true); view.setUint16(2, 36 + pixels.length, true);
+    const words = [TEXTURE_2D, 0, 0, 0, 1, 2, format, type, pixels.length];
+    words.forEach((word, i) => view.setUint32(4 + i * 4, word, true));
+    bytes.set(pixels, 40);
+    return 40 + pixels.length;
+  }
+
+  it("converts owned BGRA rows including unpack padding without changing command bytes", () => {
+    const { b, log } = binding();
+    expect(storage(b, texImage(RGBA, RGBA, UNSIGNED_BYTE))).toBe(1);
+    b.shadow.unpackAlignment = 8;
+    const original = [3, 2, 1, 4, 99, 98, 97, 96, 7, 6, 5, 8];
+    const length = upload(b, original);
+    const before = b.cmdbufView!.slice(0, length);
+    expect(decodeAndDispatch(b, 0, length)).toBe(0);
+    expect(b.errors).toEqual([]);
+    const args = nativeCalls(log, "texSubImage2D").at(-1)![1];
+    expect(args.slice(0, 8)).toEqual([TEXTURE_2D, 0, 0, 0, 1, 2, RGBA, UNSIGNED_BYTE]);
+    const pixels = args[8] as Uint8Array;
+    expect([...pixels]).toEqual([1, 2, 3, 4, 97, 98, 99, 96, 5, 6, 7, 8]);
+    expect(pixels.buffer).not.toBe(b.cmdbufView!.buffer);
+    expect(b.cmdbufView!.slice(0, length)).toEqual(before);
+    b.cmdbufView!.fill(0, 40, length);
+    expect([...pixels]).toEqual([1, 2, 3, 4, 97, 98, 99, 96, 5, 6, 7, 8]);
+  });
+
+  it.each([
+    [RGB, UNSIGNED_BYTE, [1, 2, 3, 4]],
+    [RGBA, FLOAT, [1, 2, 3, 4]],
+    [RGBA, UNSIGNED_BYTE, [1, 2, 3]],
+  ])("rejects malformed BGRA transport before native effects", (format, type, pixels) => {
+    const { b, log } = binding();
+    const length = upload(b, pixels, format, type);
+    expect(validateCommandBuffer(b.cmdbufView!, 0, length)).toBe(GL_SUBMIT_EINVAL);
+    expect(decodeAndDispatch(b, 0, length)).toBe(GL_SUBMIT_EINVAL);
+    expect(log).toEqual([]);
+  });
+
+  it("keeps legacy RGBA pixels unchanged and rejects raw BGRA enums on its old opcode", () => {
+    const { b, log } = binding();
+    expect(storage(b, texImage(RGBA, RGBA, UNSIGNED_BYTE))).toBe(1);
+    const source = [17, 91, 203, 255, 19, 93, 205, 255];
+    expect(decodeAndDispatch(b, 0, upload(b, source, RGBA, UNSIGNED_BYTE, O.OP_TEX_SUB_IMAGE_2D))).toBe(0);
+    expect([...(nativeCalls(log, "texSubImage2D").at(-1)![1][8] as Uint8Array)]).toEqual(source);
+    log.length = 0;
+    expect(decodeAndDispatch(b, 0, upload(b, source, 0x80e1, UNSIGNED_BYTE, O.OP_TEX_SUB_IMAGE_2D))).toBe(0);
+    expect(b.errors).toEqual([INVALID_ENUM]);
+    expect(nativeCalls(log, "texSubImage2D")).toEqual([]);
+  });
 });

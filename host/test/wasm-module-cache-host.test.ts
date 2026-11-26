@@ -24,7 +24,7 @@ const available = [shellImage, coreutils, kernel].every(existsSync);
 
 // shell.vfs.zst stores coreutils as a lazy file at this image-relative URL.
 const LAZY_URL_BASE = "https://kandelo.invalid/";
-const COREUTILS_URL = `${LAZY_URL_BASE}binaries/programs/wasm32/coreutils.wasm`;
+const COREUTILS_URL = `${LAZY_URL_BASE}binaries/programs/wasm32/coreutils/coreutils.wasm`;
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(

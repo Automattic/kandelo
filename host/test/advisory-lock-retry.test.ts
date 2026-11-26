@@ -65,7 +65,7 @@ describe("advisory-lock test ingress", () => {
     const state = mutableState(worker);
     state.processes = new Map([[channel.pid, {
       channels: [channel],
-      memory: processMemory,
+      memory: processMemory, source: processMemory,
       ptrWidth: 4,
     }]]);
     state.activeChannels = [channel];
@@ -103,6 +103,7 @@ type TestWorker = ReturnType<typeof createCentralizedKernelWorkerTestDouble>;
 interface TestChannel {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   readonly channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -112,6 +113,7 @@ interface TestChannel {
 interface TestChannel {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   readonly channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -179,6 +181,7 @@ function createChannel(
   channelOffset = 0,
 ): TestChannel {
   return {
+    source: memory,
     pid,
     memory,
     channelOffset,

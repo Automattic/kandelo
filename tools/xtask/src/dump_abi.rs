@@ -209,6 +209,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             program_contract_out.display()
         );
         crate::program_extensions::run(vec!["--check".to_owned()])?;
+        crate::group_memory_scan::run(&["--check".to_owned()])?;
         return Ok(());
     }
 
@@ -239,6 +240,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     write_file(&program_contract_out, &program_contract)?;
     println!("wrote {}", program_contract_out.display());
     crate::program_extensions::run(Vec::new())?;
+    crate::group_memory_scan::run(&[])?;
     Ok(())
 }
 
@@ -3369,6 +3371,12 @@ fn render_ts_module() -> String {
         "export const HOST_ADAPTER_VERSION = {} as const;\n",
         shared::abi::HOST_ADAPTER_VERSION
     ));
+    out.push_str(&format!("export const PROCESS_MEMORY_ACCESS_READ = {} as const;\nexport const PROCESS_MEMORY_ACCESS_WRITE = {} as const;\n",
+        shared::ProcessMemoryAccess::Read as u32, shared::ProcessMemoryAccess::Write as u32));
+    out.push_str("export const MEMORY_GROUP_PROTOCOL = ");
+    out.push_str(&memory_group_contract().to_string());
+    out.push_str(" as const;");
+    out.push('\n');
     out.push_str(&format!(
         "export const ENTROPY_READ_PENDING = {} as const;\n",
         shared::abi::ENTROPY_READ_PENDING
@@ -3993,6 +4001,8 @@ fixedSize: {}, maxCallerSize: {} }},\n",
          export const EXTENSION_REQUEST_KLOG_V1 = {} as const;\n\n",
         shared::extension_requests::KLOG_V1
     ));
+    out.push_str(&format!("export const EXTENSION_REQUEST_MEMORY_GROUP_GROW_V1 = {} as const;\n\n",
+        shared::extension_requests::MEMORY_GROUP_GROW_V1));
     out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
     for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS
         .iter()
@@ -4450,6 +4460,7 @@ fn declared_snapshot_sections() -> Sections {
     s.add(FrozenBaselineRecord, "program_legacy_requests", program_legacy_requests());
     // Argument kinds of the host's process-metadata export.
     s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
+    s.add(KernelHost, "memory_group_contract", memory_group_contract());
     // The process table the kernel hands the host (ps, the inspector).
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
@@ -5042,10 +5053,11 @@ fn dri_cleanup_status() -> Value {
 
 fn gl_image_container_receipts() -> Value {
     use shared::gl;
-    // The unpublished epoch/op-table alone cannot distinguish older hosts that
-    // reject these opt-in sizes. Bind the reply agreement into the program digest.
+    // Bind the existing ABI-56 table and exact reply agreement, not the
+    // current maximum negotiated table. Additive GLIO_INIT versions must not
+    // invalidate these unchanged, already-built programs.
     json!({
-        "op_version": gl::OP_VERSION,
+        "op_version": gl::BASELINE_OP_VERSION,
         "byte_order": "little-endian",
         "word_type": "u32",
         "reply_magic": gl::QUERY_REPLY_MAGIC,
@@ -5079,11 +5091,11 @@ fn gl_image_container_receipts() -> Value {
 }
 
 fn gl_inline_client_draw() -> Value {
-    use shared::gl::{OP_DRAW_CLIENT_ARRAYS, OP_VERSION, inline_client_draw as wire};
+    use shared::gl::{BASELINE_OP_VERSION, OP_DRAW_CLIENT_ARRAYS, inline_client_draw as wire};
     // The payload is read by the host, but emitted by already-built programs.
     // An unchanged unpublished epoch must not admit a different record digest.
     json!({
-        "op_version": OP_VERSION,
+        "op_version": BASELINE_OP_VERSION,
         "opcode": OP_DRAW_CLIENT_ARRAYS,
         "byte_order": "little-endian",
         "header_bytes": wire::HEADER_BYTES,
@@ -7008,6 +7020,7 @@ fn extension_requests() -> Value {
         "KLOG_V1".into(),
         json!(shared::extension_requests::KLOG_V1),
     );
+    requests.insert("MEMORY_GROUP_GROW_V1".into(), json!(shared::extension_requests::MEMORY_GROUP_GROW_V1));
     requests.insert(
         "KMSG_CAPACITY_BYTES".into(),
         json!(shared::extension_requests::KMSG_CAPACITY_BYTES),
@@ -7075,6 +7088,129 @@ fn ioctl_request_families() -> Value {
     Value::Array(families)
 }
 
+fn memory_group_contract() -> Value {
+    use shared::memory_group as group;
+    let fields = |entries: &[(&str, usize)]| {
+        entries
+            .iter()
+            .map(|(name, offset)| ((*name).to_string(), json!(*offset)))
+            .collect::<BTreeMap<_, _>>()
+    };
+    json!({
+        "version":group::PROTOCOL_VERSION,
+        "capability_admission":group::CAPABILITY_ADMISSION,
+        "exec_preparation": {
+            "version": shared::group_exec::VERSION,
+            "capability": shared::group_exec::CAPABILITY,
+            "bytes": shared::group_exec::PREPARATION_BYTES,
+            "fields": fields(shared::group_exec::PREPARATION_FIELDS),
+            "actions": shared::group_exec::ACTIONS.iter().map(|(name, action)|
+                ((*name).to_string(), json!(*action))).collect::<BTreeMap<_,_>>(),
+        },
+        "layout": {
+            "version": shared::group_memory_layout::VERSION,
+            "capability": shared::group_memory_layout::CAPABILITY,
+            "bytes": shared::group_memory_layout::BYTES,
+            "fields": fields(shared::group_memory_layout::FIELDS),
+            "modes": { "fresh": shared::group_memory_layout::FRESH, "inherited": shared::group_memory_layout::INHERITED },
+        },
+        "receipt_bytes":group::RECEIPT_BYTES,
+        "snapshot_bytes":group::SNAPSHOT_BYTES,
+        "receipt_fields":fields(group::RECEIPT_FIELDS),
+        "snapshot_fields":fields(group::SNAPSHOT_FIELDS),
+        "driver": {
+            "request_bytes": shared::group_operation::REQUEST_BYTES,
+            "reply_bytes": shared::group_operation::REPLY_BYTES,
+            "payload_bytes": shared::group_operation::PAYLOAD_BYTES,
+            "request_fields": fields(shared::group_operation::REQUEST_FIELDS),
+            "reply_fields": fields(shared::group_operation::REPLY_FIELDS),
+            "transport_gone": shared::group_operation::TRANSPORT_GONE,
+            "native_event_limit": shared::group_operation::NATIVE_EVENT_RECORD_LIMIT,
+            "thread_layout": fields(shared::group_operation::layout::THREAD_FIELDS),
+            "thread_receipt_offset": shared::group_operation::layout::THREAD_RECEIPT_OFFSET,
+            "fork_layout": fields(shared::group_operation::layout::FORK_FIELDS),
+            "fork_layout_offset": shared::group_operation::layout::FORK_OFFSET,
+            "fork_continuations": { "main": shared::group_operation::layout::MAIN, "thread": shared::group_operation::layout::THREAD },
+            "commands": shared::group_operation::COMMANDS.iter().copied().collect::<BTreeMap<_,_>>(),
+            "kinds": { "mapping": shared::group_operation::kind::MAPPING, "ownedMapping": shared::group_operation::kind::OWNED_MAPPING, "clone": shared::group_operation::kind::CLONE, "fork": shared::group_operation::kind::FORK },
+            "effects": shared::group_operation::DRIVER_EFFECTS.iter().chain(shared::group_operation::FORK_NATIVE_EFFECTS).copied().collect::<BTreeMap<_,_>>(),
+            "flags": { "deliver": shared::group_operation::flags::DELIVER, "ownedPacket": shared::group_operation::flags::OWNED_PACKET, "threadRetired": shared::group_operation::flags::THREAD_RETIRED, "threadExecution": shared::group_operation::flags::THREAD_EXECUTION, "nativeExecute": shared::group_operation::flags::NATIVE_EXECUTE, "nativePending": shared::group_operation::flags::NATIVE_PENDING },
+        },
+        "completion": {
+            "retirement_codes": { "exec": shared::group_completion::RETIRE_EXEC_CODE, "exit": shared::group_completion::RETIRE_EXIT_CODE },
+            "request_bytes": shared::group_completion::REQUEST_BYTES, "reply_bytes": shared::group_completion::REPLY_BYTES,
+            "request_fields": fields(shared::group_completion::REQUEST_FIELDS), "reply_fields": fields(shared::group_completion::REPLY_FIELDS),
+            "commands": shared::group_completion::COMMANDS.iter().copied().collect::<BTreeMap<_,_>>(),
+            "effects": shared::group_completion::EFFECTS.iter().copied().collect::<BTreeMap<_,_>>(),
+            "flags": { "relisten":shared::group_completion::flags::RELISTEN,"terminal":shared::group_completion::flags::TERMINAL,"automatic":shared::group_completion::flags::AUTOMATIC,"invalid":shared::group_completion::flags::INVALID },
+        },
+        "access": { "module": shared::group_access::MODULE, "version": shared::group_access::VERSION, "bounds": shared::group_access::BOUNDS, "protection": shared::group_access::PROTECTION, "metadata": shared::group_access::METADATA, "busy": shared::group_access::BUSY, "publicationFailed": shared::group_access::PUBLICATION_FAILED },
+        "retirement_control": {
+            "worker_messages": shared::retirement_control::WORKER_MESSAGES.iter().copied().collect::<BTreeMap<_, _>>(),
+            "commands": { "beginImage": shared::retirement_control::command::BEGIN_IMAGE, "beginThread": shared::retirement_control::command::BEGIN_THREAD, "poll": shared::retirement_control::command::POLL, "platformDetached": shared::retirement_control::command::PLATFORM_DETACHED, "ack": shared::retirement_control::command::ACK, "noteWorkerAbsence": shared::retirement_control::command::NOTE_WORKER_ABSENCE, "prepareDeactivation": shared::retirement_control::command::PREPARE_DEACTIVATION, "beginStop": shared::retirement_control::command::BEGIN_STOP, "workersStopped": shared::retirement_control::command::WORKERS_STOPPED, "pollStop": shared::retirement_control::command::POLL_STOP, "ackStop": shared::retirement_control::command::ACK_STOP, "bindReferences": shared::retirement_control::command::BIND_REFERENCES, "beginReferences": shared::retirement_control::command::BEGIN_REFERENCES, "referencesDetached": shared::retirement_control::command::REFERENCES_DETACHED, "workerFence": shared::retirement_control::command::WORKER_FENCE, "nativeJoin": shared::retirement_control::command::NATIVE_JOIN, "sealedAbsence": shared::retirement_control::command::SEALED_ABSENCE, "workerContained": shared::retirement_control::command::WORKER_CONTAINED },
+            "detach_platform": shared::retirement_control::DETACH_PLATFORM,
+            "detach_references": shared::retirement_control::DETACH_REFERENCES,
+            "native_join_capability": shared::retirement_control::NATIVE_JOIN_CAPABILITY,
+            "stop_accepted": shared::retirement_control::STOP_ACCEPTED,
+            "cancel_exec_transport": shared::retirement_control::CANCEL_EXEC_TRANSPORT,
+            "wait_workers": shared::retirement_control::WAIT_WORKERS,
+            "publish_exit": shared::retirement_control::PUBLISH_EXIT,
+            "contain_worker": shared::retirement_control::CONTAIN_WORKER,
+            "wait_thread_retirement": shared::retirement_control::WAIT_THREAD_RETIREMENT,
+            "join_image_retirement": shared::retirement_control::JOIN_IMAGE_RETIREMENT,
+            "worker_joined": shared::retirement_control::WORKER_JOINED,
+        },
+        "root_control": {
+            "commands": {"begin": shared::root_control::command::BEGIN, "poll": shared::root_control::command::POLL, "cancel": shared::root_control::command::CANCEL, "ack": shared::root_control::command::ACK, "launch": shared::root_control::command::LAUNCH, "platformCompleted": shared::root_control::command::PLATFORM_COMPLETED, "platformFailed": shared::root_control::command::PLATFORM_FAILED, "enterNative": shared::root_control::command::ENTER_NATIVE},
+            "phases": {"preparing": shared::root_control::phase::PREPARING, "prepared": shared::root_control::phase::PREPARED, "cancelling": shared::root_control::phase::CANCELLING, "cancelled": shared::root_control::phase::CANCELLED, "launching": shared::root_control::phase::LAUNCHING, "waiting": shared::root_control::phase::WAITING, "finished": shared::root_control::phase::FINISHED, "contained": shared::root_control::phase::CONTAINED},
+            "effects": shared::root_control::EFFECTS.iter().copied().collect::<std::collections::BTreeMap<_, _>>(),
+        },
+        "exec_control": {
+            "commands": { "begin": shared::exec_control::command::BEGIN, "poll": shared::exec_control::command::POLL, "cancel": shared::exec_control::command::CANCEL, "validate": shared::exec_control::command::VALIDATE, "handoff": shared::exec_control::command::HANDOFF, "validateInstall": shared::exec_control::command::VALIDATE_INSTALL, "installed": shared::exec_control::command::INSTALLED, "ack": shared::exec_control::command::ACK, "status": shared::exec_control::command::STATUS, "platformCompleted": shared::exec_control::command::PLATFORM_COMPLETED, "platformFailed": shared::exec_control::command::PLATFORM_FAILED, "enterNative": shared::exec_control::command::ENTER_NATIVE },
+            "phases": { "preparing": shared::exec_control::phase::PREPARING, "prepared": shared::exec_control::phase::PREPARED, "committed": shared::exec_control::phase::COMMITTED, "handoff": shared::exec_control::phase::HANDOFF, "oldStopped": shared::exec_control::phase::OLD_STOPPED, "cancelling": shared::exec_control::phase::CANCELLING, "cancelled": shared::exec_control::phase::CANCELLED, "terminating": shared::exec_control::phase::TERMINATING, "terminatedFuture": shared::exec_control::phase::TERMINATED_FUTURE, "installed": shared::exec_control::phase::INSTALLED, "finished": shared::exec_control::phase::FINISHED, "contained": shared::exec_control::phase::CONTAINED, "retiringInstalled": shared::exec_control::phase::RETIRING_INSTALLED },
+            "effects": shared::exec_control::EFFECTS.iter().copied().collect::<std::collections::BTreeMap<_, _>>(),
+            "layout_fields": fields(shared::exec_control::LAYOUT_FIELDS),
+            "source": shared::exec_control::SOURCE, "parent": shared::exec_control::PARENT, "signal": shared::exec_control::SIGNAL, "exit_status": shared::exec_control::EXIT_STATUS,
+            "flags": {"exitHeld": shared::exec_control::flags::EXIT_HELD},
+        },
+        "storage": {
+            "snapshot_bytes": shared::group_storage::SNAPSHOT_BYTES,
+            "snapshot_fields": shared::group_storage::SNAPSHOT_FIELDS,
+            "mapping": {
+                "stage": shared::group_storage::mapping::STAGE,
+                "populate": shared::group_storage::mapping::POPULATE,
+                "commit": shared::group_storage::mapping::COMMIT,
+                "cancel": shared::group_storage::mapping::CANCEL,
+            },
+            "reply_bytes": shared::group_storage::REPLY_BYTES,
+            "reply_fields": fields(shared::group_storage::REPLY_FIELDS),
+            "actions": shared::group_storage::ACTIONS.iter().map(|(name, action)|
+                ((*name).to_string(), json!(*action as u32))).collect::<BTreeMap<_,_>>(),
+            "status": {
+                "prepared": shared::group_storage::status::PREPARED,
+                "stopped": shared::group_storage::status::STOPPED,
+                "imageStopped": shared::group_storage::status::IMAGE_STOPPED,
+                "paused": shared::group_storage::status::PAUSED,
+                "stopping": shared::group_storage::status::STOPPING,
+                "sourceLive": shared::group_storage::status::SOURCE_LIVE,
+                "imageUnexposed": shared::group_storage::status::IMAGE_UNEXPOSED,
+            },
+        },
+        "task_actions":group::TASK_ACTIONS.iter().map(|(name,action)|
+            ((*name).to_string(),json!(*action as u32))).collect::<BTreeMap<_,_>>(),
+        "mapping": {
+            "version": shared::group_memory_change::VERSION,
+            "capability": shared::group_memory_change::CAPABILITY,
+            "request_bytes": shared::group_memory_change::REQUEST_BYTES,
+            "description_bytes": shared::group_memory_change::DESCRIPTION_BYTES,
+            "request_fields": fields(shared::group_memory_change::REQUEST_FIELDS),
+            "description_fields": fields(shared::group_memory_change::DESCRIPTION_FIELDS),
+            "kinds": shared::group_memory_change::KINDS.iter().map(|(name,kind)|
+                ((*name).to_string(),json!(*kind))).collect::<BTreeMap<_,_>>(),
+        },
+    })
+}
+
 fn host_adapter() -> Value {
     let manifest = shared::abi::HOST_ADAPTER_MANIFEST;
 
@@ -7132,6 +7268,7 @@ fn host_adapter() -> Value {
 
     let mut m: JsonMap = BTreeMap::new();
     m.insert("version".into(), json!(shared::abi::HOST_ADAPTER_VERSION));
+    m.insert("process_memory_access".into(), json!({ "read": shared::ProcessMemoryAccess::Read as u32, "write": shared::ProcessMemoryAccess::Write as u32 }));
     m.insert(
         "manifest".into(),
         Value::Object(manifest_json.into_iter().collect()),

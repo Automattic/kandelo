@@ -18,7 +18,7 @@
 // unbuilt product rejects when it is asked for, not at module load, so a
 // worktree with only some images built can still run the specs for those.
 
-import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
+import { CANONICAL_SHELL_IMAGE_URL as shellVfsUrl } from "../../pages/kandelo/kernel-host/canonical-shell-image";
 import {
   resolveOptionalDemoVfsUrl,
   type OptionalDemoVfsImage,
@@ -118,7 +118,10 @@ const OPTIONAL_DEMO_PRODUCTS: Record<string, OptionalDemoVfsImage> = {
 export class VfsProductImageNotBuiltError extends Error {}
 
 export async function vfsProductImageUrl(productId: string): Promise<string> {
-  if (productId === "browser-main-shell") return shellVfsUrl;
+  if (productId === "browser-main-shell") {
+    if (shellVfsUrl === null) throw new VfsProductImageNotBuiltError("shell.vfs.zst is not built. Run: ./run.sh local-build");
+    return shellVfsUrl;
+  }
 
   const optionalDemo = OPTIONAL_DEMO_PRODUCTS[productId];
   if (optionalDemo !== undefined) {

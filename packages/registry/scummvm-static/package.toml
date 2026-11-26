@@ -1,0 +1,105 @@
+# Same engine closure as scummvm, linked into one executable.
+kind = "program"
+name = "scummvm-static"
+version = "2026.3.0"
+kernel_abi = 56
+depends_on = [
+  "sdl2@2.32.10",
+  "libdrm@2.4.134",
+  "libwayland@1.26.0",
+  "libffi@0.1.0",
+  "libxkbcommon@1.13.2",
+  "zlib@1.3.1",
+  "libpng@1.6.43",
+  "freetype@2.13.3",
+  "libmad@0.16.4",
+  "libcxx@23.1.3",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://downloads.scummvm.org/frs/scummvm/2026.3.0/scummvm-2026.3.0.tar.xz"
+sha256 = "b863a81e1598df8bc4aa0c33e3d9b1c8bbede1879d94d91568a4f200057677e7"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/scummvm/scummvm/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/scummvm-static/build-scummvm-static.sh"
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.71.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "tar"
+version_constraint = ">=1.30"
+probe = { args = ["--version"], version_regex = "tar.*?(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wasm-objdump"
+version_constraint = ">=1.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "shasum"
+version_constraint = ">=6.0"
+probe = { args = ["--version"], version_regex = "(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[outputs]]
+name = "scummvm-static"
+wasm = "scummvm-static.wasm"
+
+# The GUI data ScummVM reads from /usr/share/scummvm at startup. Without it
+# the launcher falls back to its compiled-in skin: no theme, no game icons,
+# and the built-in bitmap font. `make install` also produces translation,
+# CJK-font, ImGui-font, Macintosh-font, shader, help and achievement data;
+# this manifest declares only the launcher's own closure, because every
+# declared runtime file becomes mandatory in the resolved package closure
+# and the rest adds ~103 MB that the SCUMM engine does not read.
+[[runtime_files]]
+artifact = "share/scummvm-static/scummremastered.zip"
+guest_path = "/usr/share/scummvm-static/scummremastered.zip"
+
+[[runtime_files]]
+artifact = "share/scummvm-static/scummmodern.zip"
+guest_path = "/usr/share/scummvm-static/scummmodern.zip"
+
+[[runtime_files]]
+artifact = "share/scummvm-static/scummclassic.zip"
+guest_path = "/usr/share/scummvm-static/scummclassic.zip"
+
+[[runtime_files]]
+artifact = "share/scummvm-static/gui-icons.dat"
+guest_path = "/usr/share/scummvm-static/gui-icons.dat"
+
+[[runtime_files]]
+artifact = "share/scummvm-static/fonts.dat"
+guest_path = "/usr/share/scummvm-static/fonts.dat"
+
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "scummvm-static-shared"
+wasm = "scummvm-static-shared.zip"
+shared_memory_from = "scummvm-static"
+fork_instrumentation = "disabled"

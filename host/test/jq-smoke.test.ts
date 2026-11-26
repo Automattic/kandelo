@@ -10,7 +10,7 @@ import type { LazyDownloadEvent } from "../src/vfs/lazy-download-event";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const jqBinary = tryResolveBinary("programs/jq.wasm");
-const bashBinary = tryResolveBinary("programs/bash.wasm");
+const bashBinary = tryResolveBinary("programs/bash/bash.wasm");
 
 describe.skipIf(!jqBinary)("jq CLI on Kandelo", () => {
   it.each([

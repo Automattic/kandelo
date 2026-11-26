@@ -45,6 +45,7 @@ const KERNEL_EXPORT_NAMES = [
 interface TestChannel {
   readonly pid: number;
   readonly memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   readonly channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -79,6 +80,7 @@ function makeHarness(
     shared: true,
   });
   const channel: TestChannel = {
+    source: channelMemory,
     pid: 41,
     memory: channelMemory,
     channelOffset: 0,
@@ -120,7 +122,7 @@ function makeHarness(
     channelTids: new Map(),
     processes: new Map([[channel.pid, {
       pid: channel.pid,
-      memory: channel.memory,
+      memory: channel.memory, source: channel.source,
       channels: [channel],
       ptrWidth: pointerWidth,
       explicitMaxAddr: true,

@@ -555,6 +555,17 @@ pub unsafe extern "C" fn sm_chown(path_ptr: usize, path_len: usize, uid: u32, gi
     ))
 }
 
+/// Retain real hard-link identity when an image builder replaces a file's
+/// backing. This is the existing rootfs link operation, not a new guest ABI.
+///
+/// # Safety
+/// Both ranges must describe readable paths.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_link(old_ptr: usize, old_len: usize, new_ptr: usize, new_len: usize) -> i32 {
+    ok_or_errno(rootfs::link(unsafe { slice(old_ptr, old_len) }, unsafe { slice(new_ptr, new_len) }))
+}
+
+
 /// Write a whole file, creating it and setting its mode -- the builders'
 /// `writeVfsFile` / `writeVfsBinary` in one call.
 ///
@@ -594,6 +605,7 @@ pub unsafe extern "C" fn sm_chown(path_ptr: usize, path_len: usize, uid: u32, gi
 ///
 /// # Safety
 /// Both ranges must describe readable memory.
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sm_write_file(
     path_ptr: usize,

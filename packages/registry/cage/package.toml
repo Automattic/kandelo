@@ -91,3 +91,10 @@ guest_path = "/usr/share/cage/xkeyboard-config.zip"
 [[runtime_files]]
 artifact = "libinput-quirks.zip"
 guest_path = "/usr/share/cage/libinput-quirks.zip"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "cage-shared"
+wasm = "cage-shared.zip"
+shared_memory_from = "cage"
+fork_instrumentation = "disabled"

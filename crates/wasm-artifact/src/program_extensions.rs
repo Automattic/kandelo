@@ -3,6 +3,7 @@ use crate::facts::{ArtifactFacts, DescriptorKind};
 use alloc::{format, string::String, vec::Vec};
 use wasm_posix_program_abi::program_extensions::{
     extension_import, is_extension_import_name, klog_v1 as klog, stack_v1 as stack,
+    memory_group_growth_v1 as growth,
     RESERVED_MODULE_PREFIX,
 };
 
@@ -14,6 +15,31 @@ pub fn describe_failures(facts: &ArtifactFacts, supported: &[&str]) -> Vec<Strin
         if !import.module.starts_with(RESERVED_MODULE_PREFIX)
             && !is_extension_import_name(&import.name)
         {
+            continue;
+        }
+        let group = wasm_posix_program_abi::program_extensions::memory_group_v3::MODULE;
+        if import.module == group && supported.contains(&group) {
+            if import.name != wasm_posix_program_abi::program_extensions::memory_group_v3::IMPORT
+                || import.kind != DescriptorKind::Memory
+                || facts.memory_pointer_widths.as_slice() != [4]
+            {
+                failures.push(format!(
+                    "incompatible grouped memory import {}.{}", import.module, import.name
+                ));
+            }
+            continue;
+        }
+        if import.module == growth::MODULE && supported.contains(&growth::MODULE) {
+            let matches: Vec<_> = facts.function_import_entries.iter()
+                .filter(|entry| entry.module == growth::MODULE && entry.name == growth::IMPORT).collect();
+            if import.name != growth::IMPORT || import.kind != DescriptorKind::Function
+                || facts.memory_pointer_widths.as_slice() != [4] || matches.len() != 1
+                || matches.iter().any(|entry| entry.params.len() != 1 || entry.results.len() != 1
+                    || entry.params[0].code != 0x7f || entry.params[0].heap_type.is_some() || entry.params[0].shared
+                    || entry.results[0].code != 0x7f || entry.results[0].heap_type.is_some() || entry.results[0].shared)
+            {
+                failures.push(format!("incompatible grouped growth import {}.{}", import.module, import.name));
+            }
             continue;
         }
         let identity = format!("{}.{}", import.module, import.name);

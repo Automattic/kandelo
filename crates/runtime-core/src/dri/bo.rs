@@ -61,6 +61,16 @@ pub struct GbmBo {
     /// `DMA_BUF_IOCTL_{IMPORT,EXPORT}_SYNC_FILE` and observed by dma-buf
     /// `poll`. They live and die with the buffer.
     pub reservation: crate::dri::fence::Reservation,
+    /// CPU storage affiliation is permanent after its first committed map.
+    /// Ordinary mirrored mappings cannot coexist with direct group aliases.
+    group_storage: Option<GroupStorage>,
+    ordinary_storage: bool,
+}
+
+#[derive(Debug, Clone)]
+struct GroupStorage {
+    object: crate::memory::GroupSharedMapping,
+    committed: bool,
 }
 
 impl crate::prepared_map::MapMemory for GbmBo {
@@ -116,6 +126,8 @@ impl BoRegistry {
             tier,
             format: 0,
             reservation: Default::default(),
+            group_storage: None,
+            ordinary_storage: false,
         };
         let prepared = self.map.prepare_io(id, bo)?;
         self.next_id = next_id;
@@ -150,6 +162,66 @@ impl BoRegistry {
 
     pub fn get_mut(&mut self, id: BoId) -> Option<&mut GbmBo> {
         self.map.get_mut(&id)
+    }
+
+    pub(crate) fn prepare_group_storage(&mut self, bo: BoId, group: u32, id: u64)
+        -> Result<crate::memory::GroupSharedMapping, Errno> {
+        let bo = self.map.get_mut(&bo).ok_or(Errno::EBADF)?;
+        if bo.tier != BoTier::CpuShared || bo.ordinary_storage { return Err(Errno::EOPNOTSUPP); }
+        // An abandoned constructor cannot leave an affiliation behind after
+        // its last VMA capability disappears (including exec/destroy cleanup).
+        if bo.group_storage.as_ref().is_some_and(|s| !s.committed && s.object.only_inode_hold()) {
+            bo.group_storage = None;
+        }
+        if let Some(storage) = &bo.group_storage {
+            if storage.object.group() != group { return Err(Errno::EACCES); }
+            if !storage.committed { return Err(Errno::EBUSY); }
+            return Ok(storage.object.clone());
+        }
+        let length = usize::try_from(bo.size.checked_add(65535).ok_or(Errno::ENOMEM)? & !65535)
+            .map_err(|_| Errno::ENOMEM)?;
+        let object = crate::memory::GroupSharedMapping::new(group, id, length)?;
+        bo.group_storage = Some(GroupStorage { object: object.clone(), committed: false });
+        Ok(object)
+    }
+
+    pub(crate) fn commit_group_storage(&mut self, bo: BoId, id: u64) -> Result<(), Errno> {
+        let storage = self.map.get_mut(&bo).and_then(|b| b.group_storage.as_mut())
+            .filter(|s| s.object.id() == id).ok_or(Errno::ESRCH)?;
+        storage.committed = true;
+        Ok(())
+    }
+
+    pub(crate) fn cancel_group_storage(&mut self, bo: BoId, id: u64) {
+        if let Some(bo) = self.map.get_mut(&bo) {
+            if bo.group_storage.as_ref().is_some_and(|s| s.object.id() == id && !s.committed) {
+                bo.group_storage = None;
+            }
+        }
+    }
+
+    pub(crate) fn ordinary_storage_allowed(&mut self, bo: BoId) -> bool {
+        let Some(bo) = self.map.get_mut(&bo) else { return false; };
+        if bo.group_storage.as_ref().is_some_and(|s| !s.committed && s.object.only_inode_hold()) {
+            bo.group_storage = None;
+        }
+        bo.group_storage.is_none()
+    }
+
+    pub(crate) fn mark_ordinary_storage(&mut self, bo: BoId) {
+        self.map.get_mut(&bo).expect("retained mapped BO").ordinary_storage = true;
+    }
+
+    pub fn group_storage_alive(&self, group: u32, id: u64) -> bool {
+        self.map.values().any(|bo| bo.group_storage.as_ref().is_some_and(|s|
+            s.object.group() == group && s.object.id() == id && (s.committed || !s.object.only_inode_hold())))
+    }
+
+    pub(crate) fn group_storage(&self, bo: BoId) -> Option<&crate::memory::GroupSharedMapping> {
+        self.map.get(&bo)?.group_storage.as_ref().filter(|s| s.committed).map(|s| &s.object)
+    }
+    pub fn group_storage_binding(&self, bo: BoId) -> Option<crate::memory::GroupSharedMapping> {
+        self.group_storage(bo).cloned()
     }
 
     pub fn incref(&mut self, id: BoId) -> Option<u32> {
@@ -232,6 +304,47 @@ pub fn next_id_for_test() -> BoId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grouped_cpu_storage_requires_one_committed_affiliation_and_preserves_padding() {
+        let mut registry = BoRegistry::new();
+        let bo = registry.alloc(4, 4, 32).id;
+        let first = registry.prepare_group_storage(bo, 1, 101).unwrap();
+        assert_eq!(first.length(), 65536);
+        assert_eq!(registry.prepare_group_storage(bo, 1, 102), Err(Errno::EBUSY));
+        assert_eq!(registry.prepare_group_storage(bo, 2, 102), Err(Errno::EACCES));
+        assert_eq!(registry.commit_group_storage(bo, 100), Err(Errno::ESRCH));
+        assert!(!registry.ordinary_storage_allowed(bo));
+        registry.commit_group_storage(bo, 101).unwrap();
+        let alias = registry.prepare_group_storage(bo, 1, 103).unwrap();
+        assert_eq!(first, alias);
+        assert_eq!(registry.prepare_group_storage(bo, 2, 104), Err(Errno::EACCES));
+        registry.cancel_group_storage(bo, 101);
+        assert!(registry.group_storage_alive(1, 101));
+        assert_eq!(registry.decref(bo), Some(0));
+        assert!(!registry.group_storage_alive(1, 101));
+        assert_eq!(alias.id(), 101);
+    }
+
+    #[test]
+    fn abandoned_grouped_cpu_constructor_can_reaffiliate_but_committed_ordinary_cannot() {
+        let mut registry = BoRegistry::new();
+        let bo = registry.alloc(4, 4, 32).id;
+        let first = registry.prepare_group_storage(bo, 1, 201).unwrap();
+        assert!(registry.group_storage_alive(1, 201));
+        drop(first);
+        assert!(!registry.group_storage_alive(1, 201));
+        assert!(registry.ordinary_storage_allowed(bo));
+        let next = registry.prepare_group_storage(bo, 2, 202).unwrap();
+        assert_eq!((next.group(), next.id()), (2, 202));
+        registry.cancel_group_storage(bo, 202);
+        assert!(registry.ordinary_storage_allowed(bo));
+        registry.mark_ordinary_storage(bo);
+        assert_eq!(registry.prepare_group_storage(bo, 2, 203), Err(Errno::EOPNOTSUPP));
+        let gpu = registry.try_alloc_gpu(4, 4, 32).unwrap().id;
+        assert_eq!(registry.prepare_group_storage(gpu, 2, 204), Err(Errno::EOPNOTSUPP));
+    }
+
 
     #[test]
     fn registry_admission_preserves_identity_and_releases_metadata() {

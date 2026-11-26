@@ -1042,3 +1042,88 @@ it("reports a mapping fault through the kernel's host fault callback",async()=>{
   expect(faults).toHaveLength(1);
   expect((faults[0] as Error).message).toMatch(/pid 7's unmapped range 0x400\+64/);
 });
+
+
+describe("direct grouped BO backing", () => {
+  function direct() {
+    const bytes = new Uint8Array(65536), resolve = vi.fn(() => { throw new Error("group virtual address is not a raw Memory offset"); });
+    const reg = new GbmBoRegistry({getProcessMemory: resolve});
+    const backing = {resource: 7n, pages: [99], length: bytes.length};
+    const write = vi.fn((identity: typeof backing, offset: number, input: Uint8Array) => {
+      if (identity.resource !== 7n || identity.pages[0] !== 99 || offset < 0 || offset + input.length > bytes.length) return -5;
+      bytes.set(input, offset); return input.length;
+    });
+    const read = vi.fn((identity: typeof backing, offset: number, output: Uint8Array) => {
+      if (identity.resource !== 7n || identity.pages[0] !== 99 || offset < 0 || offset + output.length > bytes.length) return -5;
+      output.set(bytes.subarray(offset, offset + output.length)); return output.length;
+    });
+    reg.setGroupObjectIO({read, write});
+    reg.create({pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64});
+    return {reg, bytes, resolve, write, read, backing};
+  }
+
+  it("reads canonical device bytes without resolving or retaining any process Memory", () => {
+    const h = direct();
+    expect(h.reg.bindGroup(100, 1, 0xffff0000, 65536, 0, 65536, h.backing)).toBe(0);
+    h.bytes[3] = 17;
+    h.reg.syncToSab(1);
+    expect(h.reg.readPixelView(1)![3]).toBe(17);
+    const version = h.reg.writeCount(1);
+    expect(h.read).toHaveBeenCalledTimes(1); // Scalar/view queries reuse this boundary's bounded staging.
+    expect(h.reg.bindGroup(200, 1, 0x80000000, 65536, 0, 65536, h.backing)).toBe(0);
+    h.bytes[4] = 23;
+    h.reg.syncToSab(1);
+    expect(h.reg.readPixelView(1)![4]).toBe(23);
+    expect(h.reg.writeCount(1)).toBeGreaterThan(version!);
+    expect(h.write).toHaveBeenCalledTimes(1); // Initial device bytes only, never a new alias's stale staging.
+    h.reg.unbind(100, 1, 0xffff0000, 65536);
+    expect(h.reg.readPixelView(1)![4]).toBe(23);
+    expect(h.resolve).not.toHaveBeenCalled();
+    expect(h.reg.hasStaleableImports(200)).toBe(false);
+  });
+
+  it("publishes device writes directly and never writes a stale staging view back", () => {
+    const h = direct();
+    expect(h.reg.bindGroup(100, 1, 0x80000000, 65536, 0, 65536, h.backing)).toBe(0);
+    const output = new Uint8Array(BO_SIZE); output[11] = 71;
+    expect(h.reg.publishDevicePixels(1, output)).toBe(true);
+    expect(h.bytes[11]).toBe(71);
+    const staging = h.reg.readPixelView(1)!;
+    staging[11] = 5; h.bytes[12] = 79;
+    h.reg.syncToSab(1);
+    expect([h.bytes[11], h.bytes[12]]).toEqual([71, 79]);
+    expect(Array.from(h.reg.readPixelView(1)!.subarray(11, 13))).toEqual([71, 79]);
+    expect(() => h.reg.pixelView(1)).toThrow("publishDevicePixels");
+    expect(h.reg.primeProcessMappings(100, newMemory())).toBe(true);
+    expect(h.resolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects different physical backings and ordinary mapping mixtures", () => {
+    const h = direct();
+    expect(h.reg.bindGroup(100, 1, 0, 65536, 0, 65536, h.backing)).toBe(0);
+    expect(h.reg.bindGroup(200, 1, 0, 65536, 0, 65536, {...h.backing, resource: 8n})).toBe(-1);
+    expect(h.reg.bindGroup(200, 1, 0, 65536, 0, 65536, {...h.backing, pages: [100]})).toBe(-1);
+    expect(h.reg.bind(200, 1, 0, BO_SIZE)).toBe(-1);
+    h.reg.unbind(100, 1);
+    expect(h.reg.bind(200, 1, 0, BO_SIZE)).toBe(-1);
+    const ordinary = new GbmBoRegistry();
+    ordinary.create({pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64});
+    ordinary.setGroupObjectIO({read: () => -5, write: () => BO_SIZE});
+    expect(ordinary.bind(100, 1, 0, BO_SIZE)).toBe(0);
+    ordinary.unbind(100, 1);
+    expect(ordinary.bindGroup(100, 1, 0, 65536, 0, 65536, h.backing)).toBe(-1);
+  });
+
+  it("retains scalar aliases across process retirement", () => {
+    const h = direct();
+    expect(h.reg.bindGroup(100, 1, 0, 65536, 0, 65536, h.backing)).toBe(0);
+    expect(h.reg.bindGroup(100, 1, 65536, 65536, 0, 65536, h.backing)).toBe(0);
+    expect(h.reg.bindGroup(200, 1, 0, 65536, 0, 65536, h.backing)).toBe(0);
+    h.reg.releaseProcessMappings(100); h.bytes[3] = 31;
+    h.reg.syncToSab(1);
+    expect(h.reg.get(100, 1)?.binding).toBe(null);
+    expect(h.reg.get(200, 1)?.binding).toEqual({addr: 0, len: 65536});
+    expect(h.reg.readPixelView(1)![3]).toBe(31);
+    h.reg.destroy(200, 1); expect(h.reg.readPixelView(1)).toBeUndefined();
+  });
+});

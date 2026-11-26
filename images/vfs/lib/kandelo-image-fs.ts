@@ -104,6 +104,7 @@ interface ModuleExports extends Partial<PersistentWriterExports> {
   sm_chmod(p: number, pl: number, mode: number): number;
   sm_chown(p: number, pl: number, uid: number, gid: number, clearSetid: number): number;
   sm_unlink(p: number, pl: number): number;
+  sm_link(old: number, oldLen: number, path: number, pathLen: number): number;
   sm_write_file(p: number, pl: number, mode: number, c: number, cl: number): number;
   sm_write_file_chunk(p: number, pl: number, offset: bigint, mode: number, truncate: number, c: number, cl: number): number;
   sm_export_image_cancel(): void;
@@ -603,6 +604,13 @@ export class KandeloImageFs {
     const g = gid < 0 ? 0xffff_ffff : gid;
     this.withPath(path, (p, pl) =>
       this.check(this.exports.sm_chown(p, pl, u, g, clearSetid ? 1 : 0), "chown", path));
+  }
+
+  /** Create an actual hard link; replacement builders must preserve aliases. */
+  link(oldPath: string, newPath: string): void {
+    if (typeof this.exports.sm_link !== "function") throw new Error("Image module lacks hard-link creation; rebuild it");
+    this.withPath(oldPath, (old, oldLen) => this.withPath(newPath, (path, pathLen) =>
+      this.check(this.exports.sm_link(old, oldLen, path, pathLen), "link", newPath)));
   }
 
   unlink(path: string): void {

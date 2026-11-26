@@ -21,7 +21,7 @@ const BX = ["-flags", "+bitexact", "-fflags", "+bitexact"];
 
 const ffmpeg = ffmpegProgram("ffmpeg");
 const ffprobe = ffmpegProgram("ffprobe");
-const unzip = tryResolveBinary("programs/unzip.wasm");
+const unzip = tryResolveBinary("programs/unzip/unzip.wasm");
 const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 
 describe.skipIf(!ffmpeg || !ffprobe || !unzip)("ffmpeg tier 2: Big Buck Bunny", () => {

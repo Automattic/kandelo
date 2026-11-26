@@ -9,6 +9,8 @@ import {
   CH_SYSCALL,
 } from "../src/generated/abi";
 import { buildDlopenImports } from "../src/worker-main";
+import { GroupProcessAddressSpace } from "../src/process-address-space";
+import { readProcessBytes, writeProcessBytes } from "../src/process-memory-views";
 
 type WasmPointer = number | bigint;
 
@@ -37,6 +39,56 @@ type DlopenPrepareImport = (
 
 type DlopenNextImport = (transaction: number) => number;
 type DlopenCommitImport = (transaction: number) => number;
+
+function groupedImports() {
+  const page = 65536, root = page;
+  const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+  const words = new Uint32Array(memory.buffer);
+  words[root / 4] = 4;
+  for (let i = 0; i < 4; i++) words[root / 4 + 16 + i] = (4 + 2 * i) * page | 3;
+  const source = new GroupProcessAddressSpace({ memory, root, maximumPages: 4, assertLive: () => {} });
+  const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+  const sp = new WebAssembly.Global({ value: "i32", mutable: true }, 32768);
+  // (module (global (export "data") i32 (i32.const 1234)))
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(Uint8Array.from(Buffer.from(
+    "0061736d010000000607017f0041d2090b07080104646174610300", "hex"))));
+  const wait = vi.fn(() => { throw new Error("Unexpected grouped loader IPC"); });
+  const support = buildDlopenImports(source, 4096, 128, () => table, () => sp, () => instance,
+    4, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 100,
+    "copied", undefined, undefined, wait);
+  return { source, wait, support, page };
+}
+
+describe("grouped loader metadata", () => {
+  it("keeps the main namespace and reads split symbol names without IPC", () => {
+    const { source, wait, support, page } = groupedImports();
+    const main = (support.imports.__wasm_dlopen as DlopenImport)(0, 0, 0, 0);
+    expect(main).toBe(1);
+    writeProcessBytes(source, page - 2, new TextEncoder().encode("data"));
+    expect((support.imports.__wasm_dlsym as DlsymImport)(main, page - 2, 4)).toBe(1234);
+    expect(support.readForkState()).toMatchObject({ libraries: [], generation: 0 });
+    expect(wait).not.toHaveBeenCalled();
+  });
+  it("copies loader errors through split output pages", () => {
+    const { source, wait, support, page } = groupedImports();
+    writeProcessBytes(source, page - 2, new TextEncoder().encode("missing"));
+    expect((support.imports.__wasm_dlsym as DlsymImport)(1, page - 2, 7)).toBe(0);
+    const length = (support.imports.__wasm_dlerror as DlerrorImport)(page - 2, 128);
+    expect(new TextDecoder().decode(readProcessBytes(source, page - 2, length))).toBe("symbol not found: missing");
+    expect(wait).not.toHaveBeenCalled();
+  });
+  it("refuses ordinary side modules before allocation and releases the loader lease", () => {
+    const { source, wait, support, page } = groupedImports();
+    writeProcessBytes(source, page - 2, STAGED_CTOR_SIDE_MODULE);
+    writeProcessBytes(source, 8192, new TextEncoder().encode("side.so"));
+    expect((support.imports.__wasm_dlopen as DlopenImport)(page - 2, STAGED_CTOR_SIDE_MODULE.length, 8192, 7)).toBe(0);
+    const length = (support.imports.__wasm_dlerror as DlerrorImport)(16384, 256);
+    expect(new TextDecoder().decode(readProcessBytes(source, 16384, length))).toContain("grouped side modules are not supported");
+    expect((support.imports.__wasm_dlopen as DlopenImport)(0, 0, 0, 0)).toBe(1);
+    expect(support.readForkState()).toMatchObject({ libraries: [], generation: 0 });
+    expect(wait).not.toHaveBeenCalled();
+  });
+});
 
 const STAGED_CTOR_SIDE_MODULE = Uint8Array.from(
   Buffer.from(

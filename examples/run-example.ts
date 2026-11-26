@@ -75,10 +75,10 @@ function snapshotOptionalBinaryWithFallback(
 // These declarations describe optional program sources without probing package
 // state at module import time. resolveBuiltinPrograms() checks all package paths
 // together after CLI input is validated.
-const coreutilsWasm = optionalBinary("programs/coreutils.wasm");
+const coreutilsWasm = optionalBinary("programs/coreutils/coreutils.wasm");
 const dashWasm = optionalBinary("programs/dash.wasm");
-const grepWasm = optionalBinary("programs/grep.wasm");
-const sedWasm = optionalBinary("programs/sed.wasm");
+const grepWasm = optionalBinary("programs/grep/grep.wasm");
+const sedWasm = optionalBinary("programs/sed/sed.wasm");
 const gitWasm = optionalBinary("programs/git/git.wasm");
 const bcWasm = optionalBinary("programs/bc.wasm");
 const fileWasm = optionalBinary("programs/file/file.wasm");
@@ -86,14 +86,14 @@ const lessWasm = optionalBinary("programs/less.wasm");
 const m4Wasm = optionalBinary("programs/m4.wasm");
 const makeWasm = optionalBinary("programs/make.wasm");
 const tarWasm = optionalBinary("programs/tar.wasm");
-const curlWasm = optionalBinary("programs/curl.wasm");
+const curlWasm = optionalBinary("programs/curl/curl.wasm");
 const wgetWasm = optionalBinary("programs/wget.wasm");
 const gzipWasm = optionalBinary("programs/gzip.wasm");
 const bzip2Wasm = optionalBinary("programs/bzip2.wasm");
 const xzWasm = optionalBinary("programs/xz.wasm");
 const zstdWasm = optionalBinary("programs/zstd.wasm");
 const zipWasm = optionalBinary("programs/zip.wasm");
-const unzipWasm = optionalBinary("programs/unzip.wasm");
+const unzipWasm = optionalBinary("programs/unzip/unzip.wasm");
 // The node package forwards the canonical SpiderMonkey runtime without a
 // second build; the installed named command is supplied by node-browser-bundle.
 const nodeWasm = optionalBinary("programs/node.wasm");

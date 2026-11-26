@@ -12,7 +12,7 @@ import { writeVfsBinary } from "../src/vfs/image-helpers";
 // host workspace at /build, and checks the runner's contract: exit status,
 // files written through the mount, ordered output, and the timeout.
 const kernelPath = tryResolveBinary("kernel.wasm");
-const bashPath = tryResolveBinary("programs/bash.wasm");
+const bashPath = tryResolveBinary("programs/bash/bash.wasm");
 const available = kernelPath !== null && bashPath !== null;
 
 function minimalImage(): Uint8Array {

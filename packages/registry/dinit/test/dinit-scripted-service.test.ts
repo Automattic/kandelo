@@ -15,7 +15,7 @@ import { addDinitInit } from "../../../../images/vfs/scripts/dinit-image-helpers
 
 const dinitBinary = tryResolveBinary("programs/dinit/dinit.wasm");
 const dinitctlBinary = tryResolveBinary("programs/dinit/dinitctl.wasm");
-const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
+const coreutilsBinary = tryResolveBinary("programs/coreutils/coreutils.wasm");
 const hasArtifacts = !!dinitBinary && !!dinitctlBinary && !!coreutilsBinary;
 
 async function createScriptedServiceImage(

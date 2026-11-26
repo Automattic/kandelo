@@ -37,7 +37,7 @@ const INCONSOLATA = join(
   "third_party/Inconsolata-Regular.ttf",
 );
 
-const footBin = resolveBinary("programs/foot.wasm");
+const footBin = resolveBinary("programs/foot/foot.wasm");
 const dashBin = resolveBinary("programs/dash.wasm");
 requireSession("cage");
 

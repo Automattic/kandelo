@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
-const sedBinary = tryResolveBinary("programs/sed.wasm");
+const sedBinary = tryResolveBinary("programs/sed/sed.wasm");
 
 const hasSed = !!sedBinary;
 

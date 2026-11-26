@@ -44,6 +44,31 @@ function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
  * points, reached through real wasm, from the language that will call them.
  */
 describe("KandeloImageFs", () => {
+  it("creates real hard links and retains them through lazy replacement and serialization", async () => {
+    const filesystem = KandeloImageFs.create();
+    try {
+      filesystem.mkdir("/bin", 0o755);
+      filesystem.writeFile("/bin/shell", new Uint8Array([1, 2, 3]), 0o755);
+      filesystem.link("/bin/shell", "/bin/sh");
+      expect(filesystem.stat("/bin/sh").ino).toBe(filesystem.stat("/bin/shell").ino);
+      filesystem.writeFile("/bin/sh", new Uint8Array([4]), 0o755);
+      expect([...filesystem.readFile("/bin/shell")]).toEqual([4]);
+      expect(() => filesystem.link("/bin/sh", "/bin/shell")).toThrow(expect.objectContaining({ errno: ERRNO.EEXIST }));
+      filesystem.unlink("/bin/sh"); filesystem.unlink("/bin/shell");
+      filesystem.registerLazyFile("/bin/shell", "kandelo-lazy:programs/fixture.zip", 17, 0o4755, "ab".repeat(32));
+      filesystem.link("/bin/shell", "/bin/sh");
+      const restored = KandeloImageFs.create();
+      try {
+        restored.loadImage(await filesystem.saveImage());
+        const original = restored.stat("/bin/shell"), alias = restored.stat("/bin/sh");
+        expect(original.deferred).toBe(true); expect(alias.deferred).toBe(true);
+        expect(alias.ino).toBe(original.ino); expect(alias.nlink).toBe(2);
+        expect(alias.mode & 0o7777).toBe(0o4755);
+        expect(() => restored.link("/missing", "/bin/nope")).toThrow(expect.objectContaining({ errno: ERRNO.ENOENT }));
+      } finally { restored.reset(); }
+    } finally { filesystem.reset(); }
+  });
+
   it("copies large image metadata without a second native allocation", () => {
     const filesystem = KandeloImageFs.create();
     const metadata = { version: 1, kernelAbi: ABI_VERSION, createdBy: "metadata-copy", note: "x".repeat(1024 * 1024) };

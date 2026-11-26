@@ -857,6 +857,7 @@ function untrackedThreadChannel(
 ): TaskAuthorityChannel {
   const channelOffset = UNTRACKED_THREAD_CHANNEL_OFFSET;
   return {
+    source: memory,
     pid,
     memory,
     channelOffset,

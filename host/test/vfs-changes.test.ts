@@ -14,8 +14,8 @@ async function boot(): Promise<NodeKernelHost> {
   fs.mkdir("/etc", 0o755);
   fs.mkdir("/etc/mcp", 0o755);
   fs.mkdir("/tmp", 0o1777);
-  fs.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash.wasm")), 0o755);
-  fs.writeFile("/bin/coreutils", readFileSync(resolveBinary("programs/coreutils.wasm")), 0o755);
+  fs.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash/bash.wasm")), 0o755);
+  fs.writeFile("/bin/coreutils", readFileSync(resolveBinary("programs/coreutils/coreutils.wasm")), 0o755);
   for (const command of ["mv", "rm", "cat"]) fs.symlink("/bin/coreutils", `/bin/${command}`);
   const stderr: string[] = [];
   const host = new NodeKernelHost({
@@ -104,7 +104,7 @@ describe("native filesystem change events", () => {
         const off = host.subscribeVfsChanges(dir, event => events.push(event));
         events.length = 0;
         let pid = 0;
-        const bytes = readFileSync(resolveBinary("programs/bash.wasm"));
+        const bytes = readFileSync(resolveBinary("programs/bash/bash.wasm"));
         const exit = host.spawn(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), ["bash", "-c",
           `set -e; exec 3>${old}; printf first >&3; mv ${old} ${renamed}; ${replaceOldName ? `printf other > ${old};` : ""} read continue; printf second >&3; exec 3>&-`,
         ], { env: ["PATH=/bin"], onStarted: started => { pid = started; } });
@@ -134,7 +134,7 @@ describe("native filesystem change events", () => {
     try {
       const off = host.subscribeVfsChanges("/etc/mcp", event => events.push(event));
       let pid = 0;
-      const bytes = readFileSync(resolveBinary("programs/bash.wasm"));
+      const bytes = readFileSync(resolveBinary("programs/bash/bash.wasm"));
       const exit = host.spawn(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), ["bash", "-c",
         "set -e; exec 3>/etc/mcp/unnamed.json; printf first >&3; rm /etc/mcp/unnamed.json; read continue; printf second >&3; exec 3>&-",
       ], { env: ["PATH=/bin"], onStarted: started => { pid = started; } });

@@ -1,0 +1,26 @@
+id = "JSC-GROUP-MUTEX-STORE-STALL"
+kind = "bug"
+status = "suspected"
+runtimes = ["webkit"]
+summary = "Suspected: contended JavaScript mutex release shows multi-second latency; native store used for owning Worker queue release"
+reports = "human-only"
+
+# This judges the isolated latency disparity. The cause of the remaining
+# application stalls is still unresolved, so the workaround remains suspected.
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = true
+attempts = 2
+min_reproduced = 1
+timeout_seconds = 120
+
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = true
+date = 2026-11-19
+source = "suite"
+released = false

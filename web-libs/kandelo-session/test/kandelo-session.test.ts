@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
+import { validateMemoryGroupUsage } from "../../../host/src/memory-group-usage";
 import {
   LiveKernelHost,
   type BootDescriptor,
@@ -294,6 +295,74 @@ function makeVfs(
 }
 
 // ── LiveKernelHost ─────────────────────────────────────────────────────
+
+describe("LiveKernelHost: optional memory-group inspection", () => {
+  const snapshot = () => validateMemoryGroupUsage({
+    admission: { group: 7, maximumPages: 8192, maximumProcesses: 100, maximumTasks: 200,
+      processes: 4, tasks: 5, quarantinedTasks: 1, backings: 1, images: 4, accepting: true },
+    backing: { group: 7, images: 3, replicas: 8, exposedReplicas: 2, quarantinedReplicas: 1,
+      allocatedPages: 96, pendingWaitDrains: 1, nativeObservers: 2, mappingStagingBytes: 1024,
+      retainedMappingReferences: 6, sharedObjects: 1, sharedPages: 4, sharedImageReferences: 5,
+      maximumPages: 8192, highWaterPages: 120, physicalExtentPages: 128 },
+  })!;
+
+  it("reads unique group counters only on request and leaves SDK snapshots unchanged", async () => {
+    const usage = snapshot();
+    const inspect = vi.fn().mockResolvedValue(usage);
+    const host = new LiveKernelHost();
+    host.attachKernel({ getMemoryGroupUsage: inspect });
+    expect(inspect).not.toHaveBeenCalled();
+    const values = Object.fromEntries((await host.getKernelState()).map(row => [row.k, row.v]));
+    expect(values).toMatchObject({
+      "kandelo.memory_group.pageBytes": "65536",
+      "kandelo.memory_group.admission.group": "7",
+      "kandelo.memory_group.admission.accepting": "true",
+      "kandelo.memory_group.backing.allocatedPages": "96",
+      "kandelo.memory_group.backing.sharedPages": "4",
+      "kandelo.memory_group.backing.sharedImageReferences": "5",
+      "kandelo.memory_group.backing.physicalExtentPages": "128",
+      "kandelo.memory_group.backing.mappingStagingBytes": "1024",
+    });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    values["kandelo.memory_group.backing.sharedPages"] = "999";
+    expect(usage.backing?.sharedPages).toBe(4);
+    inspect.mockResolvedValueOnce({ ...usage, backing: null });
+    const fresh = await host.getKernelState();
+    expect(fresh).toContainEqual({ k: "kandelo.memory_group.backing", v: "unallocated" });
+    expect(fresh.some(row => row.k === "kandelo.memory_group.backing.sharedPages")).toBe(false);
+  });
+
+  it("adds no group rows when the attached host has no opted-in group", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({ getMemoryGroupUsage: async () => null });
+    expect((await host.getKernelState()).some(row => row.k.startsWith("kandelo.memory_group"))).toBe(false);
+  });
+
+  it("surfaces a busy allocator instead of reusing a preceding snapshot", async () => {
+    const error = new Error("Memory-group inspection refused: EAGAIN");
+    const inspect = vi.fn().mockResolvedValueOnce(snapshot()).mockRejectedValueOnce(error);
+    const host = new LiveKernelHost();
+    host.attachKernel({ getMemoryGroupUsage: inspect });
+    await host.getKernelState();
+    await expect(host.getKernelState()).rejects.toBe(error);
+  });
+
+  it("rejects an old machine's late counters after kernel replacement", async () => {
+    let finish!: (value: ReturnType<typeof snapshot>) => void;
+    let start!: () => void;
+    const started = new Promise<void>(resolve => { start = resolve; });
+    const host = new LiveKernelHost();
+    host.attachKernel({ getMemoryGroupUsage: () => {
+      start();
+      return new Promise(resolve => { finish = resolve; });
+    } });
+    const pending = host.getKernelState();
+    await started;
+    host.attachKernel({});
+    finish(snapshot());
+    await expect(pending).rejects.toThrow("Kernel changed during state inspection");
+  });
+});
 
 describe("LiveKernelHost: mounted filesystem configuration", () => {
   it("reports the mounted OPFS base instead of presenting the download URL as its storage", async () => {
@@ -1836,6 +1905,7 @@ const LOGIN_SESSION_POLICY = {
 } satisfies TerminalSessionPolicy;
 
 type TerminalSpawn = {
+  executionBackend?: "ordinary" | "memory-group";
   pid: number;
   programPath: string;
   argv: string[];
@@ -1869,6 +1939,7 @@ function terminalSessionHarness(
       const pid = nextPid++;
       spawns.push({
         pid,
+        executionBackend: options?.executionBackend,
         programPath,
         argv: argv.slice(),
         uid: options?.uid,
@@ -1944,6 +2015,20 @@ async function settleTerminalSessionWork(): Promise<void> {
 describe("LiveKernelHost: supervised terminal sessions", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("selects grouped execution only for an explicit fresh terminal and keeps it across restart", async () => {
+    vi.useFakeTimers();
+    const harness = terminalSessionHarness();
+    await harness.host.attachPty("/dev/pts/0");
+    await harness.host.attachPty("/dev/pts/1", undefined, undefined, { executionBackend: "memory-group" });
+    expect(harness.spawns.map(s => s.executionBackend)).toEqual([undefined, "memory-group"]);
+    await expect(harness.host.attachPty("/dev/pts/0", undefined, undefined, { executionBackend: "memory-group" })).rejects.toThrow("cannot change");
+    harness.exit(2);
+    await settleTerminalSessionWork();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(harness.spawns[2].executionBackend).toBe("memory-group");
+    harness.host.detachKernel();
   });
 
   it("autologins once per logical PTY and UI reattachment starts no process", async () => {

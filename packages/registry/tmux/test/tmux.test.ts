@@ -23,7 +23,7 @@ async function tmuxTestImage(): Promise<Uint8Array> {
 describe("tmux on Kandelo", () => {
   it("runs pane shells, exchanges input, splits panes, resizes and creates windows", async () => {
     const result = await runCentralizedProgram({
-      programPath: resolveBinary("programs/bash.wasm"),
+      programPath: resolveBinary("programs/bash/bash.wasm"),
       argv: ["bash", "--noprofile", "--norc", "-c", TMUX_CONTROL_SCRIPT],
       env: ["HOME=/tmp", "PATH=/usr/bin:/bin", "LC_ALL=C.UTF-8"],
       uid: 1000, gid: 1000, timeout: 90_000,

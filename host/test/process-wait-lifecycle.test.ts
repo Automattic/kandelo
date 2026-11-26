@@ -82,7 +82,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_take_process_timer_cleanup: takeTimerCleanup,
     });
     worker.activeChannels = [channel];
-    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.processes = new Map([[pid, { channels: [channel], memory, source: memory }]]);
     worker.execHandoffPids = new Set();
     worker.hostReaped = new Set([pid]);
     const alarm = setTimeout(() => {}, 60_000);
@@ -328,8 +328,8 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_pick_signal_target_tid: vi.fn(() => 0),
     }, 4, kernelMemory);
     worker.processes = new Map([
-      [7, { pid: 7, channels: [parentChannel], memory: parentMemory }],
-      [42, { pid: 42, channels: [childChannel], memory: childMemory }],
+      [7, { pid: 7, channels: [parentChannel], memory: parentMemory, source: parentMemory }],
+      [42, { pid: 42, channels: [childChannel], memory: childMemory, source: childMemory }],
     ]);
     worker.channelTids = new Map([
       ["7:0", 7],
@@ -510,7 +510,7 @@ describe("Rust-owned process wait lifecycle", () => {
     }, 4, kernelMemory);
     worker.processes = new Map([[42, {
       channels: [channel],
-      memory: processMemory,
+      memory: processMemory, source: processMemory,
     }]]);
     worker.hostReaped = new Set();
     worker.stoppedPids = new Set([42]);
@@ -539,7 +539,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const memory = createSharedMemory();
     const channel = createChannel(7, memory, 256);
     const worker = createWorkerHarness({});
-    worker.processes = new Map([[7, { channels: [channel], memory }]]);
+    worker.processes = new Map([[7, { channels: [channel], memory, source: memory }]]);
     worker.activeChannels = [channel];
     worker.stoppedPids = new Set();
     worker.parkedChannelCompletions = new Map();
@@ -601,8 +601,8 @@ describe("Rust-owned process wait lifecycle", () => {
         kernel_wait_next_timeout_ns: () => -1n,
       }, 4, kernelMemory);
       worker.processes = new Map([
-        [7, { pid: 7, memory, channels: [oldChannel, thread] }],
-        [8, { pid: 8, memory: other.memory, channels: [other] }],
+        [7, { pid: 7, memory, source: memory, channels: [oldChannel, thread] }],
+        [8, { pid: 8, memory: other.memory, source: other.source, channels: [other] }],
       ]);
       worker.activeChannels = [oldChannel, thread, other];
       worker.channelTids.set(`7:${thread.channelOffset}`, 99);
@@ -615,7 +615,7 @@ describe("Rust-owned process wait lifecycle", () => {
       const successor = createChannel(7, memory);
       successor.kernelWaitGeneration = 44;
       worker.processes.set(7, {
-        pid: 7, memory, channels: retirement === "channel" ? [successor, thread] : [successor],
+        pid: 7, memory, source: memory, channels: retirement === "channel" ? [successor, thread] : [successor],
       });
       worker.activeChannels.push(successor);
       markPending(successor);
@@ -681,7 +681,7 @@ describe("Rust-owned process wait lifecycle", () => {
     }, 4, kernelMemory);
     worker.processes = new Map([[42, {
       channels: [first, second],
-      memory: processMemory,
+      memory: processMemory, source: processMemory,
     }]]);
     worker.channelTids = new Map([["42:256", 43]]);
     worker.stoppedPids = new Set([42]);
@@ -758,7 +758,7 @@ describe("Rust-owned process wait lifecycle", () => {
     }, 4, kernelMemory);
     worker.processes = new Map([[42, {
       channels: [channel],
-      memory: processMemory,
+      memory: processMemory, source: processMemory,
     }]]);
     worker.channelTids = new Map();
     worker.hostReaped = new Set();
@@ -813,7 +813,7 @@ describe("Rust-owned process wait lifecycle", () => {
     }, 4, kernelMemory);
     worker.processes = new Map([[42, {
       channels: [first, second],
-      memory: processMemory,
+      memory: processMemory, source: processMemory,
     }]]);
     worker.channelTids = new Map([
       ["42:0", 101],
@@ -901,7 +901,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_handle_channel: handleChannel,
       kernel_drain_wakeup_events: drainWakeups,
     }, 4, kernelMemory);
-    worker.processes = new Map([[42, { channels: [channel], memory: processMemory }]]);
+    worker.processes = new Map([[42, { channels: [channel], memory: processMemory, source: processMemory }]]);
     worker.stoppedPids = new Set([42]);
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
@@ -943,7 +943,7 @@ describe("Rust-owned process wait lifecycle", () => {
         return 0;
       }),
     }, 4, kernelMemory);
-    worker.processes = new Map([[42, { channels: [channel], memory }]]);
+    worker.processes = new Map([[42, { channels: [channel], memory, source: memory }]]);
     worker.stoppedPids = new Set([42]);
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
@@ -970,7 +970,7 @@ describe("Rust-owned process wait lifecycle", () => {
   it("defers an exact stopped channel and re-arms it on continuation", async () => {
     const channel = createChannel(42, createSharedMemory());
     const worker = createWorkerHarness({});
-    worker.processes = new Map([[42, { channels: [channel], memory: channel.memory }]]);
+    worker.processes = new Map([[42, { channels: [channel], memory: channel.memory, source: channel.source }]]);
     worker.stoppedPids = new Set([42]);
     worker.deferredStoppedChannels = new Map();
     worker.parkedChannelCompletions = new Map();
@@ -1000,7 +1000,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const worker = createWorkerHarness({
       kernel_get_process_exit_signal: vi.fn(() => 9),
     });
-    worker.processes = new Map([[42, { channels: [first, second], memory }]]);
+    worker.processes = new Map([[42, { channels: [first, second], memory, source: memory }]]);
     worker.stoppedPids = new Set([42]);
     worker.parkedChannelCompletions = new Map([
       [first, {
@@ -1043,7 +1043,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     worker.processes = new Map([[42, {
       channels: [channel],
-      memory,
+      memory, source: memory,
       borrowedAddressSpace: true,
     }]]);
     worker.hostReaped = new Set();
@@ -1089,7 +1089,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_set_current_tid: setCurrentTid,
       kernel_handle_channel: handleChannel,
     });
-    worker.processes = new Map([[42, { channels: [channel], memory }]]);
+    worker.processes = new Map([[42, { channels: [channel], memory, source: memory }]]);
     worker.hostReaped = new Set([42]);
     const relistenChannel = observeRelisten(worker);
     const processView = new DataView(memory.buffer, channel.channelOffset);
@@ -1130,7 +1130,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_set_current_tid: setCurrentTid,
       kernel_handle_channel: handleChannel,
     });
-    worker.processes = new Map([[42, { channels: [channel], memory }]]);
+    worker.processes = new Map([[42, { channels: [channel], memory, source: memory }]]);
     worker.hostReaped = new Set([42]);
     const relistenChannel = observeRelisten(worker);
     new DataView(memory.buffer, channel.channelOffset).setUint32(
@@ -1169,7 +1169,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_mark_process_signaled: markSignaled,
       kernel_set_current_tid: setCurrentTid,
     });
-    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.processes = new Map([[pid, { channels: [channel], memory, source: memory }]]);
     worker.channelTids = new Map([
       [`${pid}:${channel.channelOffset}`, tid],
     ]);
@@ -1212,7 +1212,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     worker.processes = new Map([[pid, {
       channels: [mainChannel, threadChannel],
-      memory,
+      memory, source: memory,
     }]]);
     worker.channelTids = new Map();
     worker.hostReaped = new Set();
@@ -1258,7 +1258,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_mark_process_signaled: markSignaled,
       kernel_set_current_tid: vi.fn(() => -3),
     });
-    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.processes = new Map([[pid, { channels: [channel], memory, source: memory }]]);
     worker.channelTids = new Map([
       [`${pid}:${channel.channelOffset}`, tid],
     ]);
@@ -1308,8 +1308,8 @@ describe("Rust-owned process wait lifecycle", () => {
       [`${otherPid}:0`, { fnPtr: 3, argPtr: 4 }],
     ]);
     worker.processes = new Map([
-      [pid, { channels: [channel], memory }],
-      [otherPid, { channels: [otherChannel], memory: otherMemory }],
+      [pid, { channels: [channel], memory, source: memory }],
+      [otherPid, { channels: [otherChannel], memory: otherMemory, source: otherMemory }],
     ]);
     worker.execHandoffPids = new Set([pid]);
     worker.hostReaped = new Set([pid]);
@@ -1436,7 +1436,7 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     const memory = createSharedMemory();
     const channel = createChannel(42, memory);
-    worker.processes = new Map([[42, { channels: [channel], memory }]]);
+    worker.processes = new Map([[42, { channels: [channel], memory, source: memory }]]);
     worker.hostReaped = new Set();
     worker.callbacks = { onExit };
     markPending(channel);
@@ -1463,7 +1463,7 @@ describe("Rust-owned process wait lifecycle", () => {
       kernel_commit_process_exit: vi.fn(() => 6),
       kernel_get_process_state: vi.fn(() => PROCESS_STATE_EXITED),
     });
-    worker.processes = new Map([[pid, { channels: [channel], memory }]]);
+    worker.processes = new Map([[pid, { channels: [channel], memory, source: memory }]]);
     worker.hostReaped = new Set();
     worker.callbacks = { onExit };
     markPending(channel);
@@ -1505,8 +1505,8 @@ describe("Rust-owned process wait lifecycle", () => {
     const normalChannel = createChannel(42, normalMemory);
     const signaledChannel = createChannel(43, signaledMemory);
     worker.processes = new Map([
-      [42, { channels: [normalChannel], memory: normalMemory }],
-      [43, { channels: [signaledChannel], memory: signaledMemory }],
+      [42, { channels: [normalChannel], memory: normalMemory, source: normalMemory }],
+      [43, { channels: [signaledChannel], memory: signaledMemory, source: signaledMemory }],
     ]);
     worker.hostReaped = new Set();
     worker.callbacks = { onExit };
@@ -1565,7 +1565,7 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.processes = new Map([
       [10, {
         pid: 10,
-        memory,
+        memory, source: memory,
         channels: [mainChannel, threadChannel],
         ptrWidth: 4,
       }],
@@ -1766,6 +1766,7 @@ function createSharedMemory(): WebAssembly.Memory {
 
 function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset = 0): any {
   return {
+    source: memory,
     pid,
     memory,
     channelOffset,
@@ -1777,7 +1778,7 @@ function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset = 
 function registerMainChannel(worker: any, channel: any): any {
   worker.processes.set(channel.pid, {
     pid: channel.pid,
-    memory: channel.memory,
+    memory: channel.memory, source: channel.source,
     channels: [channel],
   });
   return channel;

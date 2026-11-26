@@ -4,6 +4,7 @@ import { resolveImageOwnedLazyAsset } from "../../host/src/vfs/vfs-asset-group-r
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
+  shellLazySpecDependency,
 } from "../../images/vfs/lib/init/shell-binaries";
 import { SHELL_LAZY_ARCHIVE_SPECS, SHELL_LAZY_DATA_ARCHIVE_SPECS } from "../../images/vfs/scripts/shell-lazy-archives";
 
@@ -41,6 +42,23 @@ function rootfsLazyAddresses(): string[] {
 }
 
 describe("lazy deployment URL closure", () => {
+  it("binds each lazy URI to a declared member of its actual producer", () => {
+    const index = JSON.parse(readFileSync(new URL("../../packages/registry/program-packages.json", import.meta.url), "utf8")) as {
+      packages: Record<string, { members: { mirrorPath: string }[] }>;
+    };
+    const declarations = [
+      ...SHELL_LAZY_BINARY_SPECS.map(spec => ({ ...spec, dependency: shellLazySpecDependency(spec) })),
+      ...SHELL_LAZY_ARCHIVE_SPECS, ...SHELL_LAZY_DATA_ARCHIVE_SPECS,
+    ];
+    for (const spec of declarations) {
+      const path = member(spec.resolverPath).replace(/^programs\/wasm(?:32|64)\//, "");
+      const producer = index.packages[spec.dependency];
+      expect(producer, `${spec.id}: missing producer ${spec.dependency}`).toBeDefined();
+      expect(producer.members.map(row => row.mirrorPath), `${spec.id}: URI belongs to ${spec.dependency}`)
+        .toContain(path);
+    }
+  });
+
   it("serves every shell lazy file at its package member", () => {
     for (const spec of SHELL_LAZY_BINARY_SPECS) {
       expect(
@@ -61,8 +79,8 @@ describe("lazy deployment URL closure", () => {
 
   it("serves every rootfs lazy output at its package member", () => {
     const addresses = rootfsLazyAddresses();
-    expect(addresses).toContain("binaries/programs/wasm32/bash.wasm");
-    expect(addresses).not.toContain("binaries/programs/wasm32/login.wasm");
+    expect(addresses).toContain("binaries/programs/wasm32/bash/bash.wasm");
+    expect(addresses).not.toContain("binaries/programs/wasm32/login/login.wasm");
     for (const address of addresses) {
       expect(resolveImageOwnedLazyAsset(DIRECTORY, address), address).toBe(
         `${DIRECTORY}assets/${address.slice("binaries/".length)}`,

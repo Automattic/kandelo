@@ -28,9 +28,9 @@ describe("dos-play in Kandelo", () => {
       fs.chown("/home/player", 1000, 1000);
       fs.chmod("/tmp", 0o1777);
       const install = (path: string, artifact: string) => fs.writeFile(path, readFileSync(resolveBinary(artifact)), 0o755);
-      install("/bin/bash", "programs/bash.wasm");
+      install("/bin/bash", "programs/bash/bash.wasm");
       fs.symlink("/bin/bash", "/bin/sh");
-      install("/bin/coreutils", "programs/coreutils.wasm");
+      install("/bin/coreutils", "programs/coreutils/coreutils.wasm");
       for (const name of ["cat", "mkdir", "mv", "rm", "cp", "wc", "cut", "sha256sum"])
         fs.symlink("/bin/coreutils", `/bin/${name}`);
       for (const name of ["grep", "curl", "unzip"])

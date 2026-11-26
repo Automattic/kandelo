@@ -24,7 +24,7 @@ const pagesLoaderPath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kern
 const persistenceModulePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/fixed-persistence-image.ts");
 const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 const fullBrowserProductsReady = [
-  "programs/wasm32/bash.wasm",
+  "programs/wasm32/bash/bash.wasm",
   "programs/wasm32/shell.vfs.zst",
 ].every((path) => {
   try {

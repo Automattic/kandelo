@@ -3,6 +3,7 @@ mod owned;
 pub(crate) use owned::*;
 extern crate alloc;
 
+use wasm_posix_shared::ProcessMemoryAccess;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use wasm_posix_shared::access::{R_OK, W_OK, X_OK};
@@ -144,6 +145,13 @@ pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<usize, Errno> {
     } else {
         Ok(ofd_idx)
     }
+}
+
+fn require_io_fd_access(proc: &Process, fd: i32, write: bool) -> Result<usize, Errno> {
+    let index = require_io_fd(proc, fd)?;
+    let mode = proc.ofd_table.get(index).ok_or(Errno::EBADF)?.status_flags() & O_ACCMODE;
+    if (write && mode == O_RDONLY) || (!write && mode == O_WRONLY) { return Err(Errno::EBADF); }
+    Ok(index)
 }
 
 /// Parse a byte slice as an ASCII unsigned integer.
@@ -1294,13 +1302,11 @@ fn commit_exec_state_impl(
     if let Some(locks)=locks.as_deref_mut() {drain_owned_resources(proc,locks,host);} else {
         drain_owned_resources(proc,&mut AdvisoryLockManager::new(),host);
     }
-    let cloexec_fds: Vec<i32> = proc
-        .fd_table
-        .iter()
-        .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC != 0)
-        .map(|(fd, _)| fd)
-        .collect();
-    for fd in cloexec_fds {
+    // Exec has crossed its prepare boundary. Consume descriptors without a
+    // new allocation that could fail after old-image state has been dropped.
+    let mut next_fd_slot = 0;
+    while let Some(fd) = proc.fd_table.next_close_on_exec(next_fd_slot) {
+        next_fd_slot = fd as usize + 1;
         let _ = match locks.as_deref_mut() {
             Some(locks) => sys_close_implicit_with_locks(proc, locks, host, fd),
             None => sys_close_implicit(proc, host, fd),
@@ -1448,7 +1454,7 @@ fn handle_drm_version(host: &mut dyn HostIO, pid: i32, request: u32, buf: &mut [
         let pointer = read_word(buf, len_at + word);
         let len = (value.len() as u64).min(capacity) as usize;
         if len != 0 && pointer != 0 {
-            copies.push((probe_dri_process_pointer(host, pid, pointer, len)?, &value[..len]));
+            copies.push((probe_dri_process_pointer(host, pid, pointer, len, ProcessMemoryAccess::Write)?, &value[..len]));
         }
     }
     for (pointer, bytes) in copies {
@@ -1479,25 +1485,21 @@ fn handle_drm_version(host: &mut dyn HostIO, pid: i32, request: u32, buf: &mut [
 /// there is nothing left to narrow — but the ordering guarantee still has to
 /// come from somewhere, and only the host knows a process's real extent.
 ///
-/// So the pre-pass now probes each address with a `proc_read_bytes` of the
-/// exact length that will later be written. Reading is side-effect-free, and
-/// a range that is inside the process's memory now is still inside it when
-/// the writes begin a few instructions later: linear memory only ever grows,
-/// and the host dispatches this syscall synchronously without re-entering the
-/// kernel. A concurrent thread may change the *bytes* in between — that is
-/// inherent and documented on `HostIO::proc_write_bytes` — but it cannot
-/// shrink the range out from under the write.
+/// Each caller declares guest read or write authority. The pre-pass checks
+/// that authority without copying bytes or allocating a payload. Mapping
+/// changes are serialized by the kernel worker;
+/// actual writes still validate again, including after a renderer callback.
 pub(crate) fn probe_dri_process_pointer(
     host: &mut dyn HostIO,
     pid: i32,
     pointer: u64,
     len: usize,
+    access: ProcessMemoryAccess,
 ) -> Result<u64, Errno> {
     if len != 0 && pointer == 0 {
         return Err(Errno::EFAULT);
     }
-    let mut probe = crate::guest_ptr::zeroed_io_staging(len, len)?;
-    if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
+    if host.proc_validate_range(pid, pointer, len, access) < 0 {
         return Err(Errno::EFAULT);
     }
     Ok(pointer)
@@ -1712,6 +1714,7 @@ fn capture_gl_query_info_target(
     if info.out_buf_len != 0 {
         probe_dri_process_pointer(
             host, pid, u64::from(info.out_buf_ptr), info.out_buf_len as usize,
+            ProcessMemoryAccess::Write,
         )?;
     }
     // Freeze nested process bytes before choosing immediate execution or
@@ -7283,12 +7286,9 @@ pub fn sys_read(
                 return crate::descriptor_backing::with_memfds(|table| {
                     let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
                     let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
-                    if offset >= backing.data.len() {
-                        return Ok(0);
-                    }
-                    let n = buf.len().min(backing.data.len() - offset);
+                    let n = buf.len().min(backing.len().saturating_sub(offset));
                     let new_offset = checked_offset_advance(backing.offset, n)?;
-                    buf[..n].copy_from_slice(&backing.data[offset..offset + n]);
+                    let n = backing.read_at(offset, &mut buf[..n], host)?;
                     backing.offset = new_offset;
                     Ok(n)
                 });
@@ -7330,9 +7330,7 @@ pub fn sys_read(
             if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
                 let current_offset =
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
-                let n = crate::tmpfs::read(host_handle, current_offset, buf, &mut |source, source_offset, bytes| {
-                    host.exchange_source_read(source, source_offset, bytes)
-                })?;
+                let n = crate::tmpfs::read_with_host(host_handle, current_offset, buf, host)?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
                 proc.ofd_table
                     .get_mut(ofd_idx)
@@ -7605,7 +7603,7 @@ pub fn sys_write(
                 let writable_len = write_plan.length;
                 checked_offset_advance(start, writable_len)?;
                 tmpfs_stamp_now(host)?;
-                let n = crate::tmpfs::write(host_handle, start, &buf[..writable_len])?;
+                let n = crate::tmpfs::write_with_host(host_handle, start, &buf[..writable_len], host)?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
                 proc.ofd_table
                     .get_mut(ofd_idx)
@@ -7756,13 +7754,15 @@ pub fn sys_write(
                 return crate::descriptor_backing::with_memfds(|table| {
                     let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
                     if writable_len == 0 { return Ok(0); }
-                    let offset = if status_flags & O_APPEND != 0 { backing.data.len() }
+                    let offset = if status_flags & O_APPEND != 0 { backing.len() }
                         else { usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)? };
                     let end = offset.checked_add(writable_len).ok_or(Errno::EFBIG)?;
                     let next_offset = i64::try_from(end).map_err(|_| Errno::EFBIG)?;
-                    backing.write_at(offset, &buf[..writable_len])?;
-                    backing.offset = next_offset;
-                    Ok(writable_len)
+                    let count = backing.write_at_with_host(offset, &buf[..writable_len], host)?;
+                    backing.offset = if count == writable_len { next_offset } else {
+                        i64::try_from(offset.checked_add(count).ok_or(Errno::EFBIG)?).map_err(|_| Errno::EFBIG)?
+                    };
+                    Ok(count)
                 });
             }
 
@@ -8073,7 +8073,7 @@ pub fn sys_lseek(
         let size = crate::descriptor_backing::with_memfds(|table| {
             table
                 .get(memfd_idx)
-                .map(|backing| backing.data.len() as i64)
+                .map(|backing| backing.len() as i64)
                 .ok_or(Errno::EBADF)
         })?;
         let current =
@@ -8239,9 +8239,7 @@ pub fn sys_pread(
 
     // In-kernel tmpfs: positioned read from Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        return crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| {
-            host.exchange_source_read(source, source_offset, bytes)
-        });
+        return crate::tmpfs::read_with_host(host_handle, offset, buf, host);
     }
 
     // In-kernel rootfs overlay: positioned read; base-file bytes via the byte source.
@@ -8276,12 +8274,7 @@ pub fn sys_pread(
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         return crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
-            if start >= backing.data.len() {
-                return Ok(0);
-            }
-            let n = buf.len().min(backing.data.len() - start);
-            buf[..n].copy_from_slice(&backing.data[start..start + n]);
-            Ok(n)
+            backing.read_at(start, buf, host)
         });
     }
 
@@ -8427,7 +8420,7 @@ fn write_operation_plan(
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
             if status_flags & O_APPEND != 0 {
-                u64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)
+                u64::try_from(backing.len()).map_err(|_| Errno::EOVERFLOW)
             } else {
                 u64::try_from(backing.offset).map_err(|_| Errno::EINVAL)
             }
@@ -8723,14 +8716,14 @@ pub fn sys_pwrite(
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         return crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
-            backing.write_at(start, &buf[..writable_len])
+            backing.write_at_with_host(start, &buf[..writable_len], host)
         });
     }
 
     // In-kernel tmpfs: positioned write into Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
         tmpfs_stamp_now(host)?;
-        return crate::tmpfs::write(host_handle, offset, &buf[..writable_len]);
+        return crate::tmpfs::write_with_host(host_handle, offset, &buf[..writable_len], host);
     }
 
     // In-kernel rootfs overlay: positioned write; first write COWs the base file
@@ -9204,7 +9197,7 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
     fstat_ofd(proc, host, ofd_idx)
 }
 
-fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -> Result<WasmStat, Errno> {
+pub(crate) fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -> Result<WasmStat, Errno> {
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
@@ -9363,7 +9356,7 @@ fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -> Result<Wa
         let size = crate::descriptor_backing::with_memfds(|table| {
             table
                 .get(memfd_idx)
-                .map(|backing| backing.data.len() as u64)
+                .map(|backing| backing.len() as u64)
                 .ok_or(Errno::EBADF)
         })?;
         Ok(WasmStat {
@@ -9493,7 +9486,7 @@ pub(crate) fn process_exe_stat(
     }
     let exe = proc.exe.ok_or(Errno::ENOENT)?;
     let host_handle = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?.host_handle;
-    exe_backing_fstat(host, host_handle)
+    exe_backing_fstat(host, crate::executable_backing::visible_executable_handle(host_handle)?)
 }
 
 /// A NEW open file description of the executable the image runs
@@ -9519,6 +9512,12 @@ fn reopen_process_exe(
         let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
         (ofd.file_type, ofd.host_handle, ofd.path.clone(), ofd.file_id)
     };
+    let visible_handle = crate::executable_backing::visible_executable_handle(host_handle)?;
+    let file_id = if visible_handle != host_handle {
+        let stat = exe_backing_fstat(host, visible_handle)?;
+        Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino })
+    } else { file_id };
+    let host_handle = visible_handle;
     let stat = exe_backing_fstat(host, host_handle)?;
     let mut prepared = proc.ofd_table.prepare(file_type, status_flags, &path)?;
     prepared.value_mut().file_id = file_id;
@@ -12924,6 +12923,7 @@ pub fn sys_mremap(
     flags: u32,
     new_addr: usize,
 ) -> Result<usize, Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     use wasm_posix_shared::mmap::{MAP_FAILED, MAP_FIXED, MAP_SHARED};
     if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
 
@@ -13175,6 +13175,7 @@ pub fn sys_mmap(
     fd: i32,
     offset: i64,
 ) -> Result<usize, Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     let cleanup = if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 && addr != 0 && len != 0 {
         let aligned = len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
         Some(unsafe { crate::memory::global_shared_mapping_table() }.stage_cleanup_mappings(proc.pid, addr as u64, aligned as u64)?)
@@ -13242,7 +13243,7 @@ fn mapping_file_for_ofd(proc:&Process,host:&mut dyn HostIO,index:usize)->Option<
     let (dev, ino) = fstat_ofd(proc, host, index)
         .map(|st| (st.st_dev, st.st_ino))
         .unwrap_or((0, 0));
-    Some(crate::memory::MappingFile { dev, ino, name })
+    Some(crate::memory::MappingFile { dev, ino, name, private_source: None, group_shared: None })
 }
 
 /// Reserve the address range for `sys_mmap` and bind any device to it.
@@ -13281,6 +13282,14 @@ fn mmap_region_for_ofd(
         let index = match owned_index {Some(index)=>index,None=>proc.fd_table.get(fd)?.ofd_ref.0};
         // /dev/fb0 and DRI use their ordinary mapping implementation below.
         let ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
+        if flags & wasm_posix_shared::mmap::MAP_SHARED != 0
+            && (crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
+                    .is_some_and(crate::kernel_file_mapping::group_storage_committed)
+                || crate::rootfs::has_group_read_lease(ofd.host_handle)) {
+            // Compatible grouped aliases use their exact staged owner above
+            // this legacy dispatcher. A mirrored mapping cannot join them.
+            return Err(Errno::EOPNOTSUPP);
+        }
         if ofd.is_path_only() {
             return Err(Errno::EBADF);
         }
@@ -13537,6 +13546,7 @@ pub(crate) struct DeviceMapAllocation {
     len: usize,
     previous: Option<crate::IoBuffer<crate::memory::MappedRegion>>,
     retirement: Option<DeviceUnmapPlan>,
+    grouped: Option<crate::IoBox<Option<crate::memory::change::PreparedMemoryChange>>>,
 }
 
 impl DeviceMapAllocation {
@@ -13611,6 +13621,18 @@ impl DeviceMapAllocation {
             proc.dri_bindings.try_reserve(additional_bindings)?;
             (None, None)
         };
+        if proc.memory.group_virtual_extent().is_some() {
+            let mut storage = crate::IoBox::try_new(None)?;
+            // Command streams belong to this image. Their driver ownership
+            // does not make their bytes a cross-process shared object.
+            let plan = proc.memory.prepare_memory_change(crate::memory::change::MemoryChange::Map {
+                hint: addr, len, prot, flags: (flags & !wasm_posix_shared::mmap::MAP_SHARED)
+                    | wasm_posix_shared::mmap::MAP_PRIVATE | MAP_ANONYMOUS,
+            })?;
+            let crate::memory::change::MemoryChangeEffect::Map { addr: mapped, .. } = plan.effect() else { unreachable!() };
+            *storage = Some(plan);
+            return Ok(Ok(Self { addr: mapped, len, previous, retirement, grouped: Some(storage) }));
+        }
         let mapped = match proc.memory.try_mmap_anonymous(addr, len, prot, flags | MAP_ANONYMOUS) {
             Ok(mapped) => mapped,
             Err(refusal) => return Ok(Err(refusal)),
@@ -13620,11 +13642,14 @@ impl DeviceMapAllocation {
             len,
             previous,
             retirement,
+            grouped: None,
         }))
     }
 
     fn rollback(self, proc: &mut Process) {
-        if let Some(previous) = self.previous {
+        if let Some(mut storage) = self.grouped {
+            proc.memory.cancel_memory_change(storage.take().expect("grouped device plan")).expect("exact grouped device rollback");
+        } else if let Some(previous) = self.previous {
             proc.memory.restore_mapping_snapshot(previous);
         } else {
             proc.memory.munmap(self.addr, self.len).expect("admitted device-map rollback must retain metadata capacity");
@@ -13633,6 +13658,9 @@ impl DeviceMapAllocation {
     }
 
     fn commit(self, proc: &mut Process, host: &mut dyn HostIO, host_replaced_bindings: bool) {
+        if let Some(mut storage) = self.grouped {
+            proc.memory.commit_memory_change(storage.take().expect("grouped device plan")).expect("validated grouped device publication");
+        }
         if let Some(retirement) = self.retirement {
             retirement.commit_with_host(proc, host, host_replaced_bindings);
         }
@@ -13664,14 +13692,14 @@ impl DeviceUnmapRanges {
         match self { Self::One(range) => range, Self::Exact(ranges) => ranges }
     }
 }
-struct DeviceUnmapPlan {
+pub(crate) struct DeviceUnmapPlan {
     ranges: DeviceUnmapRanges,
     fragments: crate::IoBuffer<crate::process::DriBoBinding>,
     split_holds: Vec<crate::dri::BoId>,
 }
 
 impl DeviceUnmapPlan {
-    fn prepare(proc: &Process, addr: usize, len: usize) -> Result<Self, Errno> {
+    pub(crate) fn prepare(proc: &Process, addr: usize, len: usize) -> Result<Self, Errno> {
         Self::prepare_with_binding_slots(proc, addr, len, 0)
     }
 
@@ -13762,11 +13790,11 @@ impl DeviceUnmapPlan {
         Ok(Self { ranges, fragments, split_holds })
     }
 
-    fn commit(self, proc: &mut Process, host: &mut dyn HostIO) {
+    pub(crate) fn commit(self, proc: &mut Process, host: &mut dyn HostIO) {
         self.commit_with_host(proc, host, false);
     }
 
-    fn commit_with_host(
+    pub(crate) fn commit_with_host(
         mut self,
         proc: &mut Process,
         host: &mut dyn HostIO,
@@ -13826,6 +13854,7 @@ pub fn sys_munmap(
     addr: usize,
     len: usize,
 ) -> Result<(), Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     if crate::owned_resource::has_pending_mapping(proc) {return Err(Errno::EBUSY);}
 
     if len == 0 {
@@ -13861,6 +13890,9 @@ pub fn sys_munmap(
 /// If addr is 0, returns the current break.
 /// Otherwise, sets the break to addr and returns the new break.
 pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
+    // brk reports the unchanged break when growth is refused. Grouped changes
+    // must enter the physical/PTE transaction owner, never this legacy path.
+    if validate_ordinary_memory_mutation(proc).is_err() { return proc.memory.get_brk(); }
     if crate::owned_resource::has_pending_mapping(proc) {return proc.memory.get_brk();}
     if addr == 0 {
         proc.memory.get_brk()
@@ -13880,6 +13912,7 @@ pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
 /// `mprotect()` in `docs/posix-status.md`). The host keeps its own effect of
 /// a write upgrade on a shared file mapping (writeback eligibility).
 pub fn sys_mprotect(proc: &Process, addr: usize, len: usize, prot: u32) -> Result<(), Errno> {
+    validate_ordinary_memory_mutation(proc)?;
     use wasm_posix_shared::mmap::{PROT_EXEC, PROT_READ, PROT_WRITE};
     if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
         return Err(Errno::EINVAL);
@@ -13895,6 +13928,13 @@ pub fn sys_mprotect(proc: &Process, addr: usize, len: usize, prot: u32) -> Resul
         return Err(Errno::ENOMEM);
     }
     Ok(())
+}
+
+/// Direct/synthetic channel dispatch cannot commit only the logical half of
+/// a grouped address-space change. Group drivers use staged MemoryManager
+/// plans and publish their physical/PTE effects before committing that plan.
+fn validate_ordinary_memory_mutation(proc: &Process) -> Result<(), Errno> {
+    if proc.memory.group_virtual_extent().is_some() { Err(Errno::EOPNOTSUPP) } else { Ok(()) }
 }
 
 pub fn listener_accept_wake_for_entry(
@@ -20703,6 +20743,25 @@ pub fn sys_membarrier(cmd: i32, flags: i32) -> Result<i32, Errno> {
     }
 }
 
+/// Normalize the supported thread-style clone flags for both ordinary syscall
+/// dispatch and the retained grouped clone owner. Addresses are validated by
+/// the corresponding memory owner before allocation.
+pub(crate) fn thread_clone_settings(
+    flags: u32, tls_ptr: usize, ctid_ptr: usize,
+) -> Result<(usize, usize), Errno> {
+    const CLONE_VM: u32 = 0x00000100;
+    const CLONE_THREAD: u32 = 0x00010000;
+    const CLONE_SETTLS: u32 = 0x00080000;
+    const CLONE_CHILD_CLEARTID: u32 = 0x00200000;
+    if flags & CLONE_VM == 0 || flags & CLONE_THREAD == 0 {
+        return Err(Errno::ENOSYS);
+    }
+    Ok((
+        if flags & CLONE_SETTLS != 0 { tls_ptr } else { 0 },
+        if flags & CLONE_CHILD_CLEARTID != 0 { ctid_ptr } else { 0 },
+    ))
+}
+
 /// clone — spawn a new thread.
 ///
 /// Allocates a TID, stores thread state, and returns the TID. The host's
@@ -20717,40 +20776,20 @@ pub fn sys_clone(
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> Result<i32, Errno> {
-    const CLONE_VM: u32 = 0x00000100;
-    const CLONE_THREAD: u32 = 0x00010000;
-    const CLONE_PARENT_SETTID: u32 = 0x00100000;
-    #[allow(dead_code)]
-    const CLONE_CHILD_SETTID: u32 = 0x01000000;
-    const CLONE_CHILD_CLEARTID: u32 = 0x00200000;
-    const CLONE_SETTLS: u32 = 0x00080000;
-
-    // We only support thread-style clone (CLONE_VM | CLONE_THREAD)
-    if flags & CLONE_VM == 0 || flags & CLONE_THREAD == 0 {
-        return Err(Errno::ENOSYS);
-    }
-
-    let effective_tls = if flags & CLONE_SETTLS != 0 {
-        tls_ptr
-    } else {
-        0
-    };
-    let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 {
-        ctid_ptr
-    } else {
-        0
-    };
+    let (effective_tls, effective_ctid) = thread_clone_settings(flags, tls_ptr, ctid_ptr)?;
     // POSIX: new threads inherit the creator's signal mask. The creator is
     // identified by current_tid because clone arrives through the caller's
     // channel mailbox but the kernel stores masks by TID.
     let caller_tid = table.current_tid();
     let pid = table.current_pid();
+    // Grouped creation is retained by its canonical operation before identity
+    // allocation. Direct/synthetic ordinary clone dispatch cannot bypass it.
+    if table.memory_group_task(pid, caller_tid)?.is_some() { return Err(Errno::EOPNOTSUPP); }
     if table.get(pid).is_some_and(|proc| proc.vfork_child) {
         return Err(Errno::EAGAIN);
     }
     let tid = table.create_thread(pid, caller_tid, stack_ptr, effective_tls, effective_ctid)?;
 
-    let _ = flags & CLONE_PARENT_SETTID;
     Ok(tid as i32)
 }
 
@@ -22617,7 +22656,7 @@ pub fn sys_ftruncate(
         let memfd_idx = (-(host_handle + 1)) as usize;
         crate::descriptor_backing::with_memfds(|table| {
             let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
-            u64::try_from(backing.data.len()).map_err(|_| Errno::EOVERFLOW)
+            u64::try_from(backing.len()).map_err(|_| Errno::EOVERFLOW)
         })?
     } else {
         host.host_fstat(host_handle)?.st_size
@@ -23032,7 +23071,7 @@ pub fn sys_guest_io(proc: &mut Process, host: &mut dyn HostIO,
         n if n == Syscall::Pwrite as u32 => VectorIoKind::Pwrite { offset },
         _ => return Err(Errno::EINVAL),
     };
-    let index = require_io_fd(proc, fd)?;
+    let index = require_io_fd_access(proc, fd, kind.is_write())?;
     let operation = BlockingRetryOperation::from_syscall(syscall)?;
     let request = match take_active_vector_io(proc, tid, operation)? {
         Some(pending) => pending,
@@ -23042,7 +23081,7 @@ pub fn sys_guest_io(proc: &mut Process, host: &mut dyn HostIO,
                 return Err(Errno::EINVAL);
             }
             if length != 0 && (address == 0
-                || host.proc_validate_range(proc.pid as i32, address, length) < 0) {
+                || host.proc_validate_range(proc.pid as i32, address, length, if kind.is_write() { wasm_posix_shared::ProcessMemoryAccess::Read } else { wasm_posix_shared::ProcessMemoryAccess::Write }) < 0) {
                 return Err(Errno::EFAULT);
             }
             let mut entries = crate::IoBuffer::try_with_capacity(1)?;
@@ -23092,7 +23131,7 @@ pub fn sys_vector_io(
 ) -> Result<GuestIoOutcome, Errno> {
     // Reject a descriptor that cannot carry I/O before reading caller memory,
     // so a zero-length vector on a closed or path-only fd still fails.
-    let index = require_io_fd(proc, fd)?;
+    let index = require_io_fd_access(proc, fd, kind.is_write())?;
     let entropy = kind == VectorIoKind::Read && crate::entropy_read::EntropyRead::is_device(proc, index)?;
     let operation = BlockingRetryOperation::from_syscall(syscall_nr)?;
     let pid = proc.pid as i32;
@@ -23131,6 +23170,14 @@ fn execute_vector_request(proc: &mut Process, host: &mut dyn HostIO,
         VectorIoKind::Write => sys_write(proc, host, fd, &request.outgoing),
         VectorIoKind::Pwrite { offset } => sys_pwrite(proc, host, fd, &request.outgoing, offset),
         VectorIoKind::Read | VectorIoKind::Pread { .. } => {
+            // Include frozen retries: current permissions may have changed
+            // while the exact OFD request was parked. Refuse before consuming
+            // a pipe/socket/event or advancing a file offset.
+            for entry in &*request.entries {
+                if entry.len != 0 && host.proc_validate_range(pid, entry.base, entry.len, wasm_posix_shared::ProcessMemoryAccess::Write) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
             match crate::guest_ptr::zeroed_io_staging(request.total, wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES) {
                 Err(error) => Err(error),
                 Ok(mut staging) => {
@@ -24184,6 +24231,42 @@ pub fn sys_sendmsg(
     }
 }
 
+pub(crate) fn recvmsg_socket_index(proc: &Process, fd: i32) -> Result<usize, Errno> {
+    let index = require_io_fd(proc, fd)?;
+    let ofd = proc.ofd_table.get(index).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket { return Err(Errno::ENOTSOCK); }
+    let socket = (-(ofd.host_handle + 1)) as usize;
+    proc.sockets.get(socket).ok_or(Errno::EBADF)?;
+    Ok(socket)
+}
+
+/// Bounded potential output from the exact queued carrier. No payload copy,
+/// descriptor retain, socket read or queue mutation occurs here. Syscall entry
+/// remains synchronous through preflight and the consuming receive.
+pub(crate) fn recvmsg_output_shape(proc: &Process, fd: i32, capacity: usize, flags: u32) -> Result<(usize, usize), Errno> {
+    use crate::socket::{SocketDomain, SocketType};
+    let socket = proc.sockets.get(recvmsg_socket_index(proc, fd)?).ok_or(Errno::EBADF)?;
+    if socket.shut_rd { return Ok((0, 0)); }
+    if socket.sock_type == SocketType::Dgram {
+        let message = socket.dgram_queue.iter().find(|d| dgram_matches_connected_peer(socket, proc.pid, d));
+        let Some(message) = message else { return Ok((0, 0)); };
+        let address = match socket.domain {
+            SocketDomain::Inet => write_sockaddr_in(&mut [], message.src_addr, message.src_port),
+            SocketDomain::Inet6 => write_sockaddr_in6(&mut [], message.src_addr6, message.src_port),
+            SocketDomain::Unix => wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_PATH_OFFSET_BYTES as usize,
+            SocketDomain::Netlink => 0,
+        };
+        return Ok((message.ancillary_fds.len(), address));
+    }
+    if socket.domain == SocketDomain::Unix && flags & wasm_posix_shared::socket::MSG_OOB == 0 {
+        if let Some(index) = socket.recv_buf_idx {
+            let pipe = unsafe { crate::pipe::global_pipe_table().get(index) }.ok_or(Errno::EBADF)?;
+            return Ok((pipe.ancillary_count_within(capacity), 0));
+        }
+    }
+    Ok((0, 0))
+}
+
 /// Receive one stream segment or datagram together with its descriptor batch.
 pub fn sys_recvmsg(
     proc: &mut Process,
@@ -24197,15 +24280,10 @@ pub fn sys_recvmsg(
     use wasm_posix_shared::socket::{MSG_CMSG_CLOEXEC, MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
-    if is_netlink_socket(proc, fd) {
+    let sock_idx = recvmsg_socket_index(proc, fd)?;
+    if proc.sockets.get(sock_idx).is_some_and(|socket| socket.domain == SocketDomain::Netlink) {
         return Err(Errno::EAGAIN);
     }
-    let ofd_idx = resolve_io_ofd(proc, fd)?;
-    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Socket {
-        return Err(Errno::ENOTSOCK);
-    }
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let (domain, socket_type, state, shut_rd, recv_buf_idx) = {
         let socket = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (
@@ -25861,6 +25939,7 @@ mod tests {
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
         /// the DRI mmap path can be asserted against.
         gbm_bo_bind_calls: Vec<(i32, u32, usize, usize)>,
+        gbm_bo_group_bind_calls: Vec<(i32, u32, usize, usize, u64, u32, u64, usize)>,
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_unbind` call.
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
@@ -25886,6 +25965,8 @@ mod tests {
         /// the trait's `-ENOSYS` default, which would make a test that means
         /// to prove "this address is REJECTED" pass for the wrong reason.
         proc_memory: Vec<u8>,
+        proc_read_denied: Option<core::ops::Range<u64>>,
+        proc_write_denied: Option<core::ops::Range<u64>>,
         /// Real process-memory imports allow byte zero; null meaning belongs
         /// to each kernel operation rather than the memory bridge.
         proc_read_allows_address_zero: bool,
@@ -26058,6 +26139,7 @@ mod tests {
                 handle_statfs: std::collections::HashMap::new(),
                 fsync_calls: Vec::new(),
                 gbm_bo_bind_calls: Vec::new(),
+                gbm_bo_group_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
                 gl_unbind_sessions: Vec::new(),
@@ -26084,6 +26166,8 @@ mod tests {
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
                 proc_memory: alloc::vec![0u8; 65536],
+                proc_read_denied: None,
+                proc_write_denied: None,
                 proc_read_allows_address_zero: false,
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
@@ -26969,6 +27053,11 @@ mod tests {
             self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
             self.gbm_bo_bind_rc
         }
+        fn gbm_bo_bind_group(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize,
+            offset: u64, object: &crate::memory::GroupSharedMapping) -> i32 {
+            self.gbm_bo_group_bind_calls.push((pid, bo_id, addr, len, offset, object.group(), object.id(), object.length()));
+            self.gbm_bo_bind_rc
+        }
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
             self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
             self.dri_cleanup_calls.push("unbind");
@@ -27022,6 +27111,7 @@ mod tests {
             self.gl_create_context_rc
         }
         fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
+            if bytes.len() != 0 && self.proc_write_denied.as_ref().is_some_and(|r| ptr < r.end && r.start < ptr.saturating_add(bytes.len() as u64)) { return -(Errno::EFAULT as i32); }
             let Some(offset) = Self::proc_range(&self.proc_memory, ptr, bytes.len()) else {
                 return -(Errno::EFAULT as i32);
             };
@@ -27030,12 +27120,15 @@ mod tests {
             0
         }
 
-        fn proc_validate_range(&mut self, _pid: i32, ptr: u64, len: usize) -> i32 {
+        fn proc_validate_range(&mut self, _pid: i32, ptr: u64, len: usize, access: wasm_posix_shared::ProcessMemoryAccess) -> i32 {
+            let denied = match access { wasm_posix_shared::ProcessMemoryAccess::Read => &self.proc_read_denied, wasm_posix_shared::ProcessMemoryAccess::Write => &self.proc_write_denied };
+            if len != 0 && denied.as_ref().is_some_and(|r| ptr < r.end && r.start < ptr.saturating_add(len as u64)) { return -(Errno::EFAULT as i32); }
             if Self::proc_range(&self.proc_memory, ptr, len).is_some() { 0 }
             else { -(Errno::EFAULT as i32) }
         }
 
         fn proc_read_bytes(&mut self, _pid: i32, ptr: u64, dst: &mut [u8]) -> i32 {
+            if dst.len() != 0 && self.proc_read_denied.as_ref().is_some_and(|r| ptr < r.end && r.start < ptr.saturating_add(dst.len() as u64)) { return -(Errno::EFAULT as i32); }
             if ptr == 0 && self.proc_read_allows_address_zero {
                 let Some(source) = self.proc_memory.get(..dst.len()) else {
                     return -(Errno::EFAULT as i32);
@@ -42547,6 +42640,79 @@ mod tests {
     }
 
     #[test]
+    fn dri_output_preflight_uses_write_authority_without_payload_admission() {
+        let mut host = MockHostIO::new(); let address = IOV_BUFFERS_ADDR;
+        host.proc_read_denied = Some(address..address + 16);
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        { let _limit = crate::io_buffer::test_budget(held);
+          assert_eq!(probe_dri_process_pointer(&mut host, 100, address, 16, ProcessMemoryAccess::Write), Ok(address)); }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        host.proc_write_denied = Some(address + 15..address + 16);
+        assert_eq!(probe_dri_process_pointer(&mut host, 100, address, 16, ProcessMemoryAccess::Write), Err(Errno::EFAULT));
+    }
+
+    #[test]
+    fn guest_input_preflight_preserves_pipe_and_all_destinations() {
+        for width in [4, 8] { for vector in [false, true] { for hole in [false, true] {
+            let mut proc = Process::new(81_153); proc.pointer_width = width;
+            let tid = proc.pid; let mut host = MockHostIO::new(); let mut locks = AdvisoryLockManager::new();
+            let (reader, writer) = sys_pipe(&mut proc).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"data"), Ok(4));
+            let address = IOV_BUFFERS_ADDR;
+            let table = stage_guest_iovecs(&mut host, IOV_TABLE_ADDR, address, &[&[0xa5; 2], &[0xa5; 2]], width);
+            host.proc_write_denied = Some(address + 2..address + 4);
+            if hole { host.proc_read_denied = host.proc_write_denied.clone(); }
+            let result = if vector { sys_vector_io(&mut proc, &mut host, &mut locks, tid, Syscall::Readv as u32,
+                reader, table, 2, width, VectorIoKind::Read) }
+                else { sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Read as u32, reader, address, 4, 0) };
+            assert_eq!(result, Err(Errno::EFAULT));
+            assert_eq!(&host.proc_memory[address as usize..address as usize + 4], &[0xa5; 4]);
+            let mut bytes = [0; 4];
+            assert_eq!(sys_read(&mut proc, &mut host, reader, &mut bytes), Ok(4));
+            assert_eq!(&bytes, b"data");
+            for fd in [reader, writer] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        } } }
+    }
+
+    #[test]
+    fn guest_io_direction_preserves_readonly_sources_and_fd_errors() {
+        for width in [4, 8] {
+            let mut proc = Process::new(81_154); proc.pointer_width = width;
+            let tid = proc.pid; let mut host = MockHostIO::new(); let mut locks = AdvisoryLockManager::new();
+            let (reader, writer) = sys_pipe(&mut proc).unwrap();
+            let address = IOV_BUFFERS_ADDR;
+            let table = stage_guest_iovecs(&mut host, IOV_TABLE_ADDR, address, &[b"ok"], width);
+            host.proc_write_denied = Some(address..address + 2);
+            assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Write as u32, writer, address, 2, 0), Ok(GuestIoOutcome::Complete(2)));
+            assert_eq!(sys_vector_io(&mut proc, &mut host, &mut locks, tid, Syscall::Writev as u32, writer, table, 1, width, VectorIoKind::Write), Ok(GuestIoOutcome::Complete(2)));
+            for (nr, fd) in [(Syscall::Read, writer), (Syscall::Write, reader), (Syscall::Read, -1)] {
+                assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, nr as u32, fd, u64::MAX, 2, 0), Err(Errno::EBADF));
+            }
+            assert_eq!(sys_vector_io(&mut proc, &mut host, &mut locks, tid, Syscall::Readv as u32, writer, u64::MAX, 1, width, VectorIoKind::Read), Err(Errno::EBADF));
+            let mut bytes = [0; 4]; assert_eq!(sys_read(&mut proc, &mut host, reader, &mut bytes), Ok(4)); assert_eq!(&bytes, b"okok");
+            for fd in [reader, writer] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        }
+    }
+
+    #[test]
+    fn guest_read_retry_checks_current_destination_before_consuming() {
+        let mut proc = Process::new(81_155); let tid = proc.pid; set_test_current_tid(tid);
+        let mut host = MockHostIO::new(); let mut locks = AdvisoryLockManager::new();
+        let (reader, writer) = sys_pipe(&mut proc).unwrap();
+        assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Read as u32, reader, IOV_BUFFERS_ADDR, 4, 0), Err(Errno::EAGAIN));
+        let token = proc.blocked_retries.token_for(tid, BlockingRetryOperation::Read).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, writer, b"data"), Ok(4));
+        host.proc_write_denied = Some(IOV_BUFFERS_ADDR..IOV_BUFFERS_ADDR + 4);
+        proc.blocked_retries.activate(tid, token, BlockingRetryOperation::Read).unwrap();
+        assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid, Syscall::Read as u32, reader, IOV_BUFFERS_ADDR, 4, 0), Err(Errno::EFAULT));
+        proc.blocked_retries.clear_active();
+        release_blocking_retry_binding(&mut proc, &mut locks, &mut host, tid, token).unwrap();
+        let mut bytes = [0; 4]; assert_eq!(sys_read(&mut proc, &mut host, reader, &mut bytes), Ok(4)); assert_eq!(&bytes, b"data");
+        for fd in [reader, writer] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        set_test_current_tid(0);
+    }
+
+    #[test]
     fn vector_io_allocation_failure_is_enomem() {
         use wasm_posix_shared::Syscall;
         let mut proc = Process::new(81_090);
@@ -52730,7 +52896,7 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let page = 0x10000;
         let addr = proc.memory.mmap_anonymous(0, 2 * page, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS);
-        let file = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec() });
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec(), group_shared: None, private_source: None });
         assert!(proc.memory.set_mapping_file(addr, 0, file));
         assert_eq!(sys_mremap(&mut proc, &mut host, addr, 2 * page, 3 * page, 1, 0), Err(Errno::EFAULT));
         assert_eq!(proc.memory.mappings()[0].len, 2 * page);
@@ -52781,7 +52947,7 @@ impl HostIO for RelSymlinkMock {
         let shared = proc.memory.mmap_anonymous(3 * page, page, rw, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED);
         let file = proc.memory.mmap_anonymous(4 * page, page, rw, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED);
         assert_eq!((private, shared, file), (page, 3 * page, 4 * page));
-        let name = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec() });
+        let name = alloc::rc::Rc::new(crate::memory::MappingFile { dev: 1, ino: 2, name: b"/f".to_vec(), group_shared: None, private_source: None });
         assert!(proc.memory.set_mapping_file(file, 0, name));
 
         // A private file mapping cannot be reread: refused, nothing changes.
@@ -59294,6 +59460,23 @@ impl HostIO for RelSymlinkMock {
         sys_close(&mut proc, &mut host, plain).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
         kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_property_blob_accepts_readonly_guest_input() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test(); kms::reset_for_test();
+        let mut proc = Process::new(81_166); let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        host.proc_memory[0x2000..0x2006].copy_from_slice(b"source");
+        host.proc_write_denied = Some(0x2000..0x2006);
+        let created = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATEPROPBLOB, [0x2000u32, 0, 6, 0]);
+        assert!(created.is_ok(), "readonly blob input refused: {created:?}");
+        let blob = created.unwrap()[3];
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPROPBLOB, WpkDrmModeGetBlob { blob_id: blob, length: 6, data: 0x3000 }).unwrap();
+        assert_eq!(&host.proc_memory[0x3000..0x3006], b"source");
+        sys_close(&mut proc, &mut host, fd).unwrap(); kms::reset_for_test();
     }
 
     #[test]

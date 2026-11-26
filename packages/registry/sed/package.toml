@@ -1,7 +1,7 @@
 kind = "program"
 name = "sed"
 version = "4.9"
-kernel_abi = 7
+kernel_abi = 56
 depends_on = []
 
 [source]
@@ -19,3 +19,10 @@ script_path = "packages/registry/sed/build-sed.sh"
 [[outputs]]
 name = "sed"
 wasm = "sed.wasm"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "sed-shared"
+wasm = "sed-shared.zip"
+shared_memory_from = "sed"
+fork_instrumentation = "disabled"

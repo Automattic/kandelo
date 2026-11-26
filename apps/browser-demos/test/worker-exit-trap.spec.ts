@@ -10,7 +10,12 @@ test("memory probe detects reloads, main allocations, and guest backing in worke
   await page.reload();
   expect(await memoryBoundaryRealmId(page)).not.toBe(beforeReload);
   await page.evaluate(async () => {
-    new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    // Host modules capture this own getter to authenticate genuine Memory.
+    // The probe must observe construction without changing that prototype.
+    const getter = Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype, 'buffer')?.get;
+    if (typeof getter !== 'function') throw Error('Memory probe hid the native buffer getter');
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    if (Reflect.apply(getter, memory, []).byteLength !== 65536) throw Error('Memory probe broke the genuine buffer getter');
     const url = URL.createObjectURL(new Blob([`
       const memory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
       postMessage({ type: "response", result: {

@@ -9,6 +9,7 @@ pub(crate) struct SourceBinding {
     inode: u64,
     length: u64,
     digest: [u8; 32],
+    pub(super) expose_source: bool,
 }
 
 impl SourceBinding {
@@ -25,7 +26,13 @@ impl SourceBinding {
             inode: stat.st_ino,
             length: stat.st_size,
             digest: digest.finalize().into(),
+            expose_source: false,
         })
+    }
+
+    pub(crate) fn with_visible_source(mut self) -> Self {
+        self.expose_source = true;
+        self
     }
 
     pub(super) fn check_identity(self, stat: &WasmStat) -> Result<(), Errno> {
