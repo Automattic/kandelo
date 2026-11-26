@@ -5025,13 +5025,24 @@ pub extern "C" fn kernel_take_process_timer_cleanup(
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
 /// The process remains as an Exited zombie until a parent wait consumes it.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
+pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32, trap: u32) -> i32 {
+    use abi::WasmIndirectCallTrap;
+    let trap = match trap {
+        0 => None,
+        value if value == WasmIndirectCallTrap::SignatureMismatch as u32 => {
+            Some(WasmIndirectCallTrap::SignatureMismatch)
+        }
+        value if value == WasmIndirectCallTrap::NullOrSignatureMismatch as u32 => {
+            Some(WasmIndirectCallTrap::NullOrSignatureMismatch)
+        }
+        _ => return -(Errno::EINVAL as i32),
+    };
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match lifecycle::run(
         table,
         &mut WasmHostIO,
-        LifecycleRequest::SignalExit { pid, signum },
+        LifecycleRequest::SignalExit { pid, signum, trap },
     ) {
         Ok(LifecycleCompletion::Signaled) => 0,
         Ok(_) => unreachable!("signal exit lifecycle completion"),
@@ -13050,6 +13061,18 @@ pub fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
         Err(e) => -(e as i32),
     };
     let mut host = WasmHostIO;
+    // WHY here: a request that removes read or write access succeeds without
+    // effect (Wasm memory has no page protection). libc refuses it with
+    // ENOTSUP unless the program declared the mprotect fiction, so a success
+    // here is that fiction (or a raw syscall) in use; the log says so, once
+    // per process image.
+    const READ_WRITE: u32 = 0x1 | 0x2;
+    if result == 0
+        && prot & READ_WRITE != READ_WRITE
+        && proc.memory.take_first_unenforced_protection()
+    {
+        crate::kmsg::klog_protection_not_enforced(&mut host, proc.pid, addr, len, prot);
+    }
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }

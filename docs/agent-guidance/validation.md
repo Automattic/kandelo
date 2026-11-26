@@ -531,7 +531,12 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Evidence lifecycle:** keep evidence until it has been reviewed, then use
   `scripts/agent-job release <job-id|playwright-run-uuid>`. Bulk job output
   lives in `.scratch/agent-jobs/<job-id>`; Playwright scratch and reports also
-  stay in the worktree. `cleanup` closes the current tree to new runs and
+  stay in the worktree. For a routine job whose entire success log and scratch
+  are disposable, `start --discard-on-success` opts into automatic retirement
+  on a later start or `tidy`, after all writers exit. Failed and unmarked runs
+  remain; do not opt in for required qualification logs or source experiments.
+  Exit status and bounded summaries remain after retirement.
+  `cleanup` closes the current tree to new runs and
   refuses active writers. Use `reopen` if work will continue after cleanup.
   `gc --dry-run` previews reconciliation of removed worktrees and recovery
   of interrupted releases. UUID ownership prevents a reused worktree path

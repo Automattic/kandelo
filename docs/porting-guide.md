@@ -22,10 +22,9 @@ wasm32posix-configure [--enable-static] [other flags]
 make
 ```
 
-Executable links allow unresolved symbols only from the generated host
-import list (`-Wl,--allow-undefined-file=...`). Since ABI 46, ordinary
-Autoconf link probes reject missing functions; they no longer succeed for
-every symbol. Shared-library side modules still allow unresolved symbols
+The SDK permits unresolved executable symbols only from its generated list
+of base host imports and versioned extensions. Ordinary Autoconf link probes
+reject missing functions. Shared-library side modules still allow unresolved symbols
 because the dynamic loader resolves them against the main program.
 See [SDK Guide](sdk-guide.md) for the linking contract.
 
@@ -58,9 +57,19 @@ compile/link diagnostic before adding a cache override. Check
 libraries explicitly in `LIBS` rather than forcing library searches to
 report success.
 
-**CMake projects** (MariaDB, PCRE2):
+**CMake projects** (MariaDB and its PCRE2 build):
+
+Source `sdk/activate.sh` and use `sdk/cmake/kandelo-toolchain.cmake` for wasm32
+or `sdk/cmake/kandelo-wasm64-toolchain.cmake` for wasm64. Both set the system
+name to `Kandelo`, select Unix behavior, link executable probes through the
+SDK, and produce executables with the `.wasm` suffix. The SDK is the sole owner of the
+executable link contract used by recipes.
+
 ```bash
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=wasm32-posix-toolchain.cmake [flags]
+KANDELO_REPO=/path/to/kandelo
+source "$KANDELO_REPO/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$KANDELO_REPO/sysroot"
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$KANDELO_REPO/sdk/cmake/kandelo-toolchain.cmake"
 cmake --build build
 ```
 
@@ -156,22 +165,15 @@ consumer then rejects the package it just found — reported as
 but not accepted". A test project written in `LANGUAGES NONE` has no pointer
 width and will not reproduce it; set `CMAKE_SIZEOF_VOID_P` to 4 so it does.
 
-**OS detection in headers**: `CMAKE_SYSTEM_NAME=Linux` settles the build
-system only. Source that branches on preprocessor macros still sees a
-toolchain defining `__unix__` and `__wasm32__` but not `__linux__`, which the
-SDK withholds on purpose — Kandelo has no Linux kernel (`sdk/config.site`).
-A port whose headers demand a known OS needs `-D__linux__=1` in its own recipe,
-as `basu`, `erlang`, `spidermonkey` and `qtbase` do. Expect the consequence:
-the source then takes Linux paths, and each one must be backed. Qt needed its
-futex path disabled and an empty `<linux/fs.h>` supplied from the package's own
-include directory.
+**OS detection in headers**. The SDK identifies the OS as Kandelo in CMake
+and defines `__unix__` and the Wasm architecture macro for the compiler.
+Use upstream's POSIX paths and select extensions with feature-test macros.
+For example, MariaDB requests `_GNU_SOURCE` so musl exposes declarations for
+the GNU functions its linked probes find.
 
-Every consumer of that library needs the same defines. They are not recorded in
-the archive: a program including `<QGuiApplication>` without `-D__linux__=1`
-stops at the same `qsystemdetection.h` error the recipe hit, and one without
-`-DQT_LINUXBASE` compiles against headers that disagree with the archives about
-the futex. Carry the recipe's target defines into the consumer's compile line —
-see `packages/registry/qtbase/test/build-gui-smoke.sh`.
+Older ports such as Qt rely on scoped compatibility defines. Those defines
+must also be present when compiling consumers of their headers. See
+`packages/registry/qtbase/test/build-gui-smoke.sh` for the existing Qt contract.
 
 **Baked install prefixes**: A library that records its configure-time
 `CMAKE_INSTALL_PREFIX` writes the resolver's staging directory — whose name

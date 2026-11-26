@@ -103,6 +103,34 @@ Use a unique directory per run under `.scratch/`, or the job-provided
 output in `.context/`. Copy a concise result and any selected evidence that
 must survive archival into `.context/` or another durable destination.
 
+An archive follows the same rule as its contents: a compressed sysroot,
+build tree, browser profile, or job payload still belongs in `.scratch/`.
+For handoffs, retain decisions, source patches, result summaries, artifact
+hashes and selected compressed logs. Do not copy every build artifact into
+retained storage as a precaution, including an external handoff directory.
+Before archiving a workspace, check `.context/` with `du -sh .context` and
+review its largest entries. If bulk data has accumulated, extract any unique
+source changes and useful failure evidence, verify the smaller replacement,
+then remove the disposable payloads and redundant backup copies. Preserve
+registered validation evidence through the ownership-aware cleanup below.
+
+`python3 scripts/retained_context.py` checks the retained directory before a
+handoff; `scripts/agent-job cleanup` runs the same check after releasing its
+owned payloads. The defaults are advisory warnings at 250 MiB total, 100 MiB
+per file and 20,000 files; `--strict` opts into failure on size. The check
+never moves or deletes content. Its output is bounded to a summary and the
+ten largest entries, including with `--json`. An explicit directory
+argument can audit an archived context or external handoff. See the
+[contributor workflow](../CONTRIBUTING.md#retain-and-clean-validation-evidence)
+for reviewed overrides and Conductor archive-hook setup.
+
+Jobs explicitly started with `--discard-on-success` can have their entire
+successful payload retired by the next job start or `agent-job tidy` once
+their writers exit. Summaries remain in the registry. This provides ongoing
+cleanup in `.scratch/` without guessing which source or evidence is useful;
+failed and unmarked runs remain until reviewed. Never mark required outputs
+or unique source experiments disposable.
+
 Keep private agent progress ledgers and handoffs in `.context/`, not in
 tracked tool-specific directories. Keep reusable design rationale in `docs/`
 and current behavior in its authoritative reference. Before removing old plans

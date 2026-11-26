@@ -1,6 +1,27 @@
+import { WASM_INDIRECT_CALL_TRAPS } from "./generated/abi";
+
 export const SIGILL = 4;
 export const SIGFPE = 8;
 export const SIGSEGV = 11;
+
+export type WasmIndirectCallTrap =
+  typeof WASM_INDIRECT_CALL_TRAPS[keyof typeof WASM_INDIRECT_CALL_TRAPS];
+
+const NULL_OR_SIGNATURE_MISMATCH = /\bnull function or function signature mismatch\b/i;
+const INDIRECT_CALL_SIGNATURE_MISMATCH = /\b(?:indirect call (?:type|signature) mismatch|call_indirect (?:type mismatch|to a signature that does not match)|function signature mismatch)\b/i;
+
+/** Observe the engine's message while the error still has its Wasm type. */
+export function observeWasmIndirectCallTrap(reason: unknown): WasmIndirectCallTrap | undefined {
+  if (!(reason instanceof WebAssembly.RuntimeError)) return undefined;
+  const [message = ""] = reason.message.split("\n", 1);
+  if (NULL_OR_SIGNATURE_MISMATCH.test(message)) {
+    return WASM_INDIRECT_CALL_TRAPS.nullOrSignatureMismatch;
+  }
+  if (INDIRECT_CALL_SIGNATURE_MISMATCH.test(message)) {
+    return WASM_INDIRECT_CALL_TRAPS.signatureMismatch;
+  }
+  return undefined;
+}
 
 export type WasmCrashCategory =
   | "memory"
@@ -68,11 +89,9 @@ const TRAP_PATTERNS: TrapPattern[] = [
     patterns: [
       /\bunreachable\b/i,
       /call_indirect.*null/i,
-      /call_indirect.*type mismatch/i,
-      /call_indirect.*signature.*does not match/i,
+      NULL_OR_SIGNATURE_MISMATCH,
+      INDIRECT_CALL_SIGNATURE_MISMATCH,
       /indirect call.*null/i,
-      /indirect call.*type mismatch/i,
-      /function signature mismatch/i,
       /signature mismatch/i,
       /signature.*does not match/i,
       /type mismatch/i,

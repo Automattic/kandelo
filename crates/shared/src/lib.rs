@@ -2297,6 +2297,15 @@ pub mod process_memory {
 pub mod abi {
     pub use wasm_posix_program_abi::abi::*;
 
+    /// Engine observations with enough information to describe a failed indirect call.
+    /// A zero reason on `kernel_mark_process_signaled` carries only a signal.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[repr(u32)]
+    pub enum WasmIndirectCallTrap {
+        SignatureMismatch = 1,
+        NullOrSignatureMismatch = 2,
+    }
+
     /// Patterns (applied as prefix match) for kernel-wasm exports that
     /// are implementation details of the toolchain, not part of the
     /// host/kernel ABI. The snapshot excludes any export whose name
@@ -2394,7 +2403,8 @@ pub mod abi {
     /// 38: length-derived select bitmap slots above FD_SETSIZE.
     /// 39: direct shared-group page-table scanning.
     /// 40: integrate kernel-owned epoll waits with those group contracts.
-    pub const HOST_ADAPTER_VERSION: u32 = 40;
+    /// 41: carry the engine-observed indirect-call trap in a signal exit.
+    pub const HOST_ADAPTER_VERSION: u32 = 41;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;

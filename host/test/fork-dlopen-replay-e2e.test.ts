@@ -13,7 +13,7 @@
  * This fixture is expected to FAIL until that fix lands.
  */
 import { describe, it, expect, beforeAll } from "vitest";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,23 +28,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = process.env.KANDELO_TEST_SYSROOT ?? join(REPO_ROOT, "sysroot");
 const GLUE_DIR = join(REPO_ROOT, "libc", "glue");
-const clangDriver = process.env.CLANG ?? "clang";
-
-function llvmTool(name: "clang" | "clang++" | "wasm-ld"): string {
-  const override = name === "wasm-ld" ? process.env.WASM_LD : undefined;
-  if (override) return override;
-  try {
-    return execFileSync(clangDriver, [`-print-prog-name=${name}`], {
-      encoding: "utf8",
-    }).trim() || name;
-  } catch {
-    return name;
-  }
-}
-
-const CLANG = llvmTool("clang");
-const CLANGXX = llvmTool("clang++");
-const WASM_LD = llvmTool("wasm-ld");
+const SDK_CC = join(REPO_ROOT, "sdk", "bin", "wasm32posix-cc");
+const SDK_CXX = join(REPO_ROOT, "sdk", "bin", "wasm32posix-c++");
+const sdkEnv = { ...process.env, WASM_POSIX_SYSROOT: SYSROOT };
 const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
@@ -111,7 +97,6 @@ const CPP_RUNTIME_MAIN_EXPORTS = [
 /** Build a shared Wasm library (.so side module) from C source. */
 function buildSharedLib(source: string, name: string): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
-  const objPath = join(BUILD_DIR, `${name}.o`);
   const soPath = join(BUILD_DIR, `${name}.so`);
 
   writeFileSync(srcPath, `${source}
@@ -120,15 +105,10 @@ function buildSharedLib(source: string, name: string): string {
     unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
   `);
 
-  execSync(
-    `${CLANG} --target=wasm32-unknown-unknown -fPIC -O2 -matomics -mbulk-memory -I${GLUE_DIR} -c ${srcPath} -o ${objPath}`,
-    { stdio: "pipe" },
-  );
-  execSync(
-    `${WASM_LD} --experimental-pic --shared --shared-memory --export-all --allow-undefined -o ${soPath} ${objPath}`,
-    { stdio: "pipe" },
-  );
-  execSync(`${FORK_INSTRUMENT} ${soPath} -o ${soPath}`, { stdio: "pipe" });
+  execFileSync(SDK_CC, [
+    "-shared", "-fPIC", "-O2", `-I${GLUE_DIR}`, srcPath, "-o", soPath,
+  ], { env: sdkEnv, stdio: "pipe" });
+  execFileSync(FORK_INSTRUMENT, [soPath, "-o", soPath], { stdio: "pipe" });
 
   return soPath;
 }
@@ -137,42 +117,22 @@ function buildSharedLib(source: string, name: string): string {
 function buildCppSharedLib(source: string, name: string): string {
   if (!libcxxPrefix) throw new Error("libcxx PIC prefix unavailable");
   const srcPath = join(BUILD_DIR, `${name}.cpp`);
-  const objPath = join(BUILD_DIR, `${name}.o`);
   const soPath = join(BUILD_DIR, `${name}.so`);
   writeFileSync(srcPath, `${source}
     #include "abi_constants.h"
     extern "C" __attribute__((export_name("__abi_version")))
     unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
   `);
-  execFileSync(CLANGXX, [
-    "--target=wasm32-unknown-unknown",
-    `--sysroot=${SYSROOT}`,
-    "-nostdlib",
-    "-fPIC",
-    "-O2",
-    "-fwasm-exceptions",
-    "-matomics",
-    "-mbulk-memory",
+  execFileSync(SDK_CXX, [
+    "-shared", "-fPIC", "-O2",
     `-I${GLUE_DIR}`,
     `-I${join(libcxxPrefix, "include", "c++", "v1")}`,
-    "-c",
+    "-Wl,--export=__tls_base",
     srcPath,
-    "-o",
-    objPath,
-  ], { stdio: "pipe" });
-  execFileSync(WASM_LD, [
-    "--experimental-pic",
-    "--shared",
-    "--shared-memory",
-    "--export-all",
-    "--allow-undefined",
-    "--export=__tls_base",
-    "-o",
-    soPath,
-    objPath,
     join(libcxxPrefix, "lib", "libc++-pic.a"),
     join(libcxxPrefix, "lib", "libc++abi-pic.a"),
-  ], { stdio: "pipe" });
+    "-o", soPath,
+  ], { env: sdkEnv, stdio: "pipe" });
   execFileSync("bash", [
     FORK_INSTRUMENT,
     soPath,
@@ -189,58 +149,15 @@ function buildMainProgram(source: string, name: string, forceExports: string[] =
 
   writeFileSync(srcPath, source);
 
-  const cflags = [
-    "--target=wasm32-unknown-unknown",
-    `--sysroot=${SYSROOT}`,
-    "-nostdlib",
-    "-O2",
-    "-matomics", "-mbulk-memory",
-    "-fno-trapping-math",
-  ];
-
-  const linkFlags = [
-    join(GLUE_DIR, "channel_syscall.c"),
-    join(GLUE_DIR, "compiler_rt.c"),
-    join(GLUE_DIR, "dlopen.c"),
-    join(SYSROOT, "lib", "crt1.o"),
-    join(SYSROOT, "lib", "libc.a"),
-    "-Wl,--no-entry",
-    "-Wl,--export=_start",
-    "-Wl,--export=__heap_base",
-    "-Wl,--import-memory",
-    "-Wl,--shared-memory",
-    "-Wl,--max-memory=1073741824",
-    "-Wl,-z,stack-size=8388608",
-    "-Wl,--allow-undefined",
-    // This fixture links with clang directly, with its own fixed
-    // --global-base and table layout, so it does not get the SDK driver's
-    // link flags. LLD 22 made --stack-first the default; keep Kandelo's
-    // stack-after-data layout as the SDK driver does for LLD >= 22
-    // (crates/kandelo-cc/src/driver.rs). The dev shell's LLD is 23.
-    "-Wl,--no-stack-first",
-    "-Wl,--global-base=1114112",
-    "-Wl,--table-base=3",
-    "-Wl,--export-table",
-    "-Wl,--growable-table",
-    "-Wl,--export=__wasm_init_tls",
-    "-Wl,--export=__tls_base",
-    "-Wl,--export=__tls_size",
-    "-Wl,--export=__tls_align",
-    "-Wl,--export=__stack_pointer",
-    "-Wl,--export=__wasm_thread_init",
+  execFileSync(SDK_CC, [
+    "-O2", "-ldl", srcPath,
     ...(forceExports.length > 0 ? ["-Wl,--export-all"] : []),
     ...forceExports.map((symbol) => `-Wl,-u,${symbol}`),
-  ];
+    "-o", wasmPath,
+  ], { env: sdkEnv, stdio: "pipe" });
 
-  const allArgs = [...cflags, srcPath, ...linkFlags, "-o", wasmPath];
-  execSync(`${CLANG} ${allArgs.join(" ")}`, { stdio: "pipe" });
-
-  // wasm-fork-instrument is required for fork support; without it,
-  // kernel_fork returns ENOSYS and the bug-under-test never reproduces.
-  execSync(
-    `${FORK_INSTRUMENT} ${wasmPath} -o ${wasmPath}`,
-    { stdio: "pipe" },
-  );
+  // The child must resume through the instrumented fork continuation.
+  execFileSync(FORK_INSTRUMENT, [wasmPath, "-o", wasmPath], { stdio: "pipe" });
 
   return wasmPath;
 }

@@ -44,8 +44,12 @@ post-link job is decided by the same code.
    `--arch wasm64posix` selects the other architecture. `--core-only`
    omits graphics refresh during dependency resolution to avoid recursion.
    Without `--ensure`, the command always rebuilds musl. After libc changes,
-   also rebuild linked programs and fixtures before testing; `setup --all` refreshes
-   package programs, while `scripts/build-programs.sh` builds test fixtures.
+   also rebuild linked programs and fixtures before testing. `setup --all`
+   refreshes package programs, and `scripts/build-programs.sh` builds test
+   fixtures. The fixture build needs the full SDK, including its graphics
+   libraries. It stages fixture headers and libraries such as GTK, glib
+   and SDL2 into a temporary copy of the wasm32 sysroot and uses that copy
+   for wasm32 fixture builds only.
    (`bash build.sh` still works as a deprecated delegator to the same
    command.)
 
@@ -407,6 +411,8 @@ that needs a libc function the program does not link.
 -mllvm -wasm-use-legacy-eh=false   # Modern wasm-EH (try_table/catch_ref);
                                    # LLVM 21 defaults to the legacy form
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
+-Wcast-function-type-strict        # Warn about incompatible function pointer casts
+-Wno-error=cast-function-type-strict # Keep the warning nonfatal under -Werror
 -fvisibility=default               # Non-PIC compiles only: Unix symbol
                                    # visibility (see "Plugin modules");
                                    # the caller's -fvisibility wins
@@ -435,6 +441,32 @@ dependency prefixes when those paths must also be reproducible.
 The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
 leave unresolved host imports in linked programs.
+
+A direct cast between incompatible callback types gets a Clang warning.
+A cast through `void *` can erase the information Clang needs. Give callback
+parameters their actual function-pointer types so Clang can also check callers.
+Some C type differences, such as two different pointer parameter types, have
+the same Wasm representation. A warning alone does not establish that the
+program will trap.
+
+In the completed supported-registry run at `d4b37e705b`, the compiler emitted
+this warning in 55 of 338 package names, across 58 package/architecture
+builds. Of 359 scheduled nodes, 329 succeeded, 29 used cached source packages
+or composed products, and one failed. The failed package, `graphics-cts`,
+emitted warnings during compilation and reached its fork-instrumentation
+budget after linking.
+Repeated header and generated-code diagnostics can dominate the output.
+For example, wasm32 libffi emitted 6,289 warnings in its generated dispatch
+code, where a runtime signature selects the typed call.
+
+A source review of 61 distinct wasm32 diagnostics across basu, Bison, FBDoom,
+gperf, nano, SDL2 and SDL3 found one call with a mismatched Wasm signature.
+SDL2's test timeout registers a no-argument function with a timer API that
+invokes it with two arguments and expects an integer result. Of the other
+60 diagnostics, 53 retained the same Wasm signature and seven involved
+callback identity checks or storage for those checks. These seven packages
+were selected for source review. Their counts do not estimate a registry-wide
+defect rate.
 
 ### Compiler facts for fork instrumentation
 
@@ -602,6 +634,7 @@ package that accepts the boundary names them explicitly.
 | Library | Provides | Behavior |
 |---|---|---|
 | `-lkandelo-ucontext-unsupported` | `getcontext`, `setcontext`, `makecontext`, `swapcontext` | Writes `<function>: ucontext is not supported on Kandelo` to stderr and aborts (`SIGABRT`). |
+| `-lkandelo-mprotect` | `mprotect` | Accepts a request that keeps read and write access (`PROT_READ\|PROT_WRITE`, with or without `PROT_EXEC`) and fails with `ENOTSUP` for one that would remove read or write access; `EINVAL` for unknown protection bits. |
 
 ucontext is unsupported (see `docs/posix-status.md`), so by default a program
 that calls it fails to link. PHP opts in because Zend always compiles Fibers on
@@ -611,6 +644,34 @@ stand-ins abort instead of returning `-1`/`ENOSYS` because PHP ignores those
 return values, so an error return would let a Fiber run on an uninitialized
 context. Do not link these libraries to make a link error go away unless the
 program is known not to depend on the API.
+
+WebAssembly memory has no page protection, so libc.a defines no public
+`mprotect` and a program that calls it fails to link; the SDK driver adds a
+note naming `-lkandelo-mprotect` to that link error. Link it when the program
+uses `mprotect()` only to make memory readable and writable, such as committing
+pages of a `PROT_NONE` reservation. A program that relies on `mprotect()` to
+make memory read-only or inaccessible (guard pages, write barriers, W^X JITs)
+gets `ENOTSUP` from it and must handle that or use another strategy.
+`config.site` reports `mprotect` absent, and build systems that probe by linking
+(Meson, CMake) find it absent too unless the library is added to their link.
+
+A static library that calls `mprotect()` fails the link of every program that
+pulls in the calling archive member, including programs that never reach the
+call. Prefer a build option that compiles the protection-dependent feature out
+(OpenSSL is built `no-secure-memory`, so its secure heap is unavailable rather
+than unguarded). When the library's calls only make memory readable and
+writable, record `-lkandelo-mprotect` in the library's own link metadata
+(pkg-config `Libs.private`, the CMake link interface, libtool `.la`) so
+consumers link it without naming it: Qt6Core and Qt6Qml carry it in their
+CMake link interface.
+
+Software that cannot run unless such a request reports success (a fiber pool
+that refuses to work without a guard page, an allocator that crashes when
+decommit fails) can declare the `mprotect` fiction instead: the request
+succeeds without effect, within a declared class and size, and the program
+records that it was built that way. Select it with
+`--kandelo-fiction=mprotect:...` or `KANDELO_FICTIONS`, or in a package with
+`[[fictions]]`; see "Declared fictions" in `docs/package-management.md`.
 
 #### Why an 8 MiB main-thread stack
 
@@ -885,29 +946,30 @@ make
 
 ## CMake Projects
 
-For CMake, create a toolchain file:
-
-```cmake
-# wasm32-posix-toolchain.cmake
-set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_SYSTEM_PROCESSOR wasm32)
-
-set(CMAKE_C_COMPILER wasm32posix-cc)
-set(CMAKE_CXX_COMPILER wasm32posix-c++)
-set(CMAKE_AR wasm32posix-ar)
-set(CMAKE_RANLIB wasm32posix-ranlib)
-
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-```
-
-Then:
+Use the SDK's cross toolchain, `sdk/cmake/kandelo-toolchain.cmake` for wasm32
+or `sdk/cmake/kandelo-wasm64-toolchain.cmake` for wasm64. Both set
+`CMAKE_SYSTEM_NAME=Kandelo` and `UNIX=1`. CMake discovers the target's
+pointer size and gives executables a `.wasm` suffix.
 
 ```bash
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=wasm32-posix-toolchain.cmake
+KANDELO_REPO=/path/to/kandelo
+source "$KANDELO_REPO/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$KANDELO_REPO/sysroot"
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$KANDELO_REPO/sdk/cmake/kandelo-toolchain.cmake"
 cmake --build build
 ```
+
+For wasm64, select the wasm64 toolchain and set `WASM_POSIX_SYSROOT` to
+`"$KANDELO_REPO/sysroot64"` or your private wasm64 sysroot.
+
+The toolchains link CMake's `try_compile` probes as executables. The SDK
+reports an unresolved function as a link error, so CMake's function and
+library checks can distinguish available symbols from missing ones. Run
+probes still require an emulator or a verified target answer.
+
+The SDK is the sole owner of the executable link contract used by recipes.
+Recipes that use these toolchains declare the entry file,
+`kandelo-toolchain-common.cmake`, and `Platform/Kandelo.cmake` in their build inputs.
 
 ### Example: building Redis
 
@@ -1036,6 +1098,38 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 
 ## Inspecting build output
 
+In the dev shell, `cargo xtask wasm-indirect-call-report FILE.wasm [FILE.wasm ...]`
+produces one JSON record per linked module. Add `--show-compatible` before the
+paths to include the compatible targets for auditing. Each record counts indirect-call
+groups (caller, table and expected type), groups with a resolved target, and
+resolved paths. Several paths can reach the same group. A finding gives
+the caller and target function indices, table slot, expected and actual Wasm
+type indices, and the evidence for the slot. Findings are informational.
+
+The prototype recognizes a literal slot, a literal final argument carried
+through one direct call, and an immediate store and reload at the same
+constant address. A finding describes what happens if execution follows that
+path with the table's initial binding. Exported tables can be changed by the
+embedding host, and another thread can replace a value in shared memory.
+The report skips dynamic-linker, imported and guest-written tables. Callbacks
+stored on a heap list, including Toybox's exit handlers, can remain unresolved.
+A module with zero findings can still trap.
+
+Two overlapping samples of packaged wasm32 executables at `d4b37e705b`
+were deduplicated by content within each sample. The registry sample includes
+every published program of at most 2 MiB present when the sample was taken.
+
+| Sample | Executables | Indirect-call groups | Groups with a resolved target | False positives / verified compatible paths |
+| --- | ---: | ---: | ---: | ---: |
+| Partial shell build | 40 | 1,323 | 25 | 0 / 25 |
+| Registry build, programs up to 2 MiB | 126 | 126,633 | 71 | 0 / 246 |
+
+Independent WABT disassembly and table dumps confirmed the slot, caller and
+target type for every resolved path. Neither sample produced a mismatch,
+so precision among naturally occurring alerts is unknown. A separate SDK-built
+terminal test guest produced one finding. Correcting its handler parameter
+removed the finding at that same table slot.
+
 SDK output is WebAssembly, not ELF. The Kandelo shell carries two sets of
 tools for reading it: LLVM's binary tools (`objdump`, `nm`, `ar`, `size`,
 `strip`, `llvm-readobj`, ..., from the `clang` package) and `wasm-tools`.
@@ -1150,10 +1244,7 @@ The archive's sysroot holds only the SDK's declared content: the files in
 the musl output receipt (checked against their recorded digests), the
 other files `scripts/build-musl.sh` installs, the
 [platform graphics libraries](#sysroot-platform-libraries), and libc++
-from the declared `libcxx` dependency. The build machine's `sysroot/` is
-shared and also holds libraries other tools stage there, such as the
-GTK, glib and SDL2 archives `scripts/build-programs.sh` copies in for its
-fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind.
+from the declared `libcxx` dependency.
 The `kandelo-sdk` image's package build stages its sysroot through the
 same script and passes the `libcxx` output separately. Its image builder,
 `images/vfs/scripts/build-kandelo-sdk-vfs-image.sh`, has no default

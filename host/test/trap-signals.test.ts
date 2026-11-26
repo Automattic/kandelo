@@ -3,11 +3,13 @@ import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
   classifyWasmCrashSignal,
+  observeWasmIndirectCallTrap,
   signalExitStatus,
   SIGFPE,
   SIGILL,
   SIGSEGV,
 } from "../src/trap-signals";
+import { WASM_INDIRECT_CALL_TRAPS } from "../src/generated/abi";
 
 describe("Wasm trap signal classification", () => {
   it("maps memory and stack traps to SIGSEGV", () => {
@@ -79,6 +81,21 @@ describe("Wasm trap signal classification", () => {
         signum: SIGILL,
         signalName: "SIGILL",
       });
+    }
+  });
+
+  it("reports a typed observation only for an engine indirect-call trap", () => {
+    const { signatureMismatch, nullOrSignatureMismatch } = WASM_INDIRECT_CALL_TRAPS;
+    for (const [message, expected] of [
+      ["indirect call type mismatch", signatureMismatch],
+      ["call_indirect to a signature that does not match", signatureMismatch],
+      ["null function or function signature mismatch", nullOrSignatureMismatch],
+      ["call_indirect to a null table entry", undefined],
+      ["unreachable\nfunction signature mismatch", undefined],
+      ["type mismatch", undefined],
+    ] as const) {
+      expect(observeWasmIndirectCallTrap(new WebAssembly.RuntimeError(message))).toBe(expected);
+      expect(observeWasmIndirectCallTrap(new Error(message))).toBeUndefined();
     }
   });
 

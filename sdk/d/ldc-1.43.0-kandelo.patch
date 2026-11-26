@@ -1,3 +1,82 @@
+# LDC 1.43.0: add the wasm32-unknown-kandelo-musl target to LDC, DRuntime
+# and Phobos.
+#
+# Applied by sdk/d/build.sh to the pinned release source, before
+# ldc-1.43.0-wasm-eh.patch. Upstream LDC knows WebAssembly only as a bare
+# or WASI target: no POSIX, no threads beyond the main one, no fibers and no
+# thread-local storage. Kandelo provides all of these through its musl
+# sysroot, so the target needs its own definitions. Each group below says
+# what it changes and why. Hunks whose reason is not obvious from this list
+# also carry a comment in the patched source.
+#
+# - driver/main.cpp: for the Kandelo triple, predefine the version
+#   identifiers Kandelo, Posix, CRuntime_Musl and CppRuntime_LLVM (also its
+#   older name, CppRuntime_Clang). Without them, DRuntime compiles only its
+#   bare-Wasm code paths. `linux` is deliberately not defined: Kandelo is a
+#   POSIX system, not Linux.
+# - core/stdc/* and core/sys/posix/*: declare the C ABI of the SDK's wasm32
+#   musl sysroot. Where that ABI matches the layout upstream already uses for
+#   Linux, a neutral version identifier (for example GenericStatConstants or
+#   LinuxSocketABI) selects the existing declarations for both, instead of
+#   defining `linux`. Where it differs (types, stat, timespec padding,
+#   fcntl lock numbers, fenv, sched_param, ipc_perm), the declarations are
+#   written out to match the sysroot headers they name. Wrong declarations
+#   here are silent memory corruption, so keep them in sync with libc/.
+# - core/time.d, std/datetime/systime.d, std/datetime/timezone.d,
+#   std/parallelism.d, std/file.d, core/demangle.d: choose the POSIX clock,
+#   time-zone name, CPU count (sysconf), executable path (/proc/self/exe)
+#   and dlsym handle that Kandelo provides.
+# - gen/llvmhelpers.cpp, rt/sections_wasm.d: upstream makes D thread-local
+#   variables ordinary globals on Wasm, because bare Wasm has no TLS.
+#   Kandelo sets up Wasm TLS for the main thread and every pthread, so keep
+#   them thread-local and report each thread's TLS block to the GC.
+# - core/thread/osthread.d: take each thread's stack bounds from pthread
+#   instead of the linker's single main-thread stack.
+# - core/internal/backtrace/dwarf.d: exclude every Wasm target, not just
+#   WASI. The DWARF reader needs an ELF or Mach-O image to map addresses.
+# - gen/optimizer.cpp (KandeloSafepoints): Kandelo delivers signals when
+#   a thread enters the kernel, and the GC stops threads with signals. A
+#   loop that makes no call would never stop, so the pass adds a call to
+#   __ldc_kandelo_gc_safepoint on every loop back edge.
+#   sdk/d/test/gc_safepoint.d covers it.
+# - core/thread/fiber/*, core/thread/threadbase.d, core/thread/context.d,
+#   std/concurrency.d, runtime/CMakeLists.txt: a Fiber implementation on
+#   Kandelo's guest-local continuation provider (libkandelo-continuation),
+#   with the GC scanning suspended fibers' saved ranges through the stack
+#   context list. It is OFF by default: Kandelo builds without fibers, as
+#   upstream does for every Wasm target, unless DRuntime, Phobos and the
+#   program are all compiled with -d-version=KandeloFibers. Fibers are
+#   future work because the instrumenter must make every function that
+#   might be on a fiber's stack resumable; without LDC call-type facts that
+#   is nearly every function of any program that links Fiber (Phobos links
+#   it for std.concurrency), which doubled ldc2's code and overflowed
+#   WebKit's first-tier stack although ldc2 never creates a fiber. See
+#   "Fibers" in sdk/d/README.md. sdk/d/test/fibers.d covers the
+#   implementation when it is enabled.
+# - gen/trycatchfinally.{cpp,h}, gen/runtime.cpp, rt/dwarfeh.d: run
+#   `finally` and `scope(exit)` cleanups inside native Wasm exception
+#   handlers. A cleanup that throws replaces or chains the exception in
+#   flight as D requires. Each stack context keeps its chain of in-flight
+#   exceptions, so the GC can scan them and (with KandeloFibers) a fiber
+#   reset can release them. sdk/d/test/exception_chain.d covers it.
+# - core/math.d, std/math/exponential.d: on wasm32, D `real` is IEEE
+#   binary128. Upstream ldexp truncates subnormal results instead of
+#   rounding them. exp's binary128 limits are too tight: exp(11356) gives
+#   infinity, and results that round to the smallest subnormal give 0.
+#   These are upstream bugs that only show on binary128 targets; the
+#   unittests added in each hunk and
+#   tests/sortix/os-test-local/basic/math/binary128.c cover them.
+# - core/internal/gc/impl/conservative/gc.d: build the GC without
+#   fork-based concurrent marking, as upstream already does for WASI. A
+#   marking child that unwinds back into its callers forces Kandelo's fork
+#   instrumentation to make nearly every function of a D program
+#   resumable. In ldc2 the larger frames overflow WebKit's first-tier Wasm
+#   stack. DRT_GCOPT=fork:1 is accepted and marking stops the world.
+#
+# Justification: these hunks describe a real platform to the compiler and
+# runtime; none of them compensates for a Kandelo POSIX gap. The ldexp and
+# exp fixes are candidates for upstream. The rest is the port of a new
+# target, and stays until LDC carries a Kandelo target upstream.
 --- a/gen/optimizer.cpp
 +++ b/gen/optimizer.cpp
 @@ -40,10 +40,14 @@
@@ -1329,20 +1408,28 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
              else static assert(0, "The location of the UTC timezone file on this Posix platform must be set.");
 --- a/runtime/druntime/src/core/thread/fiber/package.d
 +++ b/runtime/druntime/src/core/thread/fiber/package.d
-@@ -11,9 +11,9 @@
+@@ -11,9 +11,17 @@
 
  module core.thread.fiber;
 
 -// No Fiber support on WebAssembly (arch issue)
 -// TODO: Investigate Wasm `stack-switching` proposal as solution
 -version(WebAssembly) {} else:
-+version (Kandelo) {}
++// Kandelo: fibers are future work (sdk/d/README.md, "Fibers"). Their
++// implementation lowers every function that might be on a fiber's stack
++// when it suspends, which without compiler call-type facts is nearly every
++// function of a program that links Fiber, used or not. Build DRuntime,
++// Phobos and the program with -d-version=KandeloFibers to try it.
++version (Kandelo)
++{
++    version (KandeloFibers) {} else version = NoFiber;
++}
 +else version (WebAssembly) version = NoFiber;
 +version (NoFiber) {} else:
 
  import core.thread.context;
  import core.thread.fiber.base : fiber_entryPoint, FiberBase;
-@@ -175,7 +175,9 @@
+@@ -175,7 +183,9 @@
          }
      }
 
@@ -1353,7 +1440,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      {
          version (AsmX86_Windows)    {} else
          version (AsmX86_Posix)      {} else
-@@ -205,7 +207,14 @@
+@@ -205,7 +215,14 @@
      import core.stdc.stdlib : abort;
 
      // Look above the definition of 'class Fiber' for some information about the implementation of this routine
@@ -1369,7 +1456,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      {
          extern (C) void fiber_switchContext( void** oldp, void* newp ) nothrow @nogc;
          version (AArch64)
-@@ -1011,6 +1020,8 @@
+@@ -1011,6 +1028,8 @@
              }
          }
 
@@ -1378,7 +1465,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
          ThreadBase.add( m_ctxt );
      }
 
-@@ -1024,6 +1035,8 @@
+@@ -1024,6 +1043,8 @@
      {
          // NOTE: m_ctxt is guaranteed to be alive because it is held in the
          //       global context list.
@@ -1387,13 +1474,13 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
          ThreadBase.slock.lock_nothrow();
          scope(exit) ThreadBase.slock.unlock_nothrow();
          ThreadBase.remove( m_ctxt );
-@@ -1094,7 +1107,18 @@
+@@ -1094,8 +1115,19 @@
              }
          }
 
 -        version (AsmX86_Windows)
 +        version (Kandelo)
-+        {
+         {
 +            retireKandeloContinuation();
 +            auto continuation =
 +                kandelo_continuation_create(kandeloStackBottom, pstack, &kandeloFiberEntry, null);
@@ -1404,10 +1491,11 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
 +            resetKandeloOwner();
 +        }
 +        else version (AsmX86_Windows)
-         {
++        {
              version (StackGrowsDown) {} else static assert( false );
 
-@@ -1674,6 +1698,29 @@
+             // On Windows Server 2008 and 2008 R2, an exploit mitigation
+@@ -1674,6 +1706,29 @@
          else
              static assert(0, "Not implemented");
      }
@@ -1439,20 +1527,28 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
 
 --- a/runtime/druntime/src/core/thread/fiber/base.d
 +++ b/runtime/druntime/src/core/thread/fiber/base.d
-@@ -11,9 +11,9 @@
+@@ -11,9 +11,17 @@
 
  module core.thread.fiber.base;
 
 -// No Fiber support on WebAssembly (arch issue)
 -// TODO: Investigate Wasm `stack-switching` proposal as solution
 -version(WebAssembly) {} else:
-+version (Kandelo) {}
++// Kandelo: fibers are future work (sdk/d/README.md, "Fibers"). Their
++// implementation lowers every function that might be on a fiber's stack
++// when it suspends, which without compiler call-type facts is nearly every
++// function of a program that links Fiber, used or not. Build DRuntime,
++// Phobos and the program with -d-version=KandeloFibers to try it.
++version (Kandelo)
++{
++    version (KandeloFibers) {} else version = NoFiber;
++}
 +else version (WebAssembly) version = NoFiber;
 +version (NoFiber) {} else:
 
  package:
 
-@@ -47,7 +47,8 @@
+@@ -47,7 +55,8 @@
      else version (TVOS)    version = Darwin;
      else version (WatchOS) version = Darwin;
 
@@ -1462,7 +1558,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      else version (Android) version = CheckFiberMigration;
      else version (AArch64) version = CheckFiberMigration;
      else version (PPC64)   version = CheckFiberMigration;
-@@ -158,7 +159,13 @@
+@@ -158,7 +167,13 @@
            obj.m_ucur = &obj.m_utxt;
 
          obj.m_state = Fiber.State.TERM;
@@ -1477,7 +1573,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      }
  }
 
-@@ -565,12 +572,14 @@
+@@ -565,12 +580,14 @@
       * the code and know that thread locals are not involved.
       *
       * For systems without this issue, allowMigration does nothing, as you are
@@ -1494,7 +1590,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
              m_allowMigration = true;
      }
  }
-@@ -722,6 +731,13 @@
+@@ -722,6 +739,13 @@
 
 
      StackContext*   m_ctxt;
@@ -1508,7 +1604,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      size_t          m_size;
      void*           m_pmem;
 
-@@ -783,10 +799,13 @@
+@@ -783,10 +807,13 @@
                  if (auto e = cast(ThreadException) malloc(threadExceptionSize))
                  {
                      import core.lifetime : emplace;
@@ -1526,7 +1622,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
                      m_unhandled = e;
                      // the exception will leak...
                  }
-@@ -833,7 +852,13 @@
+@@ -833,7 +860,13 @@
              informSanitizerOfStartSwitchFiber(&__fake_stack, new_bottom, m_size);
          }
 
@@ -1541,7 +1637,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
 
          version (SupportSanitizers)
          {
-@@ -886,7 +911,10 @@
+@@ -886,7 +919,10 @@
              informSanitizerOfStartSwitchFiber(&__fake_stack, __from_stack_bottom, __from_stack_size);
          }
 
@@ -1553,7 +1649,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
 
          version (SupportSanitizers)
          {
-@@ -1086,9 +1114,24 @@
+@@ -1086,9 +1122,24 @@
              f.allowMigration();
          }
 
@@ -1581,7 +1677,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      });
 
      assert(tls == 0);
-@@ -1097,6 +1140,12 @@
+@@ -1097,6 +1148,12 @@
 
      t.start();
      t.join();
@@ -1594,7 +1690,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
 
      version (CheckFiberMigration)
      {
-@@ -1126,7 +1175,8 @@
+@@ -1126,7 +1183,8 @@
      }
  }
 
@@ -1706,17 +1802,25 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      /// (will be necessary for exception chaining, etc.). Opaque as far as
 --- a/runtime/phobos/std/concurrency.d
 +++ b/runtime/phobos/std/concurrency.d
-@@ -77,6 +77,9 @@
+@@ -77,6 +77,17 @@
   */
  module std.concurrency;
 
-+version (Kandelo) {}
++// Kandelo: fibers are future work (sdk/d/README.md, "Fibers"). Their
++// implementation lowers every function that might be on a fiber's stack
++// when it suspends, which without compiler call-type facts is nearly every
++// function of a program that links Fiber, used or not. Build DRuntime,
++// Phobos and the program with -d-version=KandeloFibers to try it.
++version (Kandelo)
++{
++    version (KandeloFibers) {} else version = NoFiber;
++}
 +else version (WebAssembly) version = NoFiber;
 +
  public import std.variant;
 
  import core.atomic;
-@@ -1493,7 +1496,7 @@
+@@ -1493,7 +1504,7 @@
   * This is an example scheduler that creates a new `Fiber` per call to spawn
   * and multiplexes the execution of all fibers within the main thread.
   */
@@ -1725,7 +1829,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
  else class FiberScheduler : Scheduler
  {
      /**
-@@ -1685,7 +1688,7 @@
+@@ -1685,7 +1696,7 @@
      size_t m_pos;
  }
 
@@ -1734,7 +1838,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
  else @system unittest
  {
      static void receive(Condition cond, ref size_t received)
-@@ -1746,7 +1749,7 @@
+@@ -1746,7 +1757,7 @@
   */
  void yield() nothrow
  {
@@ -1743,7 +1847,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      {
          scheduler.yield();
      }
-@@ -1775,7 +1778,7 @@
+@@ -1775,7 +1786,7 @@
   * that periodically returns values of type `T` to the
   * caller via `yield`.  This is represented as an InputRange.
   */
@@ -1752,7 +1856,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
  else class Generator(T) :
      Fiber, IsGenerator, InputRange!T
  {
-@@ -1959,7 +1962,7 @@
+@@ -1959,7 +1970,7 @@
  }
 
  ///
@@ -1761,7 +1865,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
  else @system unittest
  {
      auto tid = spawn({
-@@ -1988,7 +1991,7 @@
+@@ -1988,7 +1999,7 @@
   * Params:
   *  value = The value to yield.
   */
@@ -1770,7 +1874,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
  else void yield(T)(ref T value)
  {
      Generator!T cur = cast(Generator!T) Fiber.getThis();
-@@ -2001,13 +2004,13 @@
+@@ -2001,13 +2012,13 @@
  }
 
  /// ditto
@@ -1786,7 +1890,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
  else @system unittest
  {
      import core.exception;
-@@ -2062,7 +2065,7 @@
+@@ -2062,7 +2073,7 @@
      scheduler = null;
  }
  ///
@@ -1795,7 +1899,7 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
  else @system unittest
  {
      import std.range;
-@@ -2953,7 +2956,7 @@
+@@ -2953,7 +2964,7 @@
      static assert(__traits(compiles, send(Tid.init, noreturn.init)          ));
      static assert(__traits(compiles, prioritySend(Tid.init, noreturn.init)  ));
 
@@ -2408,6 +2512,28 @@ diff --git a/runtime/phobos/std/datetime/timezone.d b/runtime/phobos/std/datetim
      }
      else static if (real.mant_dig == 106)
      {
+--- a/runtime/druntime/src/core/internal/gc/impl/conservative/gc.d
++++ b/runtime/druntime/src/core/internal/gc/impl/conservative/gc.d
+@@ -34,7 +34,18 @@
+ {
+     version = COLLECT_PARALLEL;  // parallel scanning
+
+-    version (Posix)
++    // Kandelo: no fork-based concurrent marking. Kandelo's fork
++    // instrumentation makes every function that a fork child can return or
++    // unwind into resumable, which enlarges its Wasm frames. The marking
++    // child normally ends with _Exit, but a D Error or a C longjmp can
++    // unwind it out of the collector into any caller of the GC. That made
++    // nearly every function in ldc2 (about 57,700) resumable, and the larger
++    // frames overflow WebKit's first-tier Wasm stack in DMD's frontend.
++    // DRuntime already builds without this feature on WASI. Without it,
++    // DRT_GCOPT=fork:1 is accepted and marking stops the world, as it does
++    // when fork fails.
++    version (Kandelo) {}
++    else version (Posix)
+         version = COLLECT_FORK;
+ }
+
 --- a/runtime/phobos/std/math/exponential.d
 +++ b/runtime/phobos/std/math/exponential.d
 @@ -1080,7 +1080,7 @@

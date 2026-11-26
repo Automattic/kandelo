@@ -12,7 +12,8 @@ import { launchGroupedForkWorker } from './grouped-fork-launch';
 import { launchGroupedThreadWorker } from './grouped-thread-launch';
 import { retryKernelEntryResult as retry } from './kernel-entry-retry';
 import type { MemoryGroupUsage } from './memory-group-usage';
-import type { CentralizedWorkerInitMessage } from './worker-protocol';
+import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from './worker-protocol';
+import { observeWasmIndirectCallTrap } from './trap-signals';
 
 /** Explicit embedder-only opt-in. Compatible artifacts select the backend;
  * ordinary artifacts retain their ordinary path. Membership remains in Rust. */
@@ -113,15 +114,17 @@ export class GroupedSessionRuntime {
     if (this.closing || this.closed) throw Error('Grouped session is closed');
     return this.ensureGroup();
   }
-  private fault(process: Process, error: Error): void {
+  private fault(process: Process, error: Error, trap = observeWasmIndirectCallTrap(error)): void {
     if (!this.current(process)) return;
     const { pid, handle } = process.owner;
     this.report(pid, error);
-    void retry(() => this.kernel.recordMemoryGroupCrash(handle, 11)).catch(failure => this.report(pid, failure));
+    void retry(() => this.kernel.recordMemoryGroupCrash(handle, 11, trap)).catch(failure => this.report(pid, failure));
   }
-  private message(process: Process, message: any): void {
+  private message(process: Process, message: WorkerToHostMessage): void {
     if (!this.current(process)) return;
-    if (message.type === 'error') this.fault(process, Error(message.message));
+    if (message.type === 'error' && message.pid === process.owner.pid) {
+      this.fault(process, Error(message.message), message.wasmIndirectCallTrap);
+    }
   }
 
   private publishRetiredExit(pid: number, status: number, generation: number): Promise<void> {

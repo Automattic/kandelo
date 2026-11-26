@@ -261,7 +261,11 @@ impl MemoryManager {
             if let Err(error) = crate::dri::with_registry(|r| r.commit_group_storage(bo, id)) { return Err((error, plan)); }
         }
         let effect = plan.effect;
+        // The per-image latch for unenforced protection is not memory state:
+        // keep a record logged while the change was pending.
+        let unenforced_protection_seen = self.unenforced_protection_seen;
         *self = plan.proposed;
+        self.unenforced_protection_seen |= unenforced_protection_seen;
         Ok(effect)
     }
 
@@ -285,7 +289,8 @@ impl MemoryManager {
             last_exact_mapping_id: self.last_exact_mapping_id,
             program_break: self.program_break, max_addr: self.max_addr,
             mmap_base: self.mmap_base, reserved_until: self.reserved_until,
-            brk_limit: self.brk_limit, data_limit: self.data_limit, initial_brk: self.initial_brk })
+            brk_limit: self.brk_limit, data_limit: self.data_limit, initial_brk: self.initial_brk,
+            unenforced_protection_seen: self.unenforced_protection_seen })
     }
 
     fn same_metadata(&self, baseline: &Self) -> bool {

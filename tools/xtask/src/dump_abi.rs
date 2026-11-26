@@ -3371,6 +3371,9 @@ fn render_ts_module() -> String {
         "export const HOST_ADAPTER_VERSION = {} as const;\n",
         shared::abi::HOST_ADAPTER_VERSION
     ));
+    out.push_str("export const WASM_INDIRECT_CALL_TRAPS = ");
+    out.push_str(&wasm_indirect_call_traps().to_string());
+    out.push_str(" as const;\n");
     out.push_str(&format!("export const PROCESS_MEMORY_ACCESS_READ = {} as const;\nexport const PROCESS_MEMORY_ACCESS_WRITE = {} as const;\n",
         shared::ProcessMemoryAccess::Read as u32, shared::ProcessMemoryAccess::Write as u32));
     out.push_str("export const MEMORY_GROUP_PROTOCOL = ");
@@ -7211,6 +7214,14 @@ fn memory_group_contract() -> Value {
     })
 }
 
+fn wasm_indirect_call_traps() -> Value {
+    use shared::abi::WasmIndirectCallTrap;
+    json!({
+        "signatureMismatch": WasmIndirectCallTrap::SignatureMismatch as u32,
+        "nullOrSignatureMismatch": WasmIndirectCallTrap::NullOrSignatureMismatch as u32,
+    })
+}
+
 fn host_adapter() -> Value {
     let manifest = shared::abi::HOST_ADAPTER_MANIFEST;
 
@@ -7268,6 +7279,7 @@ fn host_adapter() -> Value {
 
     let mut m: JsonMap = BTreeMap::new();
     m.insert("version".into(), json!(shared::abi::HOST_ADAPTER_VERSION));
+    m.insert("wasm_indirect_call_traps".into(), wasm_indirect_call_traps());
     m.insert("process_memory_access".into(), json!({ "read": shared::ProcessMemoryAccess::Read as u32, "write": shared::ProcessMemoryAccess::Write as u32 }));
     m.insert(
         "manifest".into(),

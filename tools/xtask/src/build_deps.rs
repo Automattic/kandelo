@@ -2193,6 +2193,33 @@ pub(crate) struct ProgramPackageProjection {
     pub(crate) cache_keys: BTreeMap<String, String>,
     pub(crate) dependency_closures: BTreeMap<String, Vec<ProgramDependencyIdentity>>,
     pub(crate) members: Vec<ProgramPackageProjectionMember>,
+    /// The package's declared fictions, absent when it declares none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) fictions: Vec<ProgramFictionDeclaration>,
+}
+
+/// A declared fiction as the program package index reports it: provenance
+/// for whoever installs the package, next to the stamp each linked program
+/// carries (`kandelo.fictions`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProgramFictionDeclaration {
+    pub(crate) name: String,
+    pub(crate) reason: String,
+    /// `name:key=value,...` as declared, keys sorted.
+    pub(crate) selection: String,
+}
+
+fn program_fiction_declarations(manifest: &DepsManifest) -> Vec<ProgramFictionDeclaration> {
+    manifest
+        .fictions
+        .iter()
+        .map(|fiction| ProgramFictionDeclaration {
+            name: fiction.name.clone(),
+            reason: fiction.reason.trim().to_string(),
+            selection: fiction_selection_text(fiction),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -5926,6 +5953,7 @@ fn program_package_index_for_root_once(
             cache_keys,
             dependency_closures,
             members,
+            fictions: program_fiction_declarations(manifest),
         };
         for arch in &projection.arches {
             for member in &projection.members {
@@ -6090,6 +6118,7 @@ pub(crate) fn source_only_program_package_index_for_nodes(
                 cache_keys: BTreeMap::new(),
                 dependency_closures: BTreeMap::new(),
                 members: members.clone(),
+                fictions: program_fiction_declarations(&manifest),
             });
         if projection.members != members {
             return Err(format!(
@@ -7453,6 +7482,24 @@ fn compute_sha_with_identity_context_for_platform(
                     h.update(b"|");
                     h.update(tool.probe.version_regex.as_bytes());
                     h.update(b"|");
+                }
+            }
+            // Declared fictions change what the SDK links into every
+            // program the build produces. The reason is free text and, like
+            // comments, determines nothing.
+            if !target.fictions.is_empty() {
+                h.update(b"kandelo-fictions-v1\n");
+                for fiction in &target.fictions {
+                    h.update((fiction.name.len() as u64).to_le_bytes());
+                    h.update(fiction.name.as_bytes());
+                    h.update((fiction.config.len() as u64).to_le_bytes());
+                    for (key, value) in &fiction.config {
+                        let value = value.to_string();
+                        for field in [key.as_bytes(), value.as_bytes()] {
+                            h.update((field.len() as u64).to_le_bytes());
+                            h.update(field);
+                        }
+                    }
                 }
             }
             if target.target_arches != [TargetArch::Wasm32] {
@@ -12599,6 +12646,124 @@ struct PrimarySourceHandoff {
     source_dir: PathBuf,
 }
 
+/// The environment variable through which a package build hands its declared
+/// fictions to the SDK driver (`crates/kandelo-cc/src/fictions.rs`).
+pub(crate) const FICTIONS_ENV: &str = "KANDELO_FICTIONS";
+
+/// The registry of declared fictions, relative to the repository root.
+pub(crate) const FICTION_REGISTRY_DIR: &str = "sdk/fictions";
+
+/// One declaration's selection text, `name:key=value,...` with keys sorted,
+/// after checking it against the registry entry
+/// `sdk/fictions/<name>.toml`: the fiction exists, every key is in its
+/// config schema, and every value has the key's type. The SDK driver checks
+/// the selection again (it is the authority on what it links); this check
+/// fails the build before any recipe runs, naming the manifest.
+pub(crate) fn fiction_declaration_selection(
+    declaration: &crate::pkg_manifest::FictionDeclaration,
+    repo_root: &Path,
+) -> Result<String, String> {
+    let name = &declaration.name;
+    let path = repo_root
+        .join(FICTION_REGISTRY_DIR)
+        .join(format!("{name}.toml"));
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "[[fictions]] {name:?} is not a declared fiction ({}: {error})",
+            path.display()
+        )
+    })?;
+    let registry: toml::Value =
+        toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    if registry.get("name").and_then(toml::Value::as_str) != Some(name.as_str()) {
+        return Err(format!("{}: name does not match the file name", path.display()));
+    }
+    let schema = registry
+        .get("config")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| format!("{}: no [config.*] schema", path.display()))?;
+    let mut pairs = Vec::with_capacity(declaration.config.len());
+    for (key, value) in &declaration.config {
+        let Some(entry) = schema.get(key).and_then(toml::Value::as_table) else {
+            let known: Vec<&str> = schema.keys().map(String::as_str).collect();
+            return Err(format!(
+                "[[fictions]] {name}: no config key {key:?}; the registry defines: {}",
+                known.join(", ")
+            ));
+        };
+        let text = match entry.get("type").and_then(toml::Value::as_str) {
+            Some("enum") => {
+                let allowed: Vec<&str> = entry
+                    .get("values")
+                    .and_then(toml::Value::as_array)
+                    .map(|values| values.iter().filter_map(toml::Value::as_str).collect())
+                    .unwrap_or_default();
+                match value.as_str() {
+                    Some(word) if allowed.contains(&word) => word.to_string(),
+                    _ => {
+                        return Err(format!(
+                            "[[fictions]] {name}: {key} must be one of {}",
+                            allowed.join(", ")
+                        ));
+                    }
+                }
+            }
+            Some("size") => match value.as_integer() {
+                Some(n) if n >= 0 => n.to_string(),
+                _ => {
+                    return Err(format!(
+                        "[[fictions]] {name}: {key} must be a non-negative byte count"
+                    ));
+                }
+            },
+            other => {
+                return Err(format!(
+                    "{}: config.{key} has unknown type {other:?}",
+                    path.display()
+                ));
+            }
+        };
+        pairs.push(format!("{key}={text}"));
+    }
+    let selection = format!("{name}:{}", pairs.join(","));
+    debug_assert_eq!(selection, fiction_selection_text(declaration));
+    Ok(selection)
+}
+
+/// A declaration as selection text, `name:key=value,...` with keys sorted,
+/// unchecked: integers in decimal, words as written.
+pub(crate) fn fiction_selection_text(
+    declaration: &crate::pkg_manifest::FictionDeclaration,
+) -> String {
+    let pairs: Vec<String> = declaration
+        .config
+        .iter()
+        .map(|(key, value)| match value {
+            toml::Value::String(word) => format!("{key}={word}"),
+            other => format!("{key}={other}"),
+        })
+        .collect();
+    format!("{}:{}", declaration.name, pairs.join(","))
+}
+
+/// The value of [`FICTIONS_ENV`] for `target`'s build: every declaration's
+/// selection, `;`-separated, or `None` for a package that declares none.
+pub(crate) fn fiction_selections(
+    target: &DepsManifest,
+    repo_root: &Path,
+) -> Result<Option<String>, String> {
+    if target.fictions.is_empty() {
+        return Ok(None);
+    }
+    let selections = target
+        .fictions
+        .iter()
+        .map(|declaration| fiction_declaration_selection(declaration, repo_root))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("{}: {error}", target.spec()))?;
+    Ok(Some(selections.join(";")))
+}
+
 fn configure_primary_source_environment(
     command: &mut Command,
     target: &DepsManifest,
@@ -14777,6 +14942,12 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
         cmd.env_remove("WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS");
         if let Some(path) = &dependency_shared_memory_inputs { cmd.env("WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS", path); }
+        // A package's declared fictions reach every SDK link of its build;
+        // a package without one must not inherit a caller's selection.
+        match fiction_selections(target, repo_root)? {
+            Some(selections) => cmd.env(FICTIONS_ENV, selections),
+            None => cmd.env_remove(FICTIONS_ENV),
+        };
         cmd.env_remove("WASM_POSIX_DEP_ORIGINAL_INPUTS");
         if let Some(path) = &dependency_original_inputs {
             cmd.env("WASM_POSIX_DEP_ORIGINAL_INPUTS", path);
@@ -26155,6 +26326,76 @@ spdx = "TestLicense"
             &mut Vec::new(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn cache_key_sha_covers_declared_fictions_but_not_their_reason() {
+        let root = tempdir("sha-prog-fictions");
+        let reg = Registry { roots: vec![root.clone()] };
+        let outputs = "[[outputs]]\nname = \"app\"\nwasm = \"app.wasm\"\n";
+        let declare = |reason: &str, config: &str| {
+            format!("{outputs}\n[[fictions]]\nname = \"mprotect\"\nreason = \"{reason}\"\nconfig = {config}\n")
+        };
+        write_program_manifest(&root, "app", "1.0", outputs);
+        let none = sha_of(&reg, "app");
+        write_program_manifest(&root, "app", "1.0", &declare("guards", "{ prot_none = \"accept-unenforced\" }"));
+        let declared = sha_of(&reg, "app");
+        assert_ne!(none, declared, "declaring a fiction must change the key");
+        write_program_manifest(&root, "app", "1.0", &declare("other words", "{ prot_none = \"accept-unenforced\" }"));
+        assert_eq!(declared, sha_of(&reg, "app"), "the reason is free text");
+        write_program_manifest(
+            &root,
+            "app",
+            "1.0",
+            &declare("guards", "{ prot_none = \"accept-unenforced\", prot_none_max = 65536 }"),
+        );
+        assert_ne!(declared, sha_of(&reg, "app"), "the config must change the key");
+    }
+
+    #[test]
+    fn fiction_declarations_are_checked_against_the_registry() {
+        use crate::pkg_manifest::FictionDeclaration;
+        let repo = repo_root();
+        let declaration = |config: &str| FictionDeclaration {
+            name: "mprotect".into(),
+            reason: "r".into(),
+            config: toml::from_str(config).unwrap(),
+        };
+        assert_eq!(
+            fiction_declaration_selection(
+                &declaration("prot_none = \"accept-unenforced\"\nprot_none_max = 65536"),
+                &repo
+            )
+            .unwrap(),
+            "mprotect:prot_none=accept-unenforced,prot_none_max=65536"
+        );
+        let error = |config: &str| fiction_declaration_selection(&declaration(config), &repo).unwrap_err();
+        assert!(error("exec = \"accept-unenforced\"").contains("no config key"));
+        assert!(error("prot_none = \"yes\"").contains("one of enotsup, accept-unenforced"));
+        assert!(error("prot_none_max = \"64k\"").contains("byte count"));
+        let unknown = FictionDeclaration { name: "mmap".into(), ..declaration("a = \"b\"") };
+        assert!(fiction_declaration_selection(&unknown, &repo).unwrap_err().contains("not a declared fiction"));
+    }
+
+    /// Every registry package's declarations name real fictions with valid
+    /// configuration, so a typo fails here rather than in a long build.
+    #[test]
+    fn registry_fiction_declarations_are_valid() {
+        let repo = repo_root();
+        let registry = repo.join("packages/registry");
+        let mut declared = 0;
+        for entry in fs::read_dir(&registry).unwrap() {
+            let manifest_path = entry.unwrap().path().join("package.toml");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let manifest = DepsManifest::load(&manifest_path).unwrap();
+            if let Some(selections) = fiction_selections(&manifest, &repo).unwrap() {
+                declared += 1;
+                assert!(!selections.is_empty());
+            }
+        }
+        assert!(declared > 0, "no registry package declares a fiction");
     }
 
     /// The exact failure mode from PR #384: a program changes its

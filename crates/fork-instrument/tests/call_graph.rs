@@ -1099,3 +1099,49 @@ fn indirect_closure_reaches_a_fixed_point_beyond_two_hops() {
         "safe table target should not be pulled into the fork path; got {found:?}"
     );
 }
+
+/// `sink_explain` names the edge that makes each step instrumented: the
+/// typed table dispatch from `$visit` to `$collect`, then the direct call to
+/// the fork import. A function outside the set has no chain.
+#[test]
+fn explain_reports_shortest_chain_with_edge_kinds() {
+    let wat = r#"
+        (module
+          (type $ft (func (param i32)))
+          (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $collect)
+          (func $collect (type $ft)
+            i32.const 0
+            call $kernel_fork
+            drop)
+          (func $visit (export "visit") (param i32)
+            local.get 0
+            i32.const 0
+            call_indirect (type $ft))
+          (func $leaf (export "leaf") (result i32)
+            i32.const 7))
+    "#;
+    let bytes = wat::parse_str(wat).expect("wat parse");
+    let options = Options {
+        sinks: false,
+        ..Options::default()
+    };
+    let explained = fork_instrument::sink_explain(
+        &bytes,
+        &options,
+        &["visit".to_string(), "leaf".to_string()],
+    )
+    .expect("explain");
+    assert_eq!(
+        explained[0].1.as_deref(),
+        Some(
+            &[
+                ("visit".to_string(), "indirect"),
+                ("collect".to_string(), "call"),
+                ("kernel_fork".to_string(), "call"),
+            ][..]
+        )
+    );
+    assert_eq!(explained[1].1, None);
+}

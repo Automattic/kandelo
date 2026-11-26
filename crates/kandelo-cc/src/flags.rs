@@ -27,6 +27,9 @@ pub fn compile_flags(arch: WasmArch) -> Vec<String> {
             "-mllvm",
             "-wasm-use-legacy-eh=false",
             "-fno-trapping-math",
+            // An upstream -Werror build still gets a diagnostic for this cast.
+            "-Wcast-function-type-strict",
+            "-Wno-error=cast-function-type-strict",
         ]
         .map(String::from),
     );
@@ -705,6 +708,8 @@ pub struct ParsedArgs {
     pub pic: bool,
     pub link_dl: bool,
     pub thread_slots: Option<i64>,
+    /// `--kandelo-fiction` selections, unvalidated (`crate::fictions`).
+    pub fictions: Vec<String>,
     pub output_file: Option<String>,
     pub source_files: Vec<String>,
     pub object_files: Vec<String>,
@@ -780,6 +785,17 @@ pub fn parse_args(args: &[String]) -> Result<ParsedArgs> {
                 Some(value),
                 "--wasm-posix-thread-slots",
             )?);
+        } else if arg == crate::fictions::FLAG {
+            i += 1;
+            match args.get(i) {
+                Some(value) => result.fictions.push(value.clone()),
+                None => return Err(format!("{arg} requires a fiction selection")),
+            }
+        } else if let Some(value) = arg
+            .strip_prefix(crate::fictions::FLAG)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            result.fictions.push(value.to_string());
         } else if arg == "-E" {
             result.preprocess_only = true;
         } else if arg == "-S" {

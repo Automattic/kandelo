@@ -9742,6 +9742,7 @@ materialization = "lazy"
                         guest_path: None,
                         mode: None,
                     }],
+                    fictions: Vec::new(),
                 },
             )]),
         };

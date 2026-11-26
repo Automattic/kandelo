@@ -91,6 +91,12 @@ outside `.context/` in `test-results/`. Copy any evidence needed after
 archival into retained storage before removing the workspace. See
 [`docs/repository-organization.md`](docs/repository-organization.md#worktree-local-storage)
 for storage ownership and cleanup.
+Run `python3 scripts/retained_context.py` before preparing a handoff or
+archiving. Treat size warnings as a prompt for ongoing cleanup, not a cap.
+Use `agent-job start --discard-on-success` only when the entire successful
+run's log and scratch can be discarded; the next start or `agent-job tidy`
+retires it after writers exit. Keep required evidence and source experiments
+unmarked until reviewed. Never truncate unique source or failure evidence.
 
 ## Agent Work Loop
 
@@ -261,6 +267,9 @@ Kandelo is not Linux. Never define `__linux__` in SDK flags, `config.site` or
 the sysroot. Prefer feature macros or cache variables for upstream probes;
 a per-package `-D__linux__` is a commented last resort requiring a maintainer
 conversation. Package patches must not hide ordinary Kandelo POSIX gaps.
+Every carried patch opens with a comment header giving its purpose, reason,
+justification and exit condition; see
+[patch documentation](docs/agent-guidance/packages-and-builds.md#patch-documentation).
 
 ## Browser And User Contract
 

@@ -2463,6 +2463,12 @@ Flags:
 - `--sink-report` (hidden) prints which analysis decided (`source\t<closure|builtin|facts>`),
   the facts' coverage, and the instrumented set and boundaries as
   `A\t<name>`/`B\t<name>` rows.
+- `--explain FUNCTION` (hidden, with `--sink-report`, repeatable) adds the
+  shortest call chain from FUNCTION to the fork entry, one
+  `W\t<function>\t<step>\t<name>\t<edge>` row per step. The edge to the
+  next step is `call`, `tail-call` or `indirect`; a function outside the
+  instrumented set prints one `not instrumented or not found` row. Use it to
+  find the edge that pulls a function into the instrumented set.
 
 When the analysis moved into this crate (#1471) it was checked against the
 research tools it replaced, on their research links, with the per-object
@@ -2663,6 +2669,38 @@ For the concrete numbers landed by the Phase 7 rollout PR, see Task 15 of
 for fork-heavy programs is expected to be equal or smaller than under the
 prior full-module fork-continuation carve-out (most notably git), since the tool instruments
 a tighter reachable set.
+
+## Engine stack depth
+
+Guest Wasm calls run on the JavaScript engine's native stack, not on the C
+stack in linear memory, so the depth a recursive guest reaches depends on the
+engine's frame size per Wasm activation. Some engine tiers size that frame
+from every declared local, live or not (see
+[Engine stack depth](browser-support.md#engine-stack-depth) for WebKit's
+measured costs), so every local the instrumenter adds to a recursive
+function costs depth on every activation. Only functions that a fork can
+return or unwind through get those locals. A program with no fork path,
+such as the guest D compiler (`sdk/d/README.md`), is left unchanged.
+
+### Possible future work: spilling activations off the engine stack
+
+Smaller frames delay an engine stack overflow but cannot remove it: a
+recursion deep enough overflows any fixed native stack. The continuation
+machinery already serializes a chain of activations into linear memory and
+re-enters them, so it could also bound engine stack use. A depth check would
+unwind the oldest activations into linear memory before the engine stack runs
+out, continue on a fresh engine stack, and replay those activations as the
+newer ones return. That would give the same depth on every engine and tier,
+limited by memory instead of the engine stack.
+
+It is not implemented. It would need: a cheap depth or stack-remaining
+measure at function entry; unwinding that keeps the newest activations
+running instead of unwinding to the root; replay that resumes an activation
+at its return point with the callee's results; correct interaction with
+fork, signals, exceptions, `setjmp`/`longjmp` and threads in the same chain;
+and benchmarks for the cost of the entry check on ordinary code. It also
+changes the fork continuation contract, so it is ABI surface (see
+[ABI versioning](abi-versioning.md)).
 
 ## Maintainer notes
 

@@ -18,5 +18,6 @@ inputs = [
   "packages/registry/v8-tracing/src/include/src/base/platform/time.h",
   "scripts/package-build-roots.sh",
   "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/kandelo-toolchain-common.cmake",
   "sdk/cmake/Platform/Kandelo.cmake",
 ]

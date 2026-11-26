@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import { WASM_INDIRECT_CALL_TRAPS } from '../src/generated/abi';
 import { GroupedSessionRuntime } from '../src/grouped-session-runtime';
 import { KernelReentrantEntryError } from '../src/kernel-entry-gate';
 import type { CentralizedKernelWorker } from '../src/kernel-worker';
@@ -89,4 +90,26 @@ it('reports a failed retirement while preserving the exact thread for containmen
   expect(session.threadExit(123, 200)).toBe(true);
   await vi.waitFor(() => expect(report).toHaveBeenCalledExactlyOnceWith(123, expect.objectContaining({ message: 'retire grouped pthread: errno 5' })));
   expect(state.threads.get(200)).toBe(thread);
+});
+
+it('reports an indirect-call trap only for the process that owns the Worker', () => {
+  const recordMemoryGroupCrash = vi.fn(() => 0);
+  const kernel = {recordMemoryGroupCrash} as unknown as CentralizedKernelWorker;
+  const report = vi.fn();
+  const session = new GroupedSessionRuntime(kernel, {} as WorkerAdapter,
+    {maximumPages: 8}, false, vi.fn(), report);
+  const handle = {};
+  const process = {owner: {pid: 123, handle}};
+  const trap = WASM_INDIRECT_CALL_TRAPS.signatureMismatch;
+  const message = {type: 'error' as const, pid: 123, message: 'indirect call type mismatch', wasmIndirectCallTrap: trap};
+  const state = session as unknown as {
+    processes: Map<number, typeof process>;
+    message(owner: typeof process, error: typeof message): void;
+  };
+  state.processes.set(123, process);
+  state.message(process, {...message, pid: 124});
+  expect(recordMemoryGroupCrash).not.toHaveBeenCalled();
+  state.message(process, message);
+  expect(recordMemoryGroupCrash).toHaveBeenCalledExactlyOnceWith(handle, 11, trap);
+  expect(report).toHaveBeenCalledExactlyOnceWith(123, expect.any(Error));
 });

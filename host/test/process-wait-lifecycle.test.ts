@@ -1187,7 +1187,7 @@ describe("Rust-owned process wait lifecycle", () => {
       worker.handleSyscall(channel);
 
       expect(setCurrentTid).toHaveBeenCalledWith(pid, tid);
-      expect(markSignaled).toHaveBeenCalledWith(pid, 11);
+      expect(markSignaled).toHaveBeenCalledWith(pid, 11, 0);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
       expect(readCompletion(channel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
       expect(new DataView(memory.buffer, channel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
@@ -1231,7 +1231,7 @@ describe("Rust-owned process wait lifecycle", () => {
     try {
       worker.handleSyscall(threadChannel);
 
-      expect(markSignaled).toHaveBeenCalledWith(pid, 11);
+      expect(markSignaled).toHaveBeenCalledWith(pid, 11, 0);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
       expect(readCompletion(threadChannel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
       expect(new DataView(memory.buffer, threadChannel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
@@ -1277,7 +1277,7 @@ describe("Rust-owned process wait lifecycle", () => {
         .toThrow(/kernel_mark_process_signaled failed/);
       await Promise.resolve();
 
-      expect(markSignaled).toHaveBeenCalledWith(pid, 11);
+      expect(markSignaled).toHaveBeenCalledWith(pid, 11, 0);
       expect(onExit).not.toHaveBeenCalled();
       expect(onKernelFatal).toHaveBeenCalledOnce();
       expect(channel.handling).toBe(true);
@@ -1344,7 +1344,7 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.notifyHostProcessCrashed(42, 11);
 
-    expect(markProcessSignaled).toHaveBeenCalledWith(42, 11);
+    expect(markProcessSignaled).toHaveBeenCalledWith(42, 11, 0);
     // Route only: the kernel generated SIGCHLD when it recorded the death.
     expect(sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD, false);
     expect(calls).toEqual(["mark", "signal"]);
@@ -1402,7 +1402,7 @@ describe("Rust-owned process wait lifecycle", () => {
       }),
     );
 
-    expect(markProcessSignaled).toHaveBeenCalledWith(42, 11);
+    expect(markProcessSignaled).toHaveBeenCalledWith(42, 11, 0);
     expect(worker.hostReaped.has(42)).toBe(false);
     expect(worker.stoppedPids.has(42)).toBe(true);
     expect(worker.sharedMappings.has(42)).toBe(true);
