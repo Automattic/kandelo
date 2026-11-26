@@ -47,12 +47,34 @@ still follow the same owned device path. The display acknowledges one
 ordered bundle and retirement still waits for the exact native capture
 and display fence.
 
-In the WebKit candidate run, 106 cursor updates each carried 16,384 bytes
-and generated zero cursor bitmap captures. All six prompts rendered and
-the screenshots showed the cursor moving between two positions within one
-terminal. Browser wall-clock timing varied with host load and offer
-spacing. This receipt measures the eliminated capture and transferred
-payload. It does not establish an end-to-end latency improvement.
+The traced WebKit and Chromium candidate desktops each rendered six
+prompts and showed the cursor moving between two positions within one
+terminal. The WebKit run sent 106 cursor updates and Chromium sent 114.
+Each carried 16,384 bytes and generated zero cursor bitmap captures.
+Desktop wall-clock timing varied with host load and offer spacing.
+
+## Cursor-only relay cost
+
+A separate paired test mounted a 1600×892 display on the same browser
+and drove the real old and new producer and display Workers. Each arm
+presented one primary bitmap, sent 96 changes to a 64×64 cursor one at a
+time, and obtained the exact retirement receipt. The clock spans sending
+each cursor update through its acknowledgement, including paint and
+capture where applicable. It excludes input delivery, guest rendering
+and scanout scheduling. Each arm ran twice in before/after/after/before
+order. Discarding the first six updates per run leaves 180 samples per arm.
+
+| Browser | Before median | After median | Before p95 | After p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Chromium | 0.05 ms | 0.06 ms | 0.14 ms | 0.12 ms |
+| Firefox | 4.45 ms | 0.58 ms | 32.92 ms | 18.38 ms |
+| WebKit | 11.90 ms | 3.88 ms | 29.22 ms | 22.82 ms |
+
+Each before run made 97 native bitmap captures. Each after run made one.
+The two Firefox baseline medians varied from 1.55 to 9.49 ms before warmup
+exclusion. These are local Worker acknowledgements under substantial host
+load. They establish a reduction of relay work with no estimate of the
+end-to-end input-to-paint improvement.
 
 ## Deferred work
 
@@ -78,9 +100,13 @@ Four targeted graphics suites passed 261 tests with the kernel from
 pixels, the display's ordered acknowledgement, replacement, context
 restoration, device errors and retirement. The host build including its
 declarations passed. The source-only browser memory boundary suite passed
-seven tests. A separate browser probe using the real producer and disposable
-display Workers showed cursor placement, motion and clear after retirement
-with a single primary capture on Firefox and WebKit. The first Chromium
-probe exceeded its five-second screenshot deadline. A Firefox Sway run
-stalled before the first prompt under heavy host load. The complete
-multi-product browser memory gate has not completed.
+seven tests. Two prepared boundary suites passed 19 tests for real Rust
+allocation and exact host retirement. A separate native Worker probe
+showed cursor placement, motion and clear after retirement with one
+primary capture on Chromium, Firefox and WebKit. The first Chromium
+probe exceeded its five-second screenshot deadline. A separate Chromium
+timing trial was interrupted by a dev server navigation and passed on
+rerun. The Firefox full-desktop run timed out before its first prompt.
+A baseline Firefox run also timed out there while Sway startup was still
+making shared-memory operations. The complete multi-product browser
+memory gate has not completed.
