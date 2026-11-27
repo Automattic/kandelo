@@ -6,6 +6,7 @@ guide for the contract your change touches.
 
 | Contract | Read when touching |
 |---|---|
+| [Codex feedback](codex-feedback.md) | Describing the scope of a task and reporting a possible cybersecurity false positive |
 | `validation.md` | Test selection, evidence, completion claims |
 | `campaigns.md` | Long-campaign dispatch, phase checkpoints, context reminders and handoffs |
 | `debugging-and-posix.md` | Root-cause debugging, syscall/process/VFS/device behavior |
