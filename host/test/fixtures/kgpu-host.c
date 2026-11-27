@@ -11,6 +11,9 @@
  *   wait      submit a readback and wait for it with no timeout
  *   fault     submit a stream whose context field names another context
  *   create    only create a context
+ *   lose      keep the first context idle, submit a readback on a second
+ *             and wait for it (the renderer is lost meanwhile); after the
+ *             test's stdin go-ahead, submit on the idle context and create
  */
 #include <kandelo/kgpu.h>
 #include <kandelo/kgpu_stream.h>
@@ -18,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* The stream's bytes, 64-byte aligned so a short stream sits in one page. */
 static uint8_t stream[256] __attribute__((aligned(64)));
@@ -140,6 +144,27 @@ int main(int argc, char **argv) {
     /* The lost context refuses new work. */
     clear_stream(context, 1);
     printf("resubmit %d\n", submit(context, 1, &seqno));
+    return 0;
+  }
+
+  if (strcmp(mode, "lose") == 0) {
+    uint32_t busy = 0;
+    r = create(&busy);
+    printf("create-busy %d %u\n", r, busy);
+    if (r != 0) return 1;
+    readback_buffer();
+    clear_stream(busy, 1);
+    r = submit(busy, 1, &seqno);
+    printf("submit %d %llu\n", r, (unsigned long long)seqno);
+    if (r != 0) return 1;
+    printf("wait %d\n", wait_for(busy, seqno));
+    char go;
+    if (read(0, &go, 1) != 1) return 1;
+    /* The context that was idle when the renderer was lost. */
+    clear_stream(context, 1);
+    printf("idle-submit %d\n", submit(context, 1, &seqno));
+    uint32_t later = 0;
+    printf("create-after %d\n", create(&later));
     return 0;
   }
 

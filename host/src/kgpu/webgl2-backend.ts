@@ -13,8 +13,11 @@
  * runs. Nothing a guest can observe is decided here; the executor validated
  * every call before making it.
  *
- * A `webglcontextlost` event makes `isLost()` true for good: the executor
- * then reports each context lost as its next record arrives.
+ * A `webglcontextlost` event makes `isLost()` true for good and calls
+ * `onLost` once. The GPU worker treats that as the death of its renderer:
+ * it reports itself failed, so the kernel worker terminates it and resets
+ * the device (every context lost, no renderer until a restart) instead of
+ * leaving a device that claims a renderer it no longer has.
  */
 import { EEXIST, EIO, ENOENT, ENOMEM, type KgpuBackend } from "./backend.ts";
 
@@ -80,14 +83,18 @@ export function createOffscreenWebgl2(): KgpuWebgl2Context | null {
   return gl ? { gl, canvas } : null;
 }
 
-export function createWebgl2Backend({ gl, canvas }: KgpuWebgl2Context): KgpuBackend {
+export function createWebgl2Backend({ gl, canvas }: KgpuWebgl2Context, onLost?: () => void): KgpuBackend {
   const surfaces = new Map<number, Surface>();
   let lost = false;
   canvas?.addEventListener("webglcontextlost", (event) => {
     // Without preventDefault the browser never offers a restore; slice 1
     // does not restore either, but the loss must stay observable.
     event.preventDefault();
+    if (lost) return;
     lost = true;
+    // The event can fire inside a GL call the executor made, so the owner
+    // only records it here and acts once that call has returned.
+    onLost?.();
   });
   const isLost = () => lost || gl.isContextLost();
   const bind = (context: number): Surface | null => {

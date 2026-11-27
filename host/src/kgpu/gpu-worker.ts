@@ -22,7 +22,9 @@
  * the shell treats the worker as faulted; and nothing calls back into the
  * executor from inside a `kgpu_backend` import. A context the executor has
  * reported lost gets no stream bytes copied for its later records, since
- * the kernel released that context's pins (Ruling R16).
+ * the kernel released that context's pins (Ruling R16). A lost renderer
+ * (WebGL context loss) is the worker's own failure: it stops handling
+ * records and reports itself failed, so the device is reset.
  *
  * Browsers run this file as a module Worker (`gpu-worker.ts?worker&url`) and
  * it starts itself on its first message; Node starts it through
@@ -56,6 +58,7 @@ import { RecordAssembler, streamExtents } from "./records.ts";
 import { createOffscreenWebgl2, createWebgl2Backend, type KgpuWebgl2Context } from "./webgl2-backend.ts";
 
 const F = KGPU_RECORD_FIELDS;
+const RENDERER_LOST = "WebGL context lost";
 /** The largest pixel readback the shell stages; larger answers ENOMEM. */
 const MAX_READBACK_BYTES = 64 * 1024 * 1024;
 
@@ -77,7 +80,7 @@ function validInit(message: unknown): message is GpuWorkerInit {
     && (m.executorBytes instanceof ArrayBuffer || typeof m.executorUrl === "string");
 }
 
-async function openRenderer(init: GpuWorkerInit): Promise<KgpuBackend> {
+async function openRenderer(init: GpuWorkerInit, onLost: () => void): Promise<KgpuBackend> {
   if (init.renderer === "null") return createNullBackend();
   let context: KgpuWebgl2Context | null;
   if (init.webgl2Factory !== undefined) {
@@ -88,7 +91,7 @@ async function openRenderer(init: GpuWorkerInit): Promise<KgpuBackend> {
     context = createOffscreenWebgl2();
   }
   if (!context) throw new Error("this realm cannot create a WebGL 2 context");
-  return createWebgl2Backend(context);
+  return createWebgl2Backend(context, onLost);
 }
 
 /** Start the worker from its init message; `report` reaches the kernel
@@ -99,12 +102,18 @@ export async function startGpuWorker(message: unknown, report: (report: GpuWorke
   if (!validInit(message)) return fail("invalid GPU worker init message");
   const init = message;
   try {
-    const backend = await openRenderer(init);
+    let shell: GpuShell | null = null;
+    let lostBeforeStart = false;
+    const backend = await openRenderer(init, () => {
+      if (shell) shell.rendererLost();
+      else lostBeforeStart = true;
+    });
     const bytes = init.executorBytes ?? await (await fetch(init.executorUrl!)).arrayBuffer();
     const memory = new WebAssembly.Memory({ initial: GPU_EXECUTOR_INITIAL_PAGES, maximum: GPU_EXECUTOR_MAX_PAGES });
-    const shell = new GpuShell(init, backend, memory, fail);
+    shell = new GpuShell(init, backend, memory, fail);
     const { instance } = await WebAssembly.instantiate(bytes, { env: { memory }, kgpu_backend: shell.imports() });
     shell.attach(instance.exports as unknown as ExecutorExports);
+    if (lostBeforeStart || backend.isLost()) throw new Error(RENDERER_LOST);
     init.port.onmessage = () => shell.pump();
     report({ type: GPU_WORKER_READY });
     // Records forwarded before the worker was listening are already queued.
@@ -130,6 +139,8 @@ class GpuShell {
   #scratch = new Uint8Array(0);
   #failed = false;
   #pumping = false;
+  /** The renderer is gone (a lost WebGL context). */
+  #rendererLost = false;
 
   // Plain fields, not parameter properties: Node's type stripping cannot
   // emit those.
@@ -208,6 +219,23 @@ class GpuShell {
     return 0;
   }
 
+  /** The backend lost its renderer. Every context on it is gone, which only
+   * a device reset expresses truthfully: report this worker failed, so
+   * KgpuHost terminates it and resets the kernel device once it is gone
+   * (R15), rather than keep claiming a renderer. Inside a pump the event
+   * came from a GL call the executor made, so the report waits until the
+   * executor has returned. */
+  rendererLost(): void {
+    this.#rendererLost = true;
+    if (!this.#pumping) this.#failRendererLost();
+  }
+
+  #failRendererLost(): void {
+    if (this.#failed) return;
+    this.#failed = true;
+    this.fail(new Error(RENDERER_LOST));
+  }
+
   /** Doorbell: move every record and completion that can move now. */
   pump(): void {
     if (this.#failed || this.#pumping || !this.#exports) return;
@@ -223,11 +251,14 @@ class GpuShell {
     } finally {
       this.#pumping = false;
     }
+    if (this.#rendererLost) this.#failRendererLost();
   }
 
   #run(): void {
     let doorbell = false;
     for (;;) {
+      // Records after a renderer loss are moot: the device is being reset.
+      if (this.#rendererLost) return;
       while (this.#pending.length > 0 && this.#completions.push(this.#pending[0]!)) this.#pending.shift();
       if (this.#pending.length > 0) {
         if (this.#completions.blocked(KGPU_COMPLETION_SIZE)) break;
@@ -250,7 +281,7 @@ class GpuShell {
    * returns whether it handled any. */
   #handleStaged(): boolean {
     let handled = false;
-    for (let record; this.#pending.length === 0 && (record = this.#assembler.next()) !== null;) {
+    for (let record; this.#pending.length === 0 && !this.#rendererLost && (record = this.#assembler.next()) !== null;) {
       const completion = this.#handle(record);
       if (!this.#completions.push(completion)) this.#pending.push(completion);
       handled = true;

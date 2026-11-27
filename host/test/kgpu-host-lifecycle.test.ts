@@ -6,6 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { KgpuHost, type KgpuKernelPort } from "../src/kgpu/kgpu-host";
 import { MockWorkerHandle } from "../src/worker-adapter";
+import { createWebgl2Backend } from "../src/kgpu/webgl2-backend";
+import { createWebGL2Context } from "./support/kgpu-webgl2-double";
 
 /** A worker whose termination completes only when the test says so. */
 class HeldWorker extends MockWorkerHandle {
@@ -142,5 +144,19 @@ describe("KgpuHost lifecycle", () => {
     workers[0]!.gone();
     await settle();
     expect(calls).toEqual(["reset"]);
+  });
+});
+
+describe("WebGL 2 backend", () => {
+  it("reports a lost context to its owner once, and stays lost", () => {
+    const context = createWebGL2Context() as Parameters<typeof createWebgl2Backend>[0];
+    let losses = 0;
+    const backend = createWebgl2Backend(context, () => { losses++; });
+    expect(backend.createSurface(1, 4, 4)).toBe(0);
+    expect(backend.isLost()).toBe(false);
+    context.canvas!.dispatchEvent(new Event("kgpu-test-lose"));
+    context.canvas!.dispatchEvent(new Event("webglcontextlost"));
+    expect(losses).toBe(1);
+    expect(backend.isLost()).toBe(true);
   });
 });

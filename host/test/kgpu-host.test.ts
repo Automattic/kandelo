@@ -158,6 +158,27 @@ describe('kgpu host', () => {
     expect(r.pinnedAfter).toBe(0);
   }, 240_000);
 
+  it('webgl_context_loss_loses_every_context', async () => {
+    const r = await scenario('lose');
+    expect(r.code, r.stdout).toBe(0);
+    expect(lines(r.stdout, 'submit')[0]![0]).toBe(0);
+    expect(r.waitedWhileHeld).toBe(false);
+    // The renderer was lost during the clear: the parked wait fails, the
+    // context that was idle is lost too, and with the worker gone there is
+    // no renderer until the host starts a new one.
+    expect(lines(r.stdout, 'wait')).toEqual([[-EIO]]);
+    expect(lines(r.stdout, 'idle-submit')).toEqual([[-EIO]]);
+    expect(lines(r.stdout, 'create-after')).toEqual([[-ENODEV]]);
+    expect(r.status.resets).toBe(1);
+    expect(r.pinnedAfter).toBe(0);
+    expect(r.imagesAfter).toBe(0);
+    expect(r.diagnostics.join('\n')).toMatch(/WebGL context lost/);
+    // A restarted worker renders again.
+    expect(r.createAfterRestart).toBe(0);
+    expect(r.pixelsAfterRestart).toEqual(Array.from({ length: 16 }, (_, i) => [i, 51, 102, 153, 255]));
+    expect(r.status.workersStarted).toBe(2);
+  }, 240_000);
+
   it('node_null_renderer_create_is_enodev', async () => {
     const r = await scenario('create', 'null');
     expect(lines(r.stdout, 'create')[0]![0]).toBe(-ENODEV);

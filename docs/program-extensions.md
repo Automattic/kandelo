@@ -236,7 +236,8 @@ doorbells. Neither worker blocks on the other. The GPU worker copies each
 submit's stream bytes from the group's shared backing into executor memory
 once, before the executor reads them. It writes read-back pixels only at
 the extents the record names. When the worker exits, errors, reports a
-fault or breaks the protocol, the host terminates it, and only after
+fault (including the loss of its WebGL context) or breaks the protocol, the
+host terminates it, and only after
 termination completes does it call `kernel_kgpu_reset`. The same happens,
 before any further record reaches the worker, when the group backing it was
 given has been replaced (its group removed and another created): records

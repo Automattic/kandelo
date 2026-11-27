@@ -20,7 +20,10 @@ import { NodeWorkerAdapter, type WorkerHandle } from '../../src/worker-adapter';
 import { createNodeGpuWorker, nodeKgpuConfig } from '../../src/kgpu-node';
 
 const { scenario, renderer } = workerData as { scenario: string; renderer: 'webgl2' | 'null' };
-const hold = ['exit', 'crash-exit', 'crash-wait'].includes(scenario);
+const hold = ['exit', 'crash-exit', 'crash-wait', 'lose'].includes(scenario);
+/** The `lose` scenario's first GPU worker loads the double in its
+ * lose-on-first-clear mode, so the renderer is lost mid-submission. */
+const loseFirst = scenario === 'lose';
 
 /** The first GPU worker of a holding scenario: its init message is held
  * until `release`, and `kill` terminates it without the GPU host asking. */
@@ -29,12 +32,17 @@ function createGpuWorker(): WorkerHandle {
   const real = createNodeGpuWorker();
   if (!hold || held) return real;
   let queue: [unknown, Transferable[] | undefined][] | null = [];
+  const rewrite = (message: unknown) => {
+    const init = message as { webgl2Factory?: string };
+    if (loseFirst && typeof init?.webgl2Factory === 'string') init.webgl2Factory += '?lose=first-clear';
+    return message;
+  };
   held = {
     release() { const q = queue!; queue = null; for (const [m, t] of q) real.postMessage(m, t); },
     kill: () => real.terminate(),
   };
   return {
-    postMessage(message: unknown, transfer?: Transferable[]) { if (queue) queue.push([message, transfer]); else real.postMessage(message, transfer); },
+    postMessage(message: unknown, transfer?: Transferable[]) { message = rewrite(message); if (queue) queue.push([message, transfer]); else real.postMessage(message, transfer); },
     on: ((event: string, handler: (...args: any[]) => void) => real.on(event as 'exit', handler)) as WorkerHandle['on'],
     off: ((event: string, handler: (...args: any[]) => void) => real.off(event as 'exit', handler)) as WorkerHandle['off'],
     terminate: () => real.terminate(),
@@ -85,6 +93,7 @@ async function execute() {
   /** Launch /bin/kgpu-host grouped; `exited` settles when its exit publishes. */
   const launch = async (...args: string[]) => {
     const pid = await retry(() => kernel.createProcess(CAPTURED_STDIO));
+    if (args[0] === 'lose') await retry(() => kernel.installHostStdinPipe(pid));
     let done = false;
     const exited = new Promise<number>(resolve => exits.set(pid, code => { done = true; resolve(code); }));
     const launched = await kernel.launchInitialPath(pid, '/bin/kgpu-host', ['kgpu-host', ...args], [],
@@ -153,6 +162,28 @@ async function execute() {
     await held!.kill();
     result.code = await within(p.exited, 30_000, 'exit after kill');
     result.stdout = p.out();
+  } else if (scenario === 'lose') {
+    const p = await launch('lose');
+    await waitFor(p.pid, 'submit');
+    await sleep(300);
+    // The wait is parked: the GPU worker has not started yet.
+    result.waitedWhileHeld = lines(p.pid, 'wait').length > 0;
+    held!.release();
+    await waitFor(p.pid, 'wait');
+    // The lost renderer must take the device down through the worker's
+    // failure and the kernel reset, with no help from the test.
+    for (const deadline = Date.now() + 30_000; status()!.state !== 'down';) {
+      if (Date.now() > deadline) throw Error(`no reset after the renderer was lost: ${JSON.stringify(debug())}`);
+      await sleep(10);
+    }
+    kernel.appendStdinData(p.pid, new Uint8Array([0x67]));
+    result.code = await within(p.exited, 30_000, 'exit after loss');
+    result.stdout = p.out();
+    await kernel.restartKgpu();
+    const again = await launch('clear');
+    await within(again.exited, 60_000, 'clear after restart');
+    result.createAfterRestart = lines(again.pid, 'create')[0]?.[0];
+    result.pixelsAfterRestart = lines(again.pid, 'pixel');
   } else throw Error('unknown scenario ' + scenario);
   result.imagesAfter = await images();
   result.pinnedAfter = await pinned();

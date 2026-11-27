@@ -21,8 +21,13 @@ const NO_ERROR = 0, INVALID_OPERATION = 0x0502, INVALID_VALUE = 0x0501;
 interface Renderbuffer { width: number; height: number; pixels: Uint8Array | null; deleted: boolean }
 interface Framebuffer { color: Renderbuffer | null; deleted: boolean }
 
+// `?lose=first-clear` on this module's URL loses the context during its
+// first clear, the way a browser can lose one mid-frame.
+const loseOnFirstClear = new URL(import.meta.url).searchParams.get('lose') === 'first-clear';
+
 export function createWebGL2Context(): { gl: unknown; canvas: EventTarget } {
   const canvas = new EventTarget();
+  let clears = 0;
   let framebuffer: Framebuffer | null = null;
   let renderbuffer: Renderbuffer | null = null;
   let clear: [number, number, number, number] = [0, 0, 0, 0];
@@ -67,6 +72,8 @@ export function createWebGL2Context(): { gl: unknown; canvas: EventTarget } {
     pixelStorei(_name: number, _value: number) {},
     clearColor(r: number, g: number, b: number, a: number) { clear = [r, g, b, a]; },
     clear(mask: number) {
+      if (loseOnFirstClear && clears++ === 0) canvas.dispatchEvent(new Event('kgpu-test-lose'));
+      if (lost) return;
       const target = framebuffer?.color?.pixels;
       if (!target) return fail(INVALID_OPERATION);
       if (mask & COLOR_BUFFER_BIT) {
