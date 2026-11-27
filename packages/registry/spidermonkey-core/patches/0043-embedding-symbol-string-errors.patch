@@ -1,0 +1,105 @@
+# Allow embedders to report failed Symbol-to-string conversions.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -252,8 +252,19 @@
+   // The Node embedding uses V8's native-function source presentation.
+   bool getNodeNativeFunctionSource() const { return nodeNativeFunctionSource_; }
+   RealmCreationOptions& setNodeNativeFunctionSource(bool enabled) {
+     nodeNativeFunctionSource_ = enabled;
++    return *this;
++  }
++
++  // Called only after implicit conversion of a Symbol to a string fails.
++  using SymbolToStringErrorReporter = void (*)(JSContext*);
++  SymbolToStringErrorReporter getSymbolToStringErrorReporter() const {
++    return symbolToStringErrorReporter_;
++  }
++  RealmCreationOptions& setSymbolToStringErrorReporter(
++      SymbolToStringErrorReporter reporter) {
++    symbolToStringErrorReporter_ = reporter;
+     return *this;
+   }
+
+   bool getToSourceEnabled() const { return toSource_; }
+@@ -316,8 +327,9 @@
+   uint32_t maxLazyTypedArrayBytes_ = UINT32_MAX;
+   bool captureCallReceivers_ = false;
+   bool toSource_ = false;
+   bool nodeNativeFunctionSource_ = false;
++  SymbolToStringErrorReporter symbolToStringErrorReporter_ = nullptr;
+
+   bool secureContext_ = false;
+   bool freezeBuiltins_ = false;
+   bool alwaysUseFdlibm_ = false;
+--- a/js/src/vm/StringType.h
++++ b/js/src/vm/StringType.h
+@@ -2183,8 +2183,10 @@
+  */
+ extern UniqueChars IdToPrintableUTF8(JSContext* cx, HandleId id,
+                                      IdToPrintableBehavior behavior);
+
++extern void ReportSymbolToStringError(JSContext* cx);
++
+ /*
+  * Convert a non-string value to a string, returning null after reporting an
+  * error, otherwise returning a new string reference.
+  */
+--- a/js/src/vm/JSAtomUtils.cpp
++++ b/js/src/vm/JSAtomUtils.cpp
+@@ -968,10 +968,9 @@
+     case ValueType::Undefined:
+       return cx->names().undefined;
+     case ValueType::Symbol:
+       if constexpr (allowGC) {
+-        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+-                                  JSMSG_SYMBOL_TO_STRING);
++        ReportSymbolToStringError(cx);
+       }
+       return nullptr;
+     case ValueType::BigInt: {
+       RootedBigInt i(cx, v.toBigInt());
+--- a/js/src/vm/StringType.cpp
++++ b/js/src/vm/StringType.cpp
+@@ -35,8 +35,9 @@
+ #include "util/Identifier.h"  // js::IsIdentifierNameOrPrivateName
+ #include "util/Unicode.h"
+ #include "vm/GeckoProfiler.h"
+ #include "vm/JSONPrinter.h"  // js::JSONPrinter
++#include "vm/Realm.h"
+ #include "vm/StaticStrings.h"
+ #include "vm/ToSource.h"  // js::ValueToSource
+
+ #include "gc/Marking-inl.h"
+@@ -3246,8 +3247,20 @@
+   }
+   return StringToNewUTF8CharsZ(cx, *str);
+ }
+
++void js::ReportSymbolToStringError(JSContext* cx) {
++  JS::Realm* realm = cx->realm();
++  if (auto reporter =
++          realm ? realm->creationOptions().getSymbolToStringErrorReporter()
++                : nullptr) {
++    reporter(cx);
++    return;
++  }
++  JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
++                            JSMSG_SYMBOL_TO_STRING);
++}
++
+ template <AllowGC allowGC>
+ JSString* js::ToStringSlow(
+     JSContext* cx, typename MaybeRooted<Value, allowGC>::HandleType arg) {
+   /* As with ToObjectSlow, callers must verify that |arg| isn't a string. */
+@@ -3277,10 +3290,9 @@
+   } else if (v.isNull()) {
+     str = cx->names().null;
+   } else if (v.isSymbol()) {
+     if (allowGC) {
+-      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+-                                JSMSG_SYMBOL_TO_STRING);
++      ReportSymbolToStringError(cx);
+     }
+     return nullptr;
+   } else if (v.isBigInt()) {
+     if (!allowGC) {
