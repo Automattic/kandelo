@@ -72,7 +72,7 @@
    return false;
  }
  
-@@ -1751,6 +1769,7 @@
+@@ -1752,6 +1770,7 @@
      JS_FN("ThrowAggregateError", intrinsic_ThrowAggregateError, 4, 0),
      JS_FN("ThrowInternalError", intrinsic_ThrowInternalError, 4, 0),
      JS_FN("ThrowRangeError", intrinsic_ThrowRangeError, 4, 0),
