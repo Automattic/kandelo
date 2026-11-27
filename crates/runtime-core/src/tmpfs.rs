@@ -178,6 +178,7 @@ struct DirEntries {
     /// Names in creation order, by cookie.
     by_cookie: BTreeMap<u64, Vec<u8>>,
     next_cookie: u64,
+    watch_version: crate::vfs_events::DirectoryVersion,
 }
 
 impl DirEntries {
@@ -188,6 +189,7 @@ impl DirEntries {
     /// Point `name` at `idx`. A new name gets the next cookie; a replaced
     /// one (rename over an existing entry) keeps its own.
     fn insert(&mut self, name: Vec<u8>, idx: u32) -> Option<u32> {
+        self.watch_version.changed();
         if let Some(entry) = self.by_name.get_mut(&name) {
             return Some(core::mem::replace(&mut entry.0, idx));
         }
@@ -201,6 +203,7 @@ impl DirEntries {
     fn remove(&mut self, name: &[u8]) -> Option<u32> {
         let (idx, cookie) = self.by_name.remove(name)?;
         self.by_cookie.remove(&cookie);
+        self.watch_version.changed();
         Some(idx)
     }
 
@@ -2021,13 +2024,14 @@ fn publish_handle_change(handle: i64) {
     TMPFS.with(|state| {
         let Some(inode) = state.get(index) else { return; };
         let target = crate::vfs_events::identity(inode.stat());
-        crate::vfs_events::changed(target, |dir_id, dir_index, emit| {
+        crate::vfs_events::changed(target, |dir_id, dir_index, names, emit| {
             let Some(dir) = state.get(dir_index) else { return; };
             if crate::vfs_events::identity(dir.stat()) != dir_id { return; }
             if let InodeKind::Dir(entries) = &dir.kind {
-                for (name, &child) in entries.iter() {
-                    if child == index { emit(name); }
-                }
+                names.matching_names(index, &entries.watch_version, entries.len(),
+                    || entries.by_name.iter().map(|(name, &(inode, cookie))| (name.as_slice(), inode, cookie)),
+                    |cookie| entries.by_cookie.get(&cookie).map(Vec::as_slice),
+                    emit);
             }
         });
     });

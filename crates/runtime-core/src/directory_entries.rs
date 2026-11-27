@@ -187,6 +187,7 @@ pub(crate) struct DirectoryEntries<'a> {
     next_cookie: u64,
     length: usize,
     reservation: MetadataReservation<'a>,
+    watch_version: crate::vfs_events::DirectoryVersion,
 }
 
 impl DirectoryEntries<'static> {
@@ -195,7 +196,7 @@ impl DirectoryEntries<'static> {
 
 impl<'a> DirectoryEntries<'a> {
     fn with_budget(budget: &'a MetadataBudget) -> Self {
-        Self { root: None, cookie_root: None, next_cookie: 0, length: 0, reservation: budget.empty() }
+        Self { root: None, cookie_root: None, next_cookie: 0, length: 0, reservation: budget.empty(), watch_version: Default::default() }
     }
 
     pub(crate) fn len(&self) -> usize { self.length }
@@ -254,6 +255,25 @@ impl<'a> DirectoryEntries<'a> {
         iterator
     }
 
+    pub(crate) fn visit_watched_names(
+        &self,
+        child: u32,
+        index: &mut crate::vfs_events::DirectoryIndex,
+        emit: &mut dyn FnMut(&[u8]),
+    ) {
+        index.matching_names(child, &self.watch_version, self.length,
+            || {
+                let mut iter = self.iter();
+                core::iter::from_fn(move || iter.next_node().map(|entry| {
+                    (entry.name.as_slice(), entry.inode, entry.cookie)
+                }))
+            },
+            |cookie| self.next_from_cookie(cookie).and_then(|(found, name, _)| {
+                (found == cookie).then_some(name.as_slice())
+            }),
+            emit);
+    }
+
     pub(crate) fn keys(&self) -> impl DoubleEndedIterator<Item = &Vec<u8>> + ExactSizeIterator {
         self.iter().map(|(name, _)| name)
     }
@@ -285,6 +305,7 @@ impl<'a> DirectoryEntries<'a> {
         self.cookie_root = Some(cookies);
         let (root, prior) = insert(self.root.take(), prepared.node, false);
         self.root = Some(root);
+        self.watch_version.changed();
         if prior.is_none() {
             self.length += 1;
             self.reservation.merge(prepared.reservation);
@@ -302,6 +323,7 @@ impl<'a> DirectoryEntries<'a> {
         self.root = root;
         let prior = removed.expect("directory removal lost existing key").inode;
         self.length -= 1;
+        self.watch_version.changed();
         self.reservation.resize(self.reservation.bytes().checked_sub(bytes)
             .expect("directory metadata charge underflow")).expect("directory charge release failed");
         Some(prior)
@@ -321,7 +343,11 @@ impl<'a> DirectoryEntries<'a> {
                         match cookie.cmp(&node.cookie) {
                             Ordering::Less => current = node.left.as_deref_mut(),
                             Ordering::Greater => current = node.right.as_deref_mut(),
-                            Ordering::Equal => { node.inode = inode; return; }
+                            Ordering::Equal => {
+                                node.inode = inode;
+                                self.watch_version.changed();
+                                return;
+                            }
                         }
                     }
                     panic!("prepared directory cookie missing");
@@ -351,6 +377,7 @@ impl<'a> DirectoryEntries<'a> {
         self.root = root;
         assert!(removed.is_some());
         self.length -= 1;
+        self.watch_version.changed();
         drop(reservation);
     }
 }
@@ -430,6 +457,15 @@ impl<'a> DirectoryIter<'a> {
         }
     }
 
+    fn next_node(&mut self) -> Option<&'a DirectoryNode> {
+        if self.remaining == 0 { return None; }
+        self.front_depth -= 1;
+        let node = self.front[self.front_depth].take().expect("directory iterator front missing");
+        self.push_left(node.right.as_deref());
+        self.remaining -= 1;
+        Some(node)
+    }
+
     pub(crate) fn peek_next(&self) -> Option<(&'a Vec<u8>, &'a u32)> {
         if self.remaining == 0 { return None; }
         let node = self.front[self.front_depth - 1]?;
@@ -441,12 +477,7 @@ impl<'a> Iterator for DirectoryIter<'a> {
     type Item = (&'a Vec<u8>, &'a u32);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 { return None; }
-        self.front_depth -= 1;
-        let node = self.front[self.front_depth].take().expect("directory iterator front missing");
-        self.push_left(node.right.as_deref());
-        self.remaining -= 1;
-        Some((&node.name, &node.inode))
+        self.next_node().map(|node| (&node.name, &node.inode))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) { (self.remaining, Some(self.remaining)) }

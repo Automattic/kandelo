@@ -6654,13 +6654,11 @@ fn publish_handle_change(handle: i64) {
     ROOTFS.with(|state| {
         let Some(inode) = state.get(index) else { return; };
         let target = crate::vfs_events::identity(inode.stat());
-        crate::vfs_events::changed(target, |dir_id, dir_index, emit| {
+        crate::vfs_events::changed(target, |dir_id, dir_index, names, emit| {
             let Some(dir) = state.get(dir_index) else { return; };
             if crate::vfs_events::identity(dir.stat()) != dir_id { return; }
             if let InodeKind::Dir(entries) = &dir.kind {
-                for (name, &child) in entries.iter() {
-                    if child == index { emit(name); }
-                }
+                entries.visit_watched_names(index, names, emit);
             }
         });
     });

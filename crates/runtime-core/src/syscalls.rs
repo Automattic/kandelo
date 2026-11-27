@@ -24785,6 +24785,69 @@ mod tests {
         sys_rmdir(&mut proc, &mut host, dir).unwrap();
     }
 
+    #[cfg(feature = "vfs-events")]
+    #[test]
+    fn vfs_watch_index_follows_hard_links_and_rename_replacements() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        for prefix in ["", "/tmp"] {
+            let dir = format!("{prefix}/indexed-watch");
+            let child = |name| format!("{dir}/{name}");
+            let source = format!("{prefix}/index-write-source");
+            let replacement = format!("{prefix}/index-write-replacement");
+            sys_mkdir(&mut proc, &mut host, dir.as_bytes(), 0o700).unwrap();
+            let dir_fd = sys_open(&mut proc, &mut host, dir.as_bytes(), O_RDONLY | O_DIRECTORY, 0).unwrap();
+            let file = sys_open(&mut proc, &mut host, source.as_bytes(), O_CREAT | O_RDWR, 0o600).unwrap();
+            let replacement_fd = sys_open(&mut proc, &mut host, replacement.as_bytes(), O_CREAT | O_RDWR, 0o600).unwrap();
+            // Create in reverse order so the index proves it preserves name order.
+            for name in ["z", "a"] {
+                sys_link(&mut proc, &mut host, source.as_bytes(), child(name).as_bytes()).unwrap();
+            }
+            let mut open_watch = || {
+                let fd = sys_open(&mut proc, &mut host, b"/dev/kandelo/fs-events", O_RDWR | O_NONBLOCK, 0).unwrap();
+                assert_eq!(sys_write(&mut proc, &mut host, fd, &dir_fd.to_le_bytes()), Ok(4));
+                fd
+            };
+            let first = open_watch();
+            let second = open_watch();
+
+            fn expect_events(proc: &mut Process, host: &mut MockHostIO, fd: i32, expected: &[&[u8]]) {
+                let mut buffer = [0; 256];
+                for event in expected {
+                    let len = sys_read(proc, host, fd, &mut buffer).unwrap();
+                    assert_eq!(&buffer[..len], *event);
+                }
+                assert_eq!(sys_read(proc, host, fd, &mut buffer), Err(Errno::EAGAIN));
+            }
+
+            sys_write(&mut proc, &mut host, file, b"warm the directory index").unwrap();
+            for fd in [first, second] {
+                expect_events(&mut proc, &mut host, fd, &[b"\x02a", b"\x02z"]);
+            }
+            sys_close(&mut proc, &mut host, first).unwrap();
+            sys_rename(&mut proc, &mut host, replacement.as_bytes(), child("a").as_bytes()).unwrap();
+            sys_write(&mut proc, &mut host, file, b"original").unwrap();
+            sys_write(&mut proc, &mut host, replacement_fd, b"replacement").unwrap();
+            expect_events(&mut proc, &mut host, second, &[b"\x01a", b"\x02z", b"\x02a"]);
+
+            sys_unlink(&mut proc, &mut host, child("z").as_bytes()).unwrap();
+            sys_write(&mut proc, &mut host, file, b"no remaining watched aliases").unwrap();
+            expect_events(&mut proc, &mut host, second, &[b"\x01z"]);
+            for fd in [second, file, replacement_fd, dir_fd] {
+                sys_close(&mut proc, &mut host, fd).unwrap();
+            }
+            for path in [source, child("a")] {
+                sys_unlink(&mut proc, &mut host, path.as_bytes()).unwrap();
+            }
+            sys_rmdir(&mut proc, &mut host, dir.as_bytes()).unwrap();
+        }
+    }
+
     #[test]
     fn tmpfs_scratch_mounts_served_entirely_in_kernel() {
         let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
