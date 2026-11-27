@@ -1627,12 +1627,6 @@ const auditAllowances: AuditAllowance[] = [
     why: "This is the small Rust metadata module, not a kernel. The sole supplied import is freshly created private worker memory, with no filesystem, OPFS, process or device capabilities. Worker retirement owns the entire instance after success, refusal, cancellation or parser allocation failure.",
   },
   {
-    key: "benchmarks/namespace-storage.ts::measureNamespace::wasm-instance-authority::WebAssembly.instantiate(module, imports)",
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "The benchmark module owns its Wasm memory. Its imports address only the benchmark storage slots and record phase counters.",
-  },
-  {
     key: 'images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.instantiatePositioned::wasm-instance-authority::new WebAssembly.Instance(module, { env })',
     disposition: "non-kernel",
     authorityOwner: "process-memory",

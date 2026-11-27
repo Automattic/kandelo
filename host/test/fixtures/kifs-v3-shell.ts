@@ -21,7 +21,7 @@ export function readSavedShellPrograms(defaultGuest: string) {
 }
 
 function readPartialShell() {
-  const partial = join(findRepoRoot(), "local-binaries", "partial");
+  const partial = process.env.KANDELO_KIFS_BENCH_PARTIAL ?? join(findRepoRoot(), "local-binaries", "partial");
   const manifest = JSON.parse(readFileSync(join(partial, "partial.json"), "utf8"));
   if (manifest.image !== "shell" || manifest.file !== "shell-partial.vfs.zst") {
     throw new Error("Build the partial shell with ./run.sh partial shell bash coreutils git");
