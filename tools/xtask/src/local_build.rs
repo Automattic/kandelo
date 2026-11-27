@@ -3628,6 +3628,16 @@ pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[Coresident
     closure_crates: &["kandelo-program-policy"],
     artifacts: &[("kandelo_program_policy32.wasm", "wasm32", true)],
     closure_description: "crates/program-policy and its workspace dependencies",
+}, CoresidentSideModule {
+    // The kgpu executor the kernel-spawned GPU worker instantiates. Like the
+    // image writer it is built once for wasm32: it runs in its own private
+    // memory, never in a guest's address space.
+    node_name: "kandelo-gpu-executor",
+    script: "crates/gpu-executor/build-wasm.sh",
+    closure_crates: &["kandelo-gpu-executor", "kgpu-stream", "wasm-posix-shared"],
+    artifacts: &[("kandelo_gpu_executor32.wasm", "wasm32", true)],
+    closure_description: "crates/gpu-executor, crates/kgpu-stream, crates/shared and their \
+                          workspace dependencies",
 }];
 
 /// Whether a projection node name belongs to a co-resident side module rather
@@ -8921,8 +8931,12 @@ materialization = "lazy"
     }
 
     #[test]
-    fn coresident_table_has_the_image_writer_and_isolated_program_policy() {
-        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 2);
+    fn coresident_table_has_the_image_writer_policy_and_gpu_executor() {
+        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 3);
+        let executor = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-gpu-executor").unwrap();
+        assert_eq!(executor.script, "crates/gpu-executor/build-wasm.sh");
+        assert_eq!(executor.closure_crates, &["kandelo-gpu-executor", "kgpu-stream", "wasm-posix-shared"]);
+        assert_eq!(executor.artifacts, &[("kandelo_gpu_executor32.wasm", "wasm32", true)]);
         let policy = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-program-policy").unwrap();
         assert_eq!(policy.script, "crates/program-policy/build-wasm.sh");
         assert_eq!(policy.closure_crates, &["kandelo-program-policy"]);

@@ -1935,6 +1935,7 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
         "kandelo_image_module_positioned32.wasm",
       ],
       "kandelo-program-policy": ["kandelo_program_policy32.wasm"],
+      "kandelo-gpu-executor": ["kandelo_gpu_executor32.wasm"],
     };
     const allowedStandaloneArtifacts = standaloneModuleArtifacts[packageName];
     const isStandaloneModuleNode =

@@ -1,0 +1,29 @@
+[package]
+name = "kandelo-gpu-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+# The Wasm module the kernel-spawned GPU worker instantiates. Native builds
+# exercise the same core through `cargo test` with the recording and null
+# backends, so only the module needs the allocator and the imports.
+[[bin]]
+name = "kandelo-gpu-executor-module"
+path = "src/bin/module.rs"
+required-features = ["standalone"]
+test = false
+bench = false
+
+[features]
+standalone = ["dep:dlmalloc"]
+
+[dependencies]
+kgpu-stream = { path = "../kgpu-stream" }
+wasm-posix-shared = { path = "../shared" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dlmalloc = { version = "0.2.14", default-features = false, optional = true }

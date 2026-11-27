@@ -990,6 +990,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kandelo-gpu-executor"
+version = "0.1.0"
+dependencies = [
+ "dlmalloc",
+ "kgpu-stream",
+ "wasm-posix-shared",
+]
+
+[[package]]
 name = "kandelo-image-module"
 version = "0.1.0"
 dependencies = [
