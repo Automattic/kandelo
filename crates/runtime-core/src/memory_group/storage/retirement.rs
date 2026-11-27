@@ -67,6 +67,7 @@ impl Storage {
             || self.image_has_operations(key)
             || self.replicas.values().any(|replica| replica.image == key && replica.pending_completions != 0)
             || self.pins.values().any(|pin| pin.image == key)
+            || self.device_pins.values().any(|pin| pin.image == key)
             || self
                 .replicas
                 .values()
@@ -123,6 +124,10 @@ impl Storage {
                     .pins
                     .values()
                     .any(|pin| owned.get((pin.address / PAGE) as usize) == Some(&true))
+                || owned
+                    .iter()
+                    .enumerate()
+                    .any(|(page, used)| *used && self.device_pinned(page as u32))
             {
                 return Err(Errno::EAGAIN);
             }

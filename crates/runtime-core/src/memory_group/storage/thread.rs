@@ -182,7 +182,12 @@ impl Storage {
         if self.pins.values().any(|pin| {
             targets[(pin.address / PAGE) as usize]
                 || return_scratch && pin.serial == admission.record().serial
-        }) {
+        }) || self
+            .device_pins
+            .values()
+            .flat_map(|pin| pin.frames.iter())
+            .any(|frame| targets[*frame as usize])
+        {
             return Err(Errno::EAGAIN);
         }
         self.pool.as_mut().ok_or(Errno::EAGAIN)?.release_checked(

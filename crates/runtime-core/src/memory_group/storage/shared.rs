@@ -136,6 +136,11 @@ impl Storage {
                     .pins
                     .values()
                     .any(|pin| object.pages.contains(pin.address / PAGE))
+                || self
+                    .device_pins
+                    .values()
+                    .flat_map(|pin| pin.frames.iter())
+                    .any(|frame| object.pages.contains(*frame))
             {
                 return Err(Errno::EAGAIN);
             }

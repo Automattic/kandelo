@@ -16,6 +16,7 @@ use crate::{
 use wasm_posix_shared::{program_extensions::memory_group_v3 as layout, Errno};
 
 const PAGE: u32 = layout::PAGE_BYTES;
+mod device_io;
 mod fork;
 mod growth;
 mod lifecycle;
@@ -140,6 +141,8 @@ pub(crate) struct Storage {
     next_epoch: u64,
     next_pin: u64,
     pins: PreparedMap<u64, NativePin>,
+    next_device_pin: u64,
+    device_pins: PreparedMap<u64, device_io::DevicePin>,
     objects: PreparedMap<u64, SharedObject>,
     operations: PreparedMap<u64, operation::ImageOperation>,
     next_operation: u64,
@@ -202,6 +205,8 @@ impl Storage {
             next_epoch: 1,
             next_pin: 1,
             pins: PreparedMap::new(),
+            next_device_pin: 1,
+            device_pins: PreparedMap::new(),
             objects: PreparedMap::new(),
             operations: PreparedMap::new(),
             next_operation: 1,
@@ -489,6 +494,7 @@ impl Storage {
             .pins
             .values()
             .any(|pin| pages.binary_search(&(pin.address / PAGE)).is_ok())
+            || pages.iter().any(|page| self.device_pinned(*page))
         {
             return Err(Errno::EAGAIN);
         }
@@ -517,6 +523,7 @@ impl Storage {
         self.images.is_empty()
             && self.replicas.is_empty()
             && self.pins.is_empty()
+            && self.device_pins.is_empty()
             && self.objects.is_empty()
     }
 }

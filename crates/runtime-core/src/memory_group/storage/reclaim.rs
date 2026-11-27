@@ -8,14 +8,14 @@ pub(crate) struct Reclaimed {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::lifecycle_tests::running;
     use super::*;
     use crate::{
         group_memory_change::{Description, Effect},
         memory_group::physical::tests::Memory,
     };
-    fn unmap(
+    pub(in super::super) fn unmap(
         storage: &mut Storage,
         memory: &mut Memory,
         admission: GroupAdmission,
@@ -382,6 +382,9 @@ impl Storage {
             })?;
             for pin in self.pins.values() {
                 pinned[(pin.address / PAGE) as usize] = true;
+            }
+            for frame in self.device_pins.values().flat_map(|pin| pin.frames.iter()) {
+                pinned[*frame as usize] = true;
             }
             for page in image.payload.iter().copied() {
                 if !current[page as usize] && !pinned[page as usize] {

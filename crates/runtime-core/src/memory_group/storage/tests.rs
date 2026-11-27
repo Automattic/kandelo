@@ -340,3 +340,182 @@ fn image_owner_selects_every_bound_pthread_before_allowing_detachment() {
     storage.complete_reference_detachment(admission).unwrap();
     assert_eq!(storage.pending_platform_references(root, true).unwrap(), None);
 }
+
+/// Device I/O translates guest ranges to backing extents and pins frames
+/// until the device retires the work. Reclaim and retirement must honor
+/// those pins exactly as they honor native observation pins.
+mod device_io {
+    use super::super::reclaim::{tests::unmap, Reclaimed};
+    use super::*;
+    use wasm_posix_shared::kgpu::Extent as DeviceExtent;
+
+    const TABLE: u32 = layout::ROOT_HEADER_BYTES;
+
+    /// Point a virtual page at a frame, growing the backing to hold it:
+    /// translation refuses frames beyond the backing's current size.
+    fn map(memory: &mut Memory, root: u32, page: u32, pte: u32) {
+        let current = memory.current_pages().unwrap();
+        if pte >> 16 >= current {
+            memory.grow((pte >> 16) + 1 - current).unwrap();
+        }
+        memory.atomic_store(root + TABLE + page * 4, pte).unwrap();
+    }
+
+    fn extent(frame: u32, at: u32, len: u32) -> DeviceExtent {
+        DeviceExtent { offset: u64::from(frame * PAGE + at), len, pad: 0 }
+    }
+
+    fn allocated(storage: &mut Storage, memory: &mut Memory) -> u32 {
+        storage.pool().unwrap().snapshot(memory).unwrap().allocated_pages
+    }
+
+    #[test]
+    fn device_extents_single_page() {
+        let (_groups, storage, memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        let root = storage.descriptor(admission).unwrap().root;
+        let frame = memory.atomic_load(root + TABLE + 4).unwrap() >> 16;
+        assert_eq!(
+            storage.device_extents(&memory, image, u64::from(PAGE + 100), 200, true),
+            Ok(vec![extent(frame, 100, 200)])
+        );
+        assert_eq!(
+            storage.device_extents(&memory, image, u64::from(PAGE + 100), 0, true),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn device_extents_merges_adjacent_frames() {
+        let (_groups, storage, mut memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        let root = storage.descriptor(admission).unwrap().root;
+        map(&mut memory, root, 0, 5 << 16 | 3);
+        map(&mut memory, root, 1, 6 << 16 | 3);
+        assert_eq!(
+            storage.device_extents(&memory, image, 100, PAGE + 100, false),
+            Ok(vec![extent(5, 100, PAGE + 100)])
+        );
+    }
+
+    #[test]
+    fn device_extents_splits_discontiguous_frames() {
+        let (_groups, storage, mut memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        let root = storage.descriptor(admission).unwrap().root;
+        map(&mut memory, root, 0, 5 << 16 | 3);
+        map(&mut memory, root, 1, 9 << 16 | 3);
+        assert_eq!(
+            storage.device_extents(&memory, image, 100, PAGE + 100, true),
+            Ok(vec![extent(5, 100, PAGE - 100), extent(9, 0, 200)])
+        );
+    }
+
+    #[test]
+    fn device_extents_unmapped_is_efault() {
+        let (_groups, storage, mut memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        let root = storage.descriptor(admission).unwrap().root;
+        // Beyond the image's current extent of two pages.
+        assert_eq!(
+            storage.device_extents(&memory, image, u64::from(2 * PAGE), 4, false),
+            Err(Errno::EFAULT)
+        );
+        // A range that starts mapped and runs past the extent.
+        assert_eq!(
+            storage.device_extents(&memory, image, u64::from(PAGE), PAGE + 1, false),
+            Err(Errno::EFAULT)
+        );
+        assert_eq!(
+            storage.device_extents(&memory, image, u64::MAX - 1, 4, false),
+            Err(Errno::EFAULT)
+        );
+        map(&mut memory, root, 1, 0);
+        assert_eq!(
+            storage.device_extents(&memory, image, 0, PAGE + 4, false),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[test]
+    fn device_extents_write_to_readonly_is_efault() {
+        let (_groups, storage, mut memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        let root = storage.descriptor(admission).unwrap().root;
+        map(&mut memory, root, 0, 5 << 16 | 1);
+        assert_eq!(
+            storage.device_extents(&memory, image, 8, 16, false),
+            Ok(vec![extent(5, 8, 16)])
+        );
+        assert_eq!(
+            storage.device_extents(&memory, image, 8, 16, true),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[test]
+    fn device_pin_rejects_extents_outside_the_backing() {
+        let (_groups, mut storage, _memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        for bad in [
+            DeviceExtent { pad: 1, ..extent(5, 0, 4) },
+            extent(5, 0, 0),
+            extent(0, 0, 4),
+            extent(31, PAGE - 4, 8),
+        ] {
+            assert_eq!(storage.device_pin(image, &[bad]), Err(Errno::EINVAL));
+        }
+        assert_eq!(storage.device_pinned_frames(), 0);
+    }
+
+    #[test]
+    fn pinned_frames_survive_reclaim() {
+        let (_groups, mut storage, mut memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        let extents = storage
+            .device_extents(&memory, image, u64::from(PAGE), PAGE, false)
+            .unwrap();
+        let old_page = (extents[0].offset / u64::from(PAGE)) as u32;
+        let pin = storage.device_pin(image, &extents).unwrap();
+        assert_eq!(storage.device_pinned_frames(), 1);
+        unmap(&mut storage, &mut memory, admission, 1, 1);
+        assert_eq!(
+            storage.reclaim_removed_pages(&mut memory, admission).unwrap(),
+            Reclaimed { released_pages: 0, retained_pages: 1 }
+        );
+        let other = storage.pool().unwrap().allocate_contiguous(&mut memory, 1).unwrap();
+        assert_ne!(other.first, old_page);
+        storage.device_unpin(pin);
+        // Releasing an id that no longer exists is a no-op.
+        storage.device_unpin(pin);
+        assert_eq!(storage.device_pinned_frames(), 0);
+        assert_eq!(
+            storage.reclaim_removed_pages(&mut memory, admission).unwrap(),
+            Reclaimed { released_pages: 1, retained_pages: 0 }
+        );
+        let reused = storage.pool().unwrap().allocate_contiguous(&mut memory, 1).unwrap();
+        assert_eq!(reused.first, old_page);
+    }
+
+    #[test]
+    fn retirement_waits_for_device_pins() {
+        let (_groups, mut storage, mut memory, admission) = running();
+        let image = storage.owned(admission).unwrap().image;
+        let extents = storage
+            .device_extents(&memory, image, 0, 2 * PAGE, true)
+            .unwrap();
+        let pin = storage.device_pin(image, &extents).unwrap();
+        storage.note_quiescent(&mut memory, admission).unwrap();
+        storage.revoke_source(&mut memory, admission).unwrap();
+        let before = allocated(&mut storage, &mut memory);
+        assert_eq!(
+            storage.release_stopped_image(&mut memory, admission),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(allocated(&mut storage, &mut memory), before);
+        storage.device_unpin(pin);
+        storage.release_stopped_image(&mut memory, admission).unwrap();
+        assert_eq!(allocated(&mut storage, &mut memory), 1);
+        assert!(storage.empty());
+    }
+}
