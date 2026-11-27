@@ -50,16 +50,22 @@ export function attachKmsBitmapDisplay(canvases: OffscreenCanvas[], port: Messag
       port.close();
       return;
     }
-    const { type, sequence, frame, cursor } = value ?? {};
+    const { type, sequence, frame, cursor, position } = value ?? {};
     try {
       if (type !== 'frame' || !Number.isSafeInteger(sequence) || sequence !== last + 1
-          || (frame === undefined && cursor === undefined)) throw new Error('Invalid KMS bitmap frame');
+          || (frame === undefined && cursor === undefined && position === undefined)) throw new Error('Invalid KMS bitmap frame');
       // Validate the whole bundle before consuming either plane.
       if (frame !== undefined && (!(frame instanceof ImageBitmap) || frame.width < 1 || frame.width > 3840
           || frame.height < 1 || frame.height > 2160)) throw new Error('Invalid KMS bitmap extent');
       if (cursor !== undefined) {
         if (!plane || !cursor) throw new Error('Invalid KMS cursor update');
         validateCursor(cursor);
+      }
+      if (position !== undefined && (!position || frame !== undefined || cursor !== undefined
+          || !lastCursor || lastCursor.composited || lastCursor.cursor.pixels === null
+          || !Number.isSafeInteger(position.version) || position.version <= lastCursor.cursor.version
+          || !Number.isSafeInteger(position.x) || !Number.isSafeInteger(position.y))) {
+        throw new Error('Invalid KMS cursor position');
       }
       if (frame) {
         if (canvas.width !== frame.width) canvas.width = frame.width;
@@ -68,6 +74,10 @@ export function attachKmsBitmapDisplay(canvases: OffscreenCanvas[], port: Messag
       }
       if (cursor) {
         lastCursor = cursor;
+        restoreCursor();
+      } else if (position && lastCursor) {
+        const { version, x, y } = position;
+        lastCursor = { ...lastCursor, cursor: { ...lastCursor.cursor, version, x, y } };
         restoreCursor();
       }
       last = sequence;
