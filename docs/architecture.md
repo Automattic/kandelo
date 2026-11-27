@@ -6961,12 +6961,15 @@ shows it: same storage, framebuffer, kernel commit count and viewport,
 the canvas at the framebuffer's size, the same color-stage LUT and cursor
 when a stage is in use, an unchanged loss count, no pending repair, a
 context created with `preserveDrawingBuffer`, and an unchanged write epoch
-of the native context (`host/src/webgl/context-writes.ts`). That epoch
-counts every call on the context except a fixed list of calls that cannot
-change any pixel (state, binds, queries, buffer data, object creation,
-program work, `readPixels`), so writes to the source storage and every
-other writer of the canvas (a GL session presenting to it, a dark CRTC's
-clear, any host utility) invalidate it without being enumerated. WHY: on
+of the native context (`host/src/webgl/context-writes.ts`). After an ordinary direct blit, the host observes the native
+read framebuffer's color, depth and stencil attachments. A 2D texture
+update can keep the frame when its actual binding is disjoint from that
+storage. A draw can keep the frame when it targets a non-default framebuffer
+and every attachment is disjoint. The host holds these identities weakly.
+Attachment changes, unclassified writers and extension calls invalidate the
+observation. Writes to the default drawing buffer always count. Staged
+presentations and renderers without attachment information use the
+conservative context-wide epoch. WHY: on
 an idle labwc or sway desktop in Chromium the pump otherwise issued about
 3,300 WebGL calls a second, half of them `getError`, to redraw and re-read
 unchanged pixels. A

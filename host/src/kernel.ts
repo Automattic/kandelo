@@ -13,7 +13,7 @@ import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutS
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
 import { observeRendererLoss, rendererLossCount, rendererLost, rendererResetScope, RENDERER_LOST } from "./webgl/renderer-loss.js";
-import { contextWriteEpoch } from "./webgl/context-writes.js";
+import { contextWriteEpoch, observeScanoutSource } from "./webgl/context-writes.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
@@ -1514,12 +1514,14 @@ export class WasmPosixKernel {
    * (its own blit counts). A context that does not preserve its drawing
    * buffer is never recorded. */
   #recordDirectPresentation(crtcId: number, fb: HostScanout, canvas: OffscreenCanvas, storage: GpuScanoutStorage,
-      stage: string | null, commits: number | undefined): void {
-    this.callbacks.onKmsCanvasUpdated?.(crtcId);
+      stage: string | null, commits: number | undefined, retain: boolean): void {
     const gl = storage.gl;
-    if (gl.isContextLost() || gl.getContextAttributes?.()?.preserveDrawingBuffer !== true) return;
-    this.#directPresentations.set(crtcId, { canvas, storage, bo: fb.bo_id, fbId: fb.fb_id, commits, stage,
-      x: fb.x, y: fb.y, width: fb.width, height: fb.height, loss: rendererLossCount(gl), epoch: contextWriteEpoch(gl) });
+    if (retain && !gl.isContextLost()) {
+      this.#directPresentations.set(crtcId, { canvas, storage, bo: fb.bo_id, fbId: fb.fb_id, commits, stage,
+        x: fb.x, y: fb.y, width: fb.width, height: fb.height, loss: rendererLossCount(gl), epoch: contextWriteEpoch(gl) });
+    }
+    // A consumer can itself write to the renderer while handling this notification.
+    this.callbacks.onKmsCanvasUpdated?.(crtcId);
   }
 
   private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number, commits?: number):
@@ -1544,6 +1546,7 @@ export class WasmPosixKernel {
     if (direct && this.#presentedDirect(crtcId, fb, canvas, storage, stage, commits)) return { direct: true };
     // Whatever happens below, the canvas no longer provably shows the record.
     this.#directPresentations.delete(crtcId);
+    const retain = direct && storage.gl.getContextAttributes?.()?.preserveDrawingBuffer === true;
     if (staged) {
       if (canvas.width !== fb.width || canvas.height !== fb.height) {
         canvas.width = fb.width; canvas.height = fb.height;
@@ -1551,7 +1554,8 @@ export class WasmPosixKernel {
       // KMS buffers hold the top row first; the primary plane is opaque.
       this.#presentThroughStage(crtcId, storage.gl, storage.fbo, fb.x, fb.y, fb.width, fb.height, true, true,
         storage.internalFormat);
-      this.#recordDirectPresentation(crtcId, fb, canvas, storage, stage, commits);
+      if (retain) observeScanoutSource(storage.gl);
+      this.#recordDirectPresentation(crtcId, fb, canvas, storage, stage, commits, retain);
       return { direct: true };
     }
     if (direct) this.#releaseColorStage(crtcId);
@@ -1562,14 +1566,14 @@ export class WasmPosixKernel {
           this.glMuxerFor(storage.gl).invalidateCurrent();
           canvas.width = fb.width; canvas.height = fb.height;
         }
-        if (!drawGpuScanout(storage, fb.width, fb.height, fb.x, fb.y)) throw new Error("GPU scanout blit failed");
+        if (!drawGpuScanout(storage, fb.width, fb.height, fb.x, fb.y, retain)) throw new Error("GPU scanout blit failed");
         return { direct: true } as const;
       }
       const pixels = readGpuScanout(storage, fb.width, fb.height, fb.x, fb.y);
       if (!pixels) throw new Error("GPU scanout readback failed");
       return { direct: false, pixels } as const;
     });
-    if (frame.direct) this.#recordDirectPresentation(crtcId, fb, canvas, storage, null, commits);
+    if (frame.direct) this.#recordDirectPresentation(crtcId, fb, canvas, storage, null, commits, retain);
     return frame;
   }
 
