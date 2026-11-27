@@ -123,6 +123,8 @@ impl Storage {
             }
             mapping.new_extent = mapping.old_extent;
             read_table(memory, root, &mut mapping.before)?;
+            // The root lock keeps these entries stable and the backing can only grow.
+            let physical_pages = memory.current_pages()?;
             for (at, entry) in mapping.before.iter().copied().enumerate() {
                 if entry == 0 {
                     continue;
@@ -130,7 +132,7 @@ impl Storage {
                 if entry & 0xfffc != 0
                     || entry >> 16 == 0
                     || at >= mapping.old_extent as usize
-                    || entry >> 16 >= memory.current_pages()?
+                    || entry >> 16 >= physical_pages
                     || entry >> 16 >= self.maximum_pages
                 {
                     return Err(Errno::EIO);
@@ -326,20 +328,11 @@ impl Storage {
             if memory.atomic_load(root)? != mapping.old_extent {
                 return Err(Errno::ESRCH);
             }
-            let mut observed = 0;
-            super::super::physical::visit_nonzero(memory, root + layout::ROOT_HEADER_BYTES,
-                mapping.before.len() as u32, |at, entry| {
-                    if mapping.before[at as usize] != entry { return Err(Errno::ESRCH); }
-                    observed += 1;
-                    Ok(())
-                })?;
-            if observed != mapping.before.iter().filter(|entry| **entry != 0).count() {
-                return Err(Errno::ESRCH);
-            }
+            verify_table(memory, root, &mapping.before, Errno::ESRCH)?;
             // Mark before the first write, so a foreign failure cannot grant
             // unpublished rollback over a partially published page table.
             mapping.published = true;
-            write_table(memory, root, &mapping.after)?;
+            write_changed_table(memory, root, &mapping.before, &mapping.after)?;
             memory.atomic_store(root, mapping.new_extent)
         })();
         if result.is_err() {
@@ -433,12 +426,8 @@ impl Storage {
             if memory.atomic_load(root)? != pending.new_extent {
                 return Err(Errno::EIO);
             }
-            for (at, entry) in pending.after.iter().enumerate() {
-                if memory.atomic_load(root + layout::ROOT_HEADER_BYTES + at as u32 * 4)? != *entry {
-                    return Err(Errno::EIO);
-                }
-            }
-            write_table(memory, root, &pending.before)?;
+            verify_table(memory, root, &pending.after, Errno::EIO)?;
+            write_changed_table(memory, root, &pending.after, &pending.before)?;
             memory.atomic_store(root, pending.old_extent)
         })();
         memory.atomic_store(root + layout::ROOT_GROW_LOCK, 0)?;
@@ -611,15 +600,57 @@ fn read_table(memory: &impl PhysicalMemory, root: u32, output: &mut [u32]) -> Re
     }
     Ok(())
 }
-fn write_table(memory: &mut impl PhysicalMemory, root: u32, input: &[u32]) -> Result<(), Errno> {
+// Compare complete snapshots without reading each zero entry individually.
+// A new, missing or changed PTE in any chunk rejects the whole transaction.
+fn verify_table(
+    memory: &impl PhysicalMemory,
+    root: u32,
+    expected: &[u32],
+    mismatch: Errno,
+) -> Result<(), Errno> {
+    let mut entries = expected
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, pte)| pte != 0);
+    super::super::physical::visit_nonzero(
+        memory,
+        root + layout::ROOT_HEADER_BYTES,
+        expected.len() as u32,
+        |at, pte| {
+            if entries.next() != Some((at as usize, pte)) {
+                return Err(mismatch);
+            }
+            Ok(())
+        },
+    )?;
+    if entries.next().is_some() {
+        return Err(mismatch);
+    }
+    Ok(())
+}
+
+fn write_changed_table(
+    memory: &mut impl PhysicalMemory,
+    root: u32,
+    before: &[u32],
+    after: &[u32],
+) -> Result<(), Errno> {
+    if before.len() != after.len() {
+        return Err(Errno::EIO);
+    }
     let mut bytes = [0; 4096];
-    for (chunk, entries) in input.chunks(1024).enumerate() {
-        for (at, entry) in entries.iter().enumerate() {
-            bytes[at * 4..at * 4 + 4].copy_from_slice(&entry.to_le_bytes());
+    let words = bytes.len() / 4;
+    for (chunk, (old, next)) in before.chunks(words).zip(after.chunks(words)).enumerate() {
+        if old == next {
+            continue;
+        }
+        for (word, entry) in bytes.chunks_exact_mut(4).zip(next) {
+            word.copy_from_slice(&entry.to_le_bytes());
         }
         memory.write(
-            root + layout::ROOT_HEADER_BYTES + (chunk * 4096) as u32,
-            &bytes[..entries.len() * 4],
+            root + layout::ROOT_HEADER_BYTES + (chunk * bytes.len()) as u32,
+            &bytes[..next.len() * 4],
         )?;
     }
     Ok(())
@@ -629,6 +660,34 @@ fn write_table(memory: &mut impl PhysicalMemory, root: u32, input: &[u32]) -> Re
 mod tests {
     use super::*;
     use crate::memory_group::{physical::tests::Memory, storage::lifecycle_tests::running};
+    #[test]
+    fn table_updates_and_rollback_skip_unchanged_chunks() {
+        let mut memory = Memory::new(8);
+        memory.grow(3).unwrap();
+        let root = PAGE;
+        let table = root + layout::ROOT_HEADER_BYTES;
+        let mut before = [0; 3072];
+        before[0] = 2 * PAGE | 3;
+        memory.atomic_store(table, before[0]).unwrap();
+        let mut after = before;
+        after[1024] = 3 * PAGE | 1;
+
+        memory.fail_write_after_at = Some(table);
+        verify_table(&memory, root, &before, Errno::ESRCH).unwrap();
+        write_changed_table(&mut memory, root, &before, &after).unwrap();
+        assert_eq!(
+            verify_table(&memory, root, &before, Errno::ESRCH),
+            Err(Errno::ESRCH)
+        );
+        verify_table(&memory, root, &after, Errno::EIO).unwrap();
+        write_changed_table(&mut memory, root, &after, &before).unwrap();
+        assert_eq!(
+            verify_table(&memory, root, &after, Errno::EIO),
+            Err(Errno::EIO)
+        );
+        verify_table(&memory, root, &before, Errno::EIO).unwrap();
+    }
+
     fn description(admission: GroupAdmission, token: u64, effect: Effect) -> Description {
         Description {
             token,
@@ -653,6 +712,31 @@ mod tests {
         memory
             .atomic_load(root + layout::ROOT_HEADER_BYTES + virtual_page * 4)
             .unwrap()
+    }
+
+    #[test]
+    fn mapping_and_reclaim_refuse_the_first_frame_past_the_backing() {
+        let (_groups, mut storage, mut memory, admission) = running();
+        let root = storage.descriptor(admission).unwrap().root;
+        let slot = root + layout::ROOT_HEADER_BYTES + 4;
+        let original = memory.atomic_load(slot).unwrap();
+        let past_end = memory.current_pages().unwrap() * PAGE;
+        let before = storage.snapshot(&mut memory).unwrap()[5];
+        let epoch = pause(&mut storage, &mut memory, admission);
+        memory.atomic_store(slot, past_end | 3).unwrap();
+        let change = description(admission, 1, Effect::Unmap {
+            addr: PAGE as usize,
+            len: PAGE as usize,
+        });
+        assert_eq!(
+            storage.stage_mapping(&mut memory, admission, epoch, change, None),
+            Err(Errno::EIO)
+        );
+        assert_eq!(storage.reclaim_removed_pages(&mut memory, admission), Err(Errno::EIO));
+        assert_eq!(storage.snapshot(&mut memory).unwrap()[5], before);
+        assert_eq!(memory.atomic_load(root + layout::ROOT_GROW_LOCK).unwrap(), 0);
+        memory.atomic_store(slot, original).unwrap();
+        storage.resume_image(&mut memory, admission, epoch).unwrap();
     }
 
     #[test]

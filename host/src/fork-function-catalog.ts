@@ -16,11 +16,6 @@ export interface ForkFunctionRecipe {
   readonly ordinal: number;
 }
 
-interface RegisteredCatalog {
-  table: WebAssembly.Table;
-  entries: Array<CallableFunction>;
-}
-
 function assertU32(value: number, label: string): void {
   if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) {
     throw new RangeError(`invalid ${label} ${value}`);
@@ -32,9 +27,8 @@ function recipeKey(moduleActivation: number, ordinal: number): string {
 }
 
 export class ForkFunctionCatalog {
-  private readonly catalogs = new Map<number, RegisteredCatalog>();
-  private recipesByFunction =
-    new WeakMap<CallableFunction, ForkFunctionRecipe[]>();
+  private readonly catalogs = new Map<number, CallableFunction[]>();
+  private recipesByFunction?: Map<CallableFunction, ForkFunctionRecipe>;
 
   register(moduleActivation: number, table: WebAssembly.Table): void {
     assertU32(moduleActivation, "module activation");
@@ -50,35 +44,17 @@ export class ForkFunctionCatalog {
         );
       }
       entries.push(value);
-      const recipes = this.recipesByFunction.get(value) ?? [];
-      if (!recipes.some((recipe) =>
-        recipe.moduleActivation === moduleActivation
-        && recipe.ordinal === ordinal
-      )) {
-        recipes.push({ moduleActivation, ordinal });
-        recipes.sort(
-          (left, right) =>
-            left.moduleActivation - right.moduleActivation
-            || left.ordinal - right.ordinal,
-        );
-        this.recipesByFunction.set(value, recipes);
-      }
     }
-    this.catalogs.set(moduleActivation, { table, entries });
+    this.catalogs.set(moduleActivation, entries);
+    this.recipesByFunction = undefined;
   }
 
   unregister(moduleActivation: number): void {
     assertU32(moduleActivation, "module activation");
-    const catalog = this.catalogs.get(moduleActivation);
-    if (!catalog) {
+    if (!this.catalogs.delete(moduleActivation)) {
       throw new Error(`function catalog ${moduleActivation} is not registered`);
     }
-    for (const value of new Set(catalog.entries)) {
-      const remaining = (this.recipesByFunction.get(value) ?? [])
-        .filter((recipe) => recipe.moduleActivation !== moduleActivation);
-      this.recipesByFunction.set(value, remaining);
-    }
-    this.catalogs.delete(moduleActivation);
+    this.recipesByFunction = undefined;
   }
 
   encode(value: unknown): ForkFunctionRecipe | null {
@@ -86,7 +62,22 @@ export class ForkFunctionCatalog {
     if (typeof value !== "function") {
       throw new TypeError("funcref encoder received a non-function value");
     }
-    const recipe = this.recipesByFunction.get(value)?.[0];
+    // Replay resolves ordinals directly from the snapshots. Only a capture
+    // that encounters a non-null funcref needs the inverse mapping.
+    if (!this.recipesByFunction) {
+      const recipes = new Map<CallableFunction, ForkFunctionRecipe>();
+      for (const [moduleActivation, entries] of this.catalogs) {
+        for (const [ordinal, entry] of entries.entries()) {
+          const previous = recipes.get(entry);
+          // Ordinals arrive in ascending order within each activation.
+          if (!previous || moduleActivation < previous.moduleActivation) {
+            recipes.set(entry, { moduleActivation, ordinal });
+          }
+        }
+      }
+      this.recipesByFunction = recipes;
+    }
+    const recipe = this.recipesByFunction.get(value as CallableFunction);
     if (!recipe) {
       throw new Error("funcref is absent from the process module catalogs");
     }
@@ -101,7 +92,7 @@ export class ForkFunctionCatalog {
     if (!catalog) {
       throw new Error(`function catalog ${recipe.moduleActivation} is not registered`);
     }
-    const value = catalog.entries[recipe.ordinal];
+    const value = catalog[recipe.ordinal];
     if (!value) {
       throw new Error(
         `function recipe ${recipeKey(recipe.moduleActivation, recipe.ordinal)} is out of bounds`,
@@ -111,10 +102,7 @@ export class ForkFunctionCatalog {
   }
 
   clear(): void {
-    // WeakMap entries disappear with their function objects. Catalog entries
-    // are the only strong roots owned here and must not outlive replay/abort.
     this.catalogs.clear();
-    this.recipesByFunction =
-      new WeakMap<CallableFunction, ForkFunctionRecipe[]>();
+    this.recipesByFunction = undefined;
   }
 }

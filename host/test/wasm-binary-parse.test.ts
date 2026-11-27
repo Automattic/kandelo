@@ -70,6 +70,7 @@ import {
 } from "../src/generated/abi";
 import {
   describeWasmArtifactPolicyFailures,
+  inspectWasmArtifactPolicy,
   extractHeapBase,
   extractAbiVersion,
   extractThreadSlotDeclaration,
@@ -873,6 +874,11 @@ describe("extractAbiVersion", () => {
       exports: [{ name: "_start", kind: 0, index: 0 }],
     });
     expect(extractAbiVersion(wasm)).toBeNull();
+    expect(inspectWasmArtifactPolicy(wasm, { expectedAbi: 7 })).toMatchObject({
+      failures: [],
+      abiMarkerMissing: true,
+    });
+    expect(inspectWasmArtifactPolicy(wasm).abiMarkerMissing).toBe(false);
   });
 
   it("reads the i32.const after the ctors-call prefix", () => {
@@ -882,6 +888,14 @@ describe("extractAbiVersion", () => {
       exports: [{ name: "__abi_version", kind: 0, index: 0 }],
     });
     expect(extractAbiVersion(wasm)).toBe(7);
+    expect(inspectWasmArtifactPolicy(wasm, { expectedAbi: 7 })).toMatchObject({
+      failures: [],
+      abiMarkerMissing: false,
+    });
+    expect(inspectWasmArtifactPolicy(wasm, { expectedAbi: 8 })).toMatchObject({
+      failures: ["ABI 7, expected 8"],
+      abiMarkerMissing: false,
+    });
   });
 
   it("handles the export wrapper for older ABI values", () => {

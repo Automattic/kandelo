@@ -52,6 +52,22 @@ describe('explicit process address spaces', () => {
     expect(() => access.fillBytes(PAGE - 2, 4, 0)).toThrow(ProcessAddressFault);
     expect([...access.readBytes(PAGE - 2, 4)]).toEqual([7, 7, 7, 7]);
   });
+  it('preserves earlier discontiguous spans when a later page refuses a transfer', () => {
+    const { access, memory, words, pte } = fixture();
+    const bytes = new Uint8Array(memory.buffer);
+    bytes[4 * PAGE + PAGE - 1] = 17;
+    bytes[6 * PAGE] = 21;
+    words[pte + 2] = 8 * PAGE | 1;
+    const start = PAGE - 1;
+    const length = PAGE + 2;
+    expect(() => access.writeBytes(start, new Uint8Array(length))).toThrow('protection');
+    expect(() => access.fillBytes(start, length, 0)).toThrow('protection');
+    expect(bytes[5 * PAGE - 1]).toBe(17);
+    expect(bytes[6 * PAGE]).toBe(21);
+    words[pte + 2] = 8 * PAGE | 3;
+    access.fillBytes(start, length, 42);
+    expect([bytes[5 * PAGE - 1], bytes[6 * PAGE], bytes[8 * PAGE]]).toEqual([42, 42, 42]);
+  });
   it('stages physical aliases before scatter writes', () => {
     const { memory, access } = fixture();
     const physical = new Uint8Array(memory.buffer, 4 * PAGE, PAGE);

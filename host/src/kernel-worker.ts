@@ -3350,15 +3350,15 @@ export class CentralizedKernelWorker {
   #committedGroupExecs = new Map<number, GroupedExecPreparationState>();
   #preparedGroupExecReservations = new Set<GroupedExecPreparationState>();
   async #prepareMemoryGroupProgram(ownerPid: number, target: number, bytes: ArrayBuffer,
-    prepareImageTarget: (path: string) => number, group: number): Promise<boolean> {
+    prepareImageTarget: (path: string) => number, group: number): Promise<Uint8Array<ArrayBuffer> | null> {
     const path = sharedMemoryProgramPath(await memoryGroupSourceDigest(bytes));
     const image = await retryKernelEntryResult(() => prepareImageTarget(path));
-    if (image === -ERRNO.ENOENT) return false;
+    if (image === -ERRNO.ENOENT) return null;
     if (image <= 0) throw new PreparedExecTargetError('Cannot retain SDK program variant', image < 0 ? -image : EIO);
     try {
       // Populate the retained candidate before Rust checks its exact bytes,
       // source digest, ABI, permissions and executable binding.
-      await readPreparedExecTarget(this as PreparedExecKernel, ownerPid, image);
+      const observedImage = await readPreparedExecTarget(this as PreparedExecKernel, ownerPid, image);
       const result = await retryKernelEntryResult(() => {
         let status = -EIO;
         this.#runImmediateKernelEntry('bind descriptor-backed SDK group image', entry => {
@@ -3373,7 +3373,9 @@ export class CentralizedKernelWorker {
         return status;
       });
       if (result < 0) throw new PreparedExecTargetError('Kernel refused SDK group image binding', -result);
-      return true;
+      // Binding verified this observation against the retained executable
+      // and installed the image as the target's snapshot. Commit revalidates it.
+      return observedImage;
     } finally {
       const cancelled = await retryKernelEntryResult(() => this.execTargetCancel(ownerPid, image));
       if (cancelled < 0) throw new PreparedExecTargetError('Cannot release SDK image target', -cancelled);

@@ -11,9 +11,18 @@ impl Storage {
     ) -> Result<(), Errno> {
         let image = self.images.get(&key).ok_or(Errno::ESRCH)?;
         let controls = image.allocation.ok_or(Errno::EIO)?.controls;
+        let mut physical_pages = 0;
         let mut mark = |page: u32| -> Result<(), Errno> {
-            if page == 0 || page as usize >= selected.len() || page >= memory.current_pages()? {
+            if page == 0 || page as usize >= selected.len() {
                 return Err(Errno::EIO);
+            }
+            // A live peer can grow during its atomic scan. Earlier frames stay
+            // in bounds; refresh the extent before accepting any later frame.
+            if page >= physical_pages {
+                physical_pages = memory.current_pages()?;
+                if page >= physical_pages {
+                    return Err(Errno::EIO);
+                }
             }
             selected[page as usize] = true;
             Ok(())

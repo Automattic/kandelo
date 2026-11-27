@@ -125,7 +125,6 @@ impl Storage {
             return Err(Errno::EBUSY);
         }
         let root = image.allocation.ok_or(Errno::EIO)?.controls.address();
-        let mut entries = IoBuffer::try_filled(image.layout.maximum_pages as usize, 0)?;
         let mut copies = IoBuffer::try_filled(self.maximum_pages as usize, u32::MAX)?;
         let mut shared = PreparedMap::<u64, u8>::new();
         let mut shared_owners = IoBuffer::try_with_capacity(image.objects.len())?;
@@ -143,22 +142,24 @@ impl Storage {
             {
                 return Err(Errno::EIO);
             }
+            let mut entries = IoBuffer::try_filled(extent as usize, 0)?;
             let mut private_count = 0;
-            for at in 0..original.layout.maximum_pages {
-                let entry = memory.atomic_load(root + layout::ROOT_HEADER_BYTES + at * 4)?;
-                entries[at as usize] = entry;
-                if entry == 0 {
-                    continue;
-                }
+            // The parent barrier and root growth lock stabilize this image's
+            // entries. Other images may grow the backing, but cannot publish
+            // those new frames in this table while it is locked.
+            let physical_pages = memory.current_pages()?;
+            super::super::physical::visit_nonzero(memory, root + layout::ROOT_HEADER_BYTES,
+                original.layout.maximum_pages, |at, entry| {
                 let physical = entry >> 16;
                 if entry & 0xfffc != 0
                     || physical == 0
-                    || physical >= memory.current_pages()?
+                    || physical >= physical_pages
                     || physical >= self.maximum_pages
                     || at >= extent
                 {
                     return Err(Errno::EIO);
                 }
+                entries[at as usize] = entry;
                 let object = original
                     .objects
                     .keys()
@@ -179,7 +180,8 @@ impl Storage {
                     copies[physical as usize] = private_count;
                     private_count += 1;
                 }
-            }
+                Ok(())
+            })?;
             let layout = ImageLayout {
                 initial_pages: extent,
                 ..original.layout
@@ -243,35 +245,22 @@ impl Storage {
             }
             let initialized = (|| {
                 let image = self.images.get(&child_key).unwrap();
-                for (physical, index) in copies.iter().copied().enumerate() {
-                    if index != u32::MAX {
-                        memory.copy(
-                            image.payload[index as usize] * PAGE,
-                            physical as u32 * PAGE,
-                            PAGE,
-                        )?;
-                    }
-                }
+                copy_private_runs(memory, &copies, &image.payload)?;
                 let child_root = allocation.controls.address();
-                memory.write(child_root + 4, &image.layout.maximum_pages.to_le_bytes())?;
-                memory.write(child_root + 8, &image.layout.scratch_bytes.to_le_bytes())?;
-                memory.atomic_store(child_root + layout::ROOT_RUN, 1)?;
-                for (at, entry) in entries.iter().copied().enumerate().take(extent as usize) {
+                let ptes = entries.iter().copied().map(|entry| {
                     if entry == 0 {
-                        continue;
+                        return 0;
                     }
                     let physical = entry >> 16;
-                    let next = if copies[physical as usize] == u32::MAX {
+                    let index = copies[physical as usize];
+                    let page = if index == u32::MAX {
                         physical
                     } else {
-                        image.payload[copies[physical as usize] as usize]
+                        image.payload[index as usize]
                     };
-                    memory.atomic_store(
-                        child_root + layout::ROOT_HEADER_BYTES + at as u32 * 4,
-                        next * PAGE | (entry & 3),
-                    )?;
-                }
-                memory.atomic_store(child_root, extent)?;
+                    page * PAGE | (entry & 3)
+                });
+                initialize_unpublished_root(memory, child_root, image.layout, ptes)?;
                 initialize_replica(
                     memory,
                     self.replicas.get(&receipt.serial).unwrap(),
@@ -290,6 +279,33 @@ impl Storage {
     }
 }
 
+/// Each pair was admitted under the same parent pause. Coalesce only when
+/// both physical spans are adjacent. Shared entries never enter this list.
+fn copy_private_runs(
+    memory: &mut impl PhysicalMemory,
+    copies: &[u32],
+    destinations: &[u32],
+) -> Result<(), Errno> {
+    let mut pairs = copies
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, index)| index != u32::MAX)
+        .map(|(source, index)| (source as u32, destinations[index as usize]))
+        .peekable();
+    while let Some((source, destination)) = pairs.next() {
+        let mut pages = 1;
+        while pairs
+            .next_if_eq(&(source + pages, destination + pages))
+            .is_some()
+        {
+            pages += 1;
+        }
+        memory.copy(destination * PAGE, source * PAGE, pages * PAGE)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::lifecycle_tests::running;
@@ -300,6 +316,57 @@ mod tests {
             .atomic_load(root + layout::ROOT_HEADER_BYTES + page * 4)
             .unwrap()
     }
+    #[test]
+    fn an_unpublished_root_keeps_its_extent_closed_if_a_table_write_fails() {
+        use crate::memory_group::physical::tests::Memory;
+        let mut memory = Memory::new(16);
+        memory.grow(3).unwrap();
+        let root = PAGE;
+        let image = ImageLayout {
+            initial_pages: 1025,
+            maximum_pages: 2048,
+            scratch_bytes: PAGE,
+        };
+        let table = root + layout::ROOT_HEADER_BYTES;
+        memory.fail_write_after_at = Some(table + 4096);
+        let entries = (0..1025).map(|i| (2 * PAGE) | if i == 1024 { 1 } else { 3 });
+        assert_eq!(
+            initialize_unpublished_root(&mut memory, root, image, entries),
+            Err(Errno::EIO)
+        );
+        assert_eq!(memory.atomic_load(root), Ok(0));
+        assert_eq!(memory.atomic_load(table + 4096), Ok(2 * PAGE | 1));
+    }
+
+    #[test]
+    fn copy_runs_preserve_gaps_and_split_non_adjacent_destinations() {
+        use crate::memory_group::physical::tests::Memory;
+        let mut memory = Memory::new(16);
+        memory.grow(12).unwrap();
+        for page in 1..=5 {
+            memory.fill(page * PAGE, PAGE, page as u8).unwrap();
+        }
+        copy_private_runs(
+            &mut memory,
+            &[u32::MAX, 0, 1, u32::MAX, 2, 3],
+            &[6, 7, 8, 10],
+        )
+        .unwrap();
+        assert_eq!(
+            memory.copy_calls,
+            [
+                (6 * PAGE, PAGE, 2 * PAGE),
+                (8 * PAGE, 4 * PAGE, PAGE),
+                (10 * PAGE, 5 * PAGE, PAGE)
+            ]
+        );
+        let mut byte = [0];
+        for (page, expected) in [(3, 3), (6, 1), (7, 2), (8, 4), (9, 0), (10, 5)] {
+            memory.read(page * PAGE, &mut byte).unwrap();
+            assert_eq!(byte, [expected]);
+        }
+    }
+
     #[test]
     fn child_mailbox_initialization_preserves_parent_and_continuation_bytes() {
         let (mut groups, mut storage, mut memory, parent) = running();
@@ -375,6 +442,25 @@ mod tests {
             storage.initialize_fork_channel(&mut memory, parent, 16),
             Err(Errno::EBUSY)
         );
+    }
+
+    #[test]
+    fn fork_checks_the_sparse_tail_before_allocating_child_pages() {
+        let (mut groups, mut storage, mut memory, parent) = running();
+        let root = storage.descriptor(parent).unwrap();
+        let extent = memory.atomic_load(root.root).unwrap();
+        let maximum = memory.atomic_load(root.root + 4).unwrap();
+        assert!(extent < maximum);
+        let tail = root.root + layout::ROOT_HEADER_BYTES + (maximum - 1) * 4;
+        memory.atomic_store(tail, pte(&memory, root.root, 0)).unwrap();
+        let epoch = storage.begin_image_pause(&mut memory, parent).unwrap();
+        memory.atomic_store(root.replica + layout::REPLICA_ACK, epoch).unwrap();
+        let child = groups.prepare_image(parent.group(), 101, 1).unwrap();
+        let before = storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages;
+        assert_eq!(storage.prepare_private_fork(&mut memory, parent, epoch, child), Err(Errno::EIO));
+        assert_eq!(storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages, before);
+        assert_eq!(storage.descriptor(child), Err(Errno::ESRCH));
+        assert_eq!(memory.atomic_load(root.root + layout::ROOT_GROW_LOCK).unwrap(), 0);
     }
 
     #[test]

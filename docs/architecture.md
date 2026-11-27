@@ -2499,6 +2499,16 @@ policy and fork-instrumentation validation on the module it is given. A
 compile failure is reported to every caller waiting on it and is never
 cached.
 
+Within one artifact-policy check, the import declarations, export names,
+and custom-section names are read once for the checks that use them. The
+program-extension and fork-contract checks share one successful decode of
+the detailed fork artifact facts. The same Worker can use the decoded
+function signatures when routing the admitted main module's imports. It
+also carries the ABI-marker absence from admission to the legacy warning
+after instantiation. ABI mismatches are rejected before instantiation.
+The Worker uses these facts for that invocation's owned bytes.
+See [the fork-child measurements](measurements/2026-11-26-wasm-admission-facts.md).
+
 **Lifetime.** The cache's own index holds each module through a `WeakRef`.
 Strong references belong to the users: each process record's
 `programModule`, the per-process thread module, and launch continuations in

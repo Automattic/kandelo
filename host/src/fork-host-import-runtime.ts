@@ -444,16 +444,17 @@ export class ForkHostImportWorkerRuntime {
   }
 
   /**
-   * Parse the artifact once and route all function imports in a conventional
-   * import object. Dynamic-linker Proxies can instead call routeFunction at
-   * their final property-resolution boundary.
+   * Route every function in a conventional import object. The main Worker
+   * can reuse imports decoded by its policy check of the same bytes.
+   * Dynamic-linker Proxies call routeFunction at property resolution.
    */
   routeImportObject(
     programBytes: ArrayBuffer,
     imports: WebAssembly.Imports,
+    functionImports = readWasmFunctionImports(programBytes),
   ): WebAssembly.Imports {
     const grouped = new Map<string, WasmFunctionImportType[]>();
-    for (const imported of readWasmFunctionImports(programBytes)) {
+    for (const imported of functionImports) {
       const key = importKey(imported.module, imported.name);
       const entries = grouped.get(key) ?? [];
       entries.push(imported);

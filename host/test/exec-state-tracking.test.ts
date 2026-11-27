@@ -2771,6 +2771,32 @@ describe("prepared exec backend ownership", () => {
     return { options, reservation, rollback, committed, prepareBackend, cancel };
   }
 
+  it("compiles the observed bytes of the bound image and keeps final admission and commit", async () => {
+    const events: string[] = [];
+    const { options } = setup(events);
+    // An extra empty custom section distinguishes the replacement from the source.
+    const image = new Uint8Array([...preparedExecFixture, 0, 1, 0]);
+    const execTargetSize = vi.fn(options.kernel.execTargetSize);
+    const execTargetAdmit = vi.fn(options.kernel.execTargetAdmit);
+    const compileModule = vi.fn(options.compileModule);
+    const commitTarget = vi.fn(options.commitTarget);
+    const result = await launchPreparedExecTarget({
+      ...options,
+      kernel: { ...options.kernel, execTargetSize, execTargetAdmit },
+      prepareImage: async () => image,
+      compileModule,
+      commitTarget,
+    }, async request => {
+      expect(new Uint8Array(request.targetBytes)).toEqual(image);
+      return { startAfterCommit: async () => 0, onCommitFailure: () => {} };
+    });
+    expect(result).toBe(0);
+    expect(execTargetSize).toHaveBeenCalledOnce();
+    expect(execTargetAdmit).toHaveBeenCalledTimes(2);
+    expect(compileModule).toHaveBeenCalledExactlyOnceWith(image.buffer);
+    expect(commitTarget).toHaveBeenCalledExactlyOnceWith(31, image.byteLength, expect.any(Function));
+  });
+
   it('joins physical rollback before returning precommit allocation refusal or cancelling the target', async () => {
     const events: string[] = [], h = setup(events);
     let enter!: () => void, finish!: () => void;

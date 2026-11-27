@@ -118,7 +118,7 @@ export async function readPreparedExecTarget(
   kernel: PreparedExecKernel,
   ownerPid: number,
   target: number,
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
   try {
     const size = await retryKernelEntryResult(() => kernel.execTargetSize(ownerPid, target));
     if (size < 0n) {
@@ -140,7 +140,7 @@ export async function readPreparedExecTarget(
       );
     }
 
-    let output: Uint8Array;
+    let output: Uint8Array<ArrayBuffer>;
     try {
       // This is the sole target-sized allocation. Every kernel read is copied
       // into a bounded view of this exact destination.
@@ -277,9 +277,10 @@ export interface PreparedExecLaunchOptions {
   /** Only the shared launcher sees the retained token. Backend preparation
    * returns an opaque context, never commit/target authority to callbacks. */
   readonly prepareBackend?: (target: number, bytes: ArrayBuffer) => PreparedExecBackend | Promise<PreparedExecBackend>;
-  /** Bind a descriptor-backed SDK implementation before final admission. */
+  /** Bind a descriptor-backed SDK implementation before final admission.
+   * Return the exact bytes the kernel bound, or null when no variant exists. */
   readonly prepareImage?: (target: number, bytes: ArrayBuffer,
-    prepareImageTarget: (path: string) => number) => Promise<boolean>;
+    prepareImageTarget: (path: string) => number) => Promise<Uint8Array<ArrayBuffer> | null>;
   /** Initial launch only: Rust independently validates the exact target under
    * its explicitly selected group. This grants no allocation or commit. */
   readonly supportedProgramExtensions?: ReadonlySet<string>;
@@ -313,10 +314,6 @@ function preparedTargetToken(result: number): number {
     "prepared exec target creation failed",
     result < 0 ? errnoFromNegativeResult(result) : EIO,
   );
-}
-
-function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer as ArrayBuffer;
 }
 
 export async function launchPreparedExecTarget(
@@ -379,11 +376,16 @@ export async function launchPreparedExecTarget(
         );
       }
     }
-    if (options.prepareImage && await options.prepareImage(target, exactArrayBuffer(bytes), options.prepareInterpreterTarget)) {
-      bytes = await readPreparedExecTarget(options.kernel, options.ownerPid, target);
-      admission = await admit();
+    if (options.prepareImage) {
+      const boundImage = await options.prepareImage(
+        target, bytes.buffer, options.prepareInterpreterTarget,
+      );
+      if (boundImage) {
+        bytes = boundImage;
+        admission = await admit();
+      }
     }
-    const targetBytes = exactArrayBuffer(bytes);
+    const targetBytes = bytes.buffer;
     if (admission.kind !== "refused" && options.prepareBackend) {
       backend = await retryKernelEntryResult(() => options.prepareBackend!(target, targetBytes));
     }

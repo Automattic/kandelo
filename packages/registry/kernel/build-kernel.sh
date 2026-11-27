@@ -27,7 +27,10 @@ if ! cargo -V | grep -q 'nightly'; then
 fi
 
 # --locked: never rewrite the checkout's Cargo.lock from a package build.
-cargo build --locked --release -p kandelo -Z build-std=core,alloc
+# Executable verification hashes whole images. Optimize that loop for throughput
+# while the rest of the downloadable kernel keeps its size profile.
+cargo --config 'profile.release.package.sha2.opt-level=3' \
+    build --locked --release -p kandelo -Z build-std=core,alloc
 
 if [ ! -f "$OUT" ]; then
     echo "build-kernel: expected output not found: $OUT" >&2

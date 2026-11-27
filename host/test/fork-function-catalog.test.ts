@@ -20,6 +20,20 @@ function catalogModule(): WebAssembly.Module {
 }
 
 describe("ForkFunctionCatalog", () => {
+  it("publishes no recipes from a partially invalid catalog", () => {
+    const source = new WebAssembly.Instance(catalogModule()).exports
+      .__wpk_fork_function_catalog as WebAssembly.Table;
+    const incomplete = new WebAssembly.Table({ element: "anyfunc", initial: 2 });
+    const value = source.get(0);
+    incomplete.set(0, value);
+    const catalog = new ForkFunctionCatalog();
+    expect(() => catalog.register(1, incomplete)).toThrow("non-function entry 1");
+    expect(() => catalog.encode(value)).toThrow("absent from");
+    expect(() => catalog.decode({ moduleActivation: 1, ordinal: 0 })).toThrow("not registered");
+    catalog.register(1, source);
+    expect(catalog.encode(value)).toEqual({ moduleActivation: 1, ordinal: 0 });
+  });
+
   it("reconstructs the same logical function from a fresh module instance", () => {
     const module = catalogModule();
     const parentInstance = new WebAssembly.Instance(module);

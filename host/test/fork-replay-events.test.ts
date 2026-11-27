@@ -286,4 +286,26 @@ describe("ForkResumeTable", () => {
     ]);
     expect(table.slotFor({ activationId: 2, functionOrdinal: 7 })).toBe(slot);
   });
+
+  it("releases both reused and new slots if native insertion rejects a target", () => {
+    const table = new ForkResumeTable();
+    const thunk = wasmFunction();
+    table.registerActivation(1, [{ functionOrdinal: 1, thunk }]);
+    table.unregisterActivation(1);
+    const targets = [1, 2, 3].map(functionOrdinal => ({ functionOrdinal, thunk }));
+
+    expect(() => table.registerActivation(2, [
+      ...targets.slice(0, 2), { functionOrdinal: 3, thunk: () => {} },
+    ])).toThrow(TypeError);
+    expect(() => table.slotFor({ activationId: 2, functionOrdinal: 1 })).toThrow("not registered");
+    const extent = table.table.length;
+    for (let slot = 1; slot < extent; slot++) expect(table.table.get(slot)).toBeNull();
+
+    table.registerActivation(2, targets);
+    expect(table.table.length).toBe(extent);
+    for (const { functionOrdinal } of targets) {
+      const slot = table.slotFor({ activationId: 2, functionOrdinal });
+      expect(table.table.get(slot)).toBe(thunk);
+    }
+  });
 });

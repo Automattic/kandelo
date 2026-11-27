@@ -66,6 +66,28 @@ impl Storage {
         }
         Ok(frame * PAGE + address % PAGE)
     }
+    /// Resolve every target before the first store. Fields on one virtual page
+    /// share a translation during this synchronous kernel operation. A page
+    /// boundary still requires its own private-frame ownership check.
+    fn completion_targets<const N: usize>(
+        &self, memory: &impl PhysicalMemory, admission: GroupAdmission,
+        channel: u32, offsets: [usize; N],
+    ) -> Result<[u32; N], Errno> {
+        let mut targets = [0; N];
+        let mut previous = None;
+        for (target, offset) in targets.iter_mut().zip(offsets) {
+            let address = channel.checked_add(offset as u32).ok_or(Errno::EFAULT)?;
+            if address % 4 != 0 { return Err(Errno::EFAULT); }
+            let page = address / PAGE;
+            let frame = match previous {
+                Some((prior_page, frame)) if prior_page == page => frame,
+                _ => self.completion_address(memory, admission, address)? / PAGE,
+            };
+            previous = Some((page, frame));
+            *target = frame * PAGE + address % PAGE;
+        }
+        Ok(targets)
+    }
     pub(crate) fn completion_word(
         &self,
         memory: &impl PhysicalMemory,
@@ -88,13 +110,8 @@ impl Storage {
         bytes: &[u8; C::SIG_AREA_SIZE],
     ) -> Result<(), Errno> {
         const WORDS: usize = C::SIG_AREA_SIZE / 4;
-        let mut targets = [0u32; WORDS];
-        for (index, target) in targets.iter_mut().enumerate() {
-            let address = channel
-                .checked_add((C::SIG_BASE + index * 4) as u32)
-                .ok_or(Errno::EFAULT)?;
-            *target = self.completion_address(memory, admission, address)?;
-        }
+        let offsets: [usize; WORDS] = core::array::from_fn(|index| C::SIG_BASE + index * 4);
+        let targets = self.completion_targets(memory, admission, channel, offsets)?;
         for (index, address) in targets.into_iter().enumerate() {
             memory.atomic_store(
                 address,
@@ -121,15 +138,8 @@ impl Storage {
             C::SIG_SI_CODE,
             C::STATUS_OFFSET,
         ];
-        let mut targets = [0u32; 7];
-        for (target, offset) in targets.iter_mut().zip(offsets) {
-            let address = channel
-                .checked_add(offset as u32)
-                .ok_or(PublicationFailure::Fault(Errno::EFAULT))?;
-            *target = self
-                .completion_address(memory, admission, address)
-                .map_err(PublicationFailure::Fault)?;
-        }
+        let targets = self.completion_targets(memory, admission, channel, offsets)
+            .map_err(PublicationFailure::Fault)?;
         let bits = value as u64;
         let payload = [
             bits as u32,
@@ -149,5 +159,45 @@ impl Storage {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::lifecycle_tests::running;
+
+    #[test]
+    fn signal_fields_share_a_page_translation_only_within_one_publication() {
+        let (_groups, mut storage, mut memory, admission) = running();
+        let root = storage.descriptor(admission).unwrap().root;
+        memory.watch_loads(root);
+        storage.publish_completion(&mut memory, admission, 0, 41, 0, None).unwrap();
+        // Return and errno share a page. Signal fields occupy the next one,
+        // then the final status word returns to the first page.
+        assert_eq!(memory.watched_loads(), 3);
+
+        let bytes = [0xa5; C::SIG_AREA_SIZE];
+        memory.watch_loads(root);
+        storage.write_completion_signal(&mut memory, admission, 0, &bytes).unwrap();
+        assert_eq!(memory.watched_loads(), 1);
+
+        // Only the first word fits in the two-page image. Failure to
+        // translate the rest must leave that first word untouched.
+        let address = 2 * PAGE - 4;
+        let channel = address - C::SIG_BASE as u32;
+        let record = core::array::from_fn(|i| i as u8);
+        assert_eq!(storage.write_completion_signal(&mut memory, admission, channel, &record),
+            Err(Errno::EFAULT));
+        assert_eq!(storage.completion_word(&memory, admission, address).unwrap(), 0);
+
+        storage.grow_private(&mut memory, admission, 1).unwrap();
+        memory.watch_loads(root);
+        storage.write_completion_signal(&mut memory, admission, channel, &record).unwrap();
+        assert_eq!(memory.watched_loads(), 2);
+        for (index, bytes) in record.chunks_exact(4).enumerate() {
+            let word = storage.completion_word(&memory, admission, address + index as u32 * 4).unwrap();
+            assert_eq!(word, u32::from_le_bytes(bytes.try_into().unwrap()));
+        }
     }
 }

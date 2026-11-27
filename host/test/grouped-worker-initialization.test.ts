@@ -1,3 +1,4 @@
+import { WasmModuleCache } from '../src/wasm-module-cache';
 import { HOST_ADAPTER_VERSION } from '../src/generated/abi';
 import { GROUPED_WORKER_EXTENSIONS } from '../src/program-extensions';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -172,6 +173,40 @@ describe('normal grouped Worker initialization', () => {
     const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), bytes = artifact(patch);
     expect(() => runtime.validate(new WebAssembly.Module(bytes), bytes, 100, 100)).toThrow('Incompatible');
     runtime.detach(); f.close();
+  });
+  it('delivers only a cached program from the exact admitted buffer and consumes it once', async () => {
+    const f = fixture(), cache = new WasmModuleCache();
+    const bytes = artifact(), unrelated = new WebAssembly.Module(artifact({}, true));
+    const compiled = await cache.programModule(bytes);
+    async function prepared(programBytes: ArrayBuffer) {
+      const message = createGroupedWorkerLaunch({ ...f.init, programBytes, programModule: unrelated }, f.launch.envelope, cache);
+      const { grouped } = await receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected), async () => message, () => {});
+      return grouped!;
+    }
+    try {
+      // An older parent can send the ordinary programModule field. The
+      // grouped receiver compiles its paired bytes in that case.
+      const legacy = createGroupedWorkerLaunch({ ...f.init, programBytes: bytes }, f.launch.envelope) as { init: Record<string, unknown> };
+      legacy.init.programModule = unrelated;
+      const received = await receiveGroupedWorkerInitialization(createGroupedWorkerPrepare(f.expected), async () => legacy, () => {});
+      expect(received.grouped!.takePreparedProgram(bytes)).toBeUndefined();
+      received.grouped!.detach();
+      const bound = await prepared(bytes);
+      expect(bound.takePreparedProgram(bytes)).toBe(compiled);
+      expect(bound.takePreparedProgram(bytes)).toBeUndefined();
+      bound.detach();
+      const replacement = bytes.slice(0);
+      const unrecognized = await prepared(replacement);
+      expect(unrecognized.takePreparedProgram(replacement)).toBeUndefined();
+      unrecognized.detach();
+      const swapped = await prepared(bytes);
+      expect(swapped.takePreparedProgram(replacement)).toBeUndefined();
+      swapped.detach();
+      cache.clear();
+      const released = await prepared(bytes);
+      expect(released.takePreparedProgram(bytes)).toBeUndefined();
+      released.detach();
+    } finally { cache.clear(); f.close(); }
   });
   it('refuses a start section before binding controls or executing Wasm', () => {
     const f = fixture(), runtime = new GroupedWorkerRuntime(f.launch.envelope, f.launch.expectation), bytes = artifact({}, true);

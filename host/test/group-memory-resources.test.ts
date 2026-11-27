@@ -90,6 +90,24 @@ describe('kernel-issued foreign memory resources', () => {
     expect(() => resources.readPages(1n, pages, PAGE * 2 - 1, bytes)).toThrow();
   });
 
+  it('observes peer growth and shares signed atomic bits across old and new physical pages', () => {
+    const resources = new GroupMemoryResources();
+    resources.create(1n, 1, 3);
+    const memory = resources.memory(1n);
+    const prefix = new Int32Array(memory.buffer);
+    memory.grow(1);
+    const grown = new Int32Array(memory.buffer);
+    Atomics.store(grown, 0, -2);
+    expect(resources.load(1n, 0)).toBe(0xfffffffe);
+    expect(() => resources.load(1n, 2 * PAGE)).toThrow(expect.objectContaining({ errno: ERRNO.EFAULT }));
+    resources.store(1n, PAGE, 0xffffffff);
+    expect(resources.compareExchange(1n, PAGE, 0xffffffff, 23)).toBe(0xffffffff);
+    expect(Atomics.load(grown, PAGE / 4)).toBe(23);
+    resources.store(1n, 0, 14);
+    expect(Atomics.load(prefix, 0)).toBe(14);
+    expect(resources.notify(1n, PAGE, 1)).toBe(0);
+  });
+
   it('refuses out-of-range copies before any destination changes', () => {
     const resources = new GroupMemoryResources(); resources.create(1n, 1, 1);
     resources.write(1n, 0, Uint8Array.of(42));

@@ -39,12 +39,35 @@ nonzero entry and its index. It has no allocation, writes, scratch memory,
 platform callbacks or lifecycle state. The main kernel retains the existing
 locks and validates every returned entry before publication or reclamation;
 this is not a coherent snapshot of concurrently changing tables. TypeScript
-retains the instance's callable function with the exact backing resource.
+retains the instance's callable function with the exact backing resource. Fork uses
+the same scanner under the parent pause and growth lock. It checks the full
+table, including holes beyond the live extent, before allocating child frames.
+[Grouped fork measurement](measurements/2026-11-26-grouped-fork-scan.md)
 `xtask dump-abi` generates/checks the embedded scanner, including a read-only
-instruction check. This kernel-host interface requires adapter 40 and leaves
-program ABI 56 unchanged.
+instruction check. Host adapter 40 introduced the scanner. The kernel manifest
+requires an exact adapter version. The program ABI remains 56.
+
+Mapping setup and reclamation read the backing size once for each root-locked
+page-table scan. Physical WebAssembly memory can only grow. When checking a
+live peer, Rust reads the size again if it sees a frame beyond the last known
+extent. A frame outside the current backing still fails validation.
+The [mapping scan measurements](measurements/2026-11-26-group-mapping-extent.md)
+count these queries during a real terminal launch.
+
+For a host byte transfer, the Rust access helper checks each virtual page
+while finding contiguous physical spans. The host finishes collecting those
+spans before it reads or writes any bytes. A range-only permission check asks
+Rust to validate the range directly. Both operations check the live image
+binding. [Grouped transfer measurements](measurements/2026-11-26-grouped-transfer-scan.md)
 
 Image-mutating mappings, fork and pthread-control reservations enter a kernel-owned operation queue. Rust issues exact task-bound tokens and permits only the earliest live operation on an image to begin its pause. Cancelling an operation from the middle cannot let its successor bypass an earlier operation. Outstanding operations prevent image reclamation; an owning task's scratch cannot retire while its operation remains live. Host promises wake continuations, which must recheck Rust readiness before proceeding.
+
+Rust combines adjacent frames when clearing a pool selection. Fork copies a
+run only when both the parent and child physical pages are consecutive.
+Private aliases refer to the same child copy, and shared mappings still
+refer to the original shared frames. Root launch, exec and fork use the
+same bounded writes for an unpublished page table and publish its extent
+after the table is complete.
 
 Root preparation, mapping, fork, exec replacement and pthread preparation use kernel-owned continuations. Rust computes grouped layouts from the SDK artifact and retains exact admissions through allocator contention and cancellation. Normal executable commits retain the parsed layout metadata; direct byte-supplied roots read their attached executable once before admission. The host receives copied layouts and transport descriptors.
 
@@ -61,6 +84,12 @@ A reaped process-group leader retained in `Limbo` carries identity, not live exe
 
 Grouped completion authority also belongs to the actual `ProcessTable`. It retains the exact task/channel/request, full-width result, prepared signal and native observation identity. Rust consumes flags and grants dispatch, publication, stop holds, interruption, discard and the terminal unwind selected by actual thread exit, process exit or exec commit. Native Promise settlement grants no publication or reuse permission. A completion holds physical controls independently of native pins until Rust accepts its final acknowledgement; physical release prunes idle metadata without a later host callback. Ordinary signal dequeue and direct host transfer publication cannot bypass this owner for grouped tasks.
 
+Rust preflights all destination words before writing a signal record or publishing a result. Consecutive words on the same virtual page reuse the private-frame translation for that synchronous operation. Publication validates the entire locked SDK wait queue, records the first matching waiter, then writes the result and wakes that waiter. An unlinked node stays allocated until its waiting task returns.
+
+The kernel Worker holds one physical atomic-word view per group backing. The view covers a prefix of the shared memory. When Rust requests a word beyond it, the adapter checks the current extent and refreshes the view. Per-process translation and exact native-wait pins still follow the current mapping and the Rust-issued receipt. See the [grouped completion and desktop measurements](measurements/2026-11-26-grouped-syscall-desktop-latency.md).
+
+For a grouped process launch, the kernel Worker can send the compiled WebAssembly module it already holds for the exact, privately owned executable bytes. The process Worker accepts this optional value through the prepared launch channel and still validates the artifact, including its imports, group layout and absence of a start section, before instantiating it. A cache miss compiles the bytes in the new Worker. Pthreads continue to prepare their thread-entry variant. [Firefox launch measurements](measurements/2026-11-26-grouped-process-module.md)
+
 The actual Rust root, fork, exec and pthread owners select execution transactions and cancellation. Rust also selects Worker containment before reference disposal and orders pthread retirement against whole-image retirement. An accepted Node native join or sealed constructor absence already satisfies containment; a browser terminal fence still requires the requested platform termination. References and physical frames remain charged until their distinct acknowledgements and native waits settle.
 
 Group shutdown seals admission and selects current members in the actual Rust `ProcessTable`, using normal signal delivery. Native creator draining starts after that stop request, so a pending or stopped launch cannot hold the shutdown open indefinitely. A constructed root awaiting readiness or backing delivery receives exact scalar-only cancellation and must return a real terminal fence. An already completed native retirement can satisfy its late acknowledgement. TypeScript retains genuine platform objects, native observations and pending platform operations. Existing IPC, fork serialization, dynamic loading, graphics presentation and build/lazy-loading helpers remain in their normal layers unless this feature placed group policy there. Moving ordinary algorithms to Rust is not a requirement of this feature.
@@ -68,6 +97,11 @@ Group shutdown seals admission and selects current members in the actual Rust `P
 Host address translation and ordered queue notification execute shared stateless Rust SDK primitives against the admitted foreign memory; that extraction owns no pages, membership or lifecycle. Its bounded publication callback reports failure as data so Rust releases its own queue lock. The normal generator rejects start/data initialization, memory growth and mutable instance writes. Platform objects and native completion observations remain host responsibilities.
 
 Grouped mappings must enter the Rust physical/PTE transaction owner. The ordinary direct/synthetic mmap, munmap, mremap and mprotect entries refuse grouped images; direct brk leaves the break unchanged. SysV attachment to a grouped image is unsupported and is refused by the kernel before attachment accounting, rather than entering the legacy synthetic-mmap and byte-mirror path. Ordinary processes retain that path. This refusal does not add SysV sharing to the grouped preview.
+
+Mapping publication and rollback verify the whole live page table against
+the transaction's expected snapshot while the image is paused and the
+growth lock is held. They write only blocks that differ between the
+transaction's before and after tables.
 
 The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. SDK private growth sends only its unsigned page delta through the admitted syscall channel. The actual kernel storage owner allocates and zeroes frames through its existing pool, retains image custody before publishing page-table entries, and publishes the new virtual extent last. Contention retries through the existing completion owner; stopped tasks cannot grow, and uncertain publication contains the image without dropping its charges. No SDK or TypeScript allocator chooses frames. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
 Inspection and UI consume that state; they do not invent group membership or

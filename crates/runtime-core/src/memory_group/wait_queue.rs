@@ -23,7 +23,16 @@ fn load(memory: &(impl PhysicalMemory + ?Sized), address: u32) -> Result<u32, Er
     memory.atomic_load(address)
 }
 
-fn validate(memory: &(impl PhysicalMemory + ?Sized)) -> Result<(), Errno> {
+struct WaitLink {
+    previous: u32,
+    node: u32,
+    next: u32,
+}
+
+/// With the queue locked, validate the whole chain before any publication.
+/// If requested, retain the first matching link from that same traversal.
+fn validate(memory: &(impl PhysicalMemory + ?Sized), target: Option<u32>) -> Result<Option<WaitLink>, Errno> {
+    let mut selected = None;
     let mut at = load(memory, Q + 4)?;
     let mut previous = 0;
     let mut count = 0;
@@ -31,15 +40,21 @@ fn validate(memory: &(impl PhysicalMemory + ?Sized)) -> Result<(), Errno> {
         if !node(at) || count >= CAPACITY || load(memory, at)? != L::WAIT_WAITING {
             return Err(Errno::EIO);
         }
+        let next = load(memory, at + 4)?;
+        if let Some(address) = target {
+            if selected.is_none() && load(memory, at + 8)? == address {
+                selected = Some(WaitLink { previous, node: at, next });
+            }
+        }
         count += 1;
         previous = at;
-        at = load(memory, at + 4)?;
+        at = next;
     }
     let allocated = load(memory, Q + 16)?;
     if load(memory, Q + 8)? != previous || allocated > CAPACITY || allocated < count {
         return Err(Errno::EIO);
     }
-    Ok(())
+    Ok(selected)
 }
 
 fn locked<T, M: PhysicalMemory + ?Sized>(
@@ -49,7 +64,7 @@ fn locked<T, M: PhysicalMemory + ?Sized>(
     if memory.atomic_compare_exchange(Q, 0, 1)? != 0 {
         return Err(Errno::EAGAIN);
     }
-    let result = validate(memory).and_then(|()| operation(memory));
+    let result = validate(memory, None).and_then(|_| operation(memory));
     memory.atomic_store(Q, 0)?;
     memory.atomic_notify(Q, 1)?;
     result
@@ -200,21 +215,15 @@ pub(crate) fn publish<M: PhysicalMemory + ?Sized>(memory: &mut M, address: u32,
     use super::storage::completion::PublicationFailure as F;
     if memory.atomic_compare_exchange(Q, 0, 1).map_err(F::Fault)? != 0 { return Err(F::Busy); }
     let result = (|| {
-        validate(memory)?;
+        let selected = validate(memory, Some(address))?;
+        // The completion writes only to the image's checked private pages.
+        // Page zero still holds the same locked queue after that publication.
         publication(memory)?;
-        let mut previous = 0;
-        let mut at = memory.atomic_load(Q + 4)?;
-        let mut selected = false;
-        while at != 0 {
-            let next = memory.atomic_load(at + 4)?;
-            if !selected && memory.atomic_load(at + 8)? == address {
-                memory.atomic_store(if previous == 0 { Q + 4 } else { previous + 4 }, next)?;
-                if memory.atomic_load(Q + 8)? == at { memory.atomic_store(Q + 8, previous)?; }
-                memory.atomic_store(at, L::WAIT_NOTIFIED)?;
-                memory.atomic_notify(at, 1)?;
-                selected = true;
-            } else { previous = at; }
-            at = next;
+        if let Some(WaitLink { previous, node, next }) = selected {
+            memory.atomic_store(if previous == 0 { Q + 4 } else { previous + 4 }, next)?;
+            if next == 0 { memory.atomic_store(Q + 8, previous)?; }
+            memory.atomic_store(node, L::WAIT_NOTIFIED)?;
+            memory.atomic_notify(node, 1)?;
         }
         Ok(())
     })();
@@ -289,6 +298,32 @@ mod tests {
         }
         memory
     }
+    #[test]
+    fn publication_selects_the_first_waiter_while_validating_the_whole_chain() {
+        let mut memory = queued();
+        let second = FIRST + STEP;
+        memory.atomic_store(FIRST + 4, second).unwrap();
+        memory.atomic_store(FIRST + 8, ROOT).unwrap();
+        memory.atomic_store(second, L::WAIT_WAITING).unwrap();
+        memory.atomic_store(second + 8, ROOT).unwrap();
+        memory.atomic_store(Q + 8, second).unwrap();
+        memory.atomic_store(Q + 16, 2).unwrap();
+        memory.watch_loads(FIRST + 4);
+        publish(&mut memory, ROOT, |mem| mem.atomic_store(ROOT, 123)).unwrap();
+        assert_eq!(memory.watched_loads(), 1);
+        assert_eq!(memory.atomic_load(Q + 4).unwrap(), second);
+        assert_eq!(memory.atomic_load(Q + 8).unwrap(), second);
+        assert_eq!(memory.atomic_load(FIRST).unwrap(), L::WAIT_NOTIFIED);
+        assert_eq!(memory.atomic_load(second).unwrap(), L::WAIT_WAITING);
+
+        // A malformed tail after a matching waiter must prevent publication.
+        memory.atomic_store(second + 4, second + 1).unwrap();
+        assert!(publish(&mut memory, ROOT, |mem| mem.atomic_store(ROOT, 456)).is_err());
+        assert_eq!(memory.atomic_load(ROOT).unwrap(), 123);
+        assert_eq!(memory.atomic_load(second).unwrap(), L::WAIT_WAITING);
+        assert_eq!(memory.atomic_load(Q).unwrap(), 0);
+    }
+
     #[test]
     fn pause_acknowledges_a_parked_replica_without_retiring_its_target() {
         let mut memory = queued();
