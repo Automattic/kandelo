@@ -628,6 +628,9 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
     intercepted=constructor&&NativeTemplateHasInterceptors(frame,constructor);
   }
   JS::RealmOptions options;options.creationOptions().setSharedMemoryAndAtomicsEnabled(true);
+  options.creationOptions().setImmutableArrayBuffersEnabled(bridge::ImmutableArrayBuffersEnabled());
+  // Node 26's V8 configuration uses JSTypedArray::kMaxSizeInHeap (64 bytes).
+  options.creationOptions().setMaxLazyTypedArrayBytes(64);
   JS::RootedObject global(frame.cx,JS_NewGlobalObject(frame.cx,
     intercepted?&nativeInterceptedGlobalClass:&nativeNodeGlobalClass,
     nullptr,JS::DontFireOnNewGlobalHook,options));
