@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   attachLinuxMediumRawKeyboard,
   createPcmAudioScheduler,
@@ -141,6 +141,21 @@ describe("framebuffer browser controls", () => {
       { dx: 127, dy: -128, buttons: 0b101 },
       { dx: 46, dy: -4, buttons: 0b101 },
     ]);
+  });
+
+  it("sends the exact packets of a large move together and keeps single packets on their path", () => {
+    const sink = { injectMouseEvent: vi.fn(), injectMouseEventBatch: vi.fn() };
+    injectChunkedMouseMotion(sink, 300, -260, 0b1101);
+    expect(sink.injectMouseEventBatch).toHaveBeenCalledExactlyOnceWith([
+      { dx: 127, dy: -128, buttons: 0b101 },
+      { dx: 127, dy: -128, buttons: 0b101 },
+      { dx: 46, dy: -4, buttons: 0b101 },
+    ]);
+    expect(sink.injectMouseEvent).not.toHaveBeenCalled();
+    injectChunkedMouseMotion(sink, 2, -1, 0b101);
+    injectChunkedMouseMotion(sink, 0, 0, 0b101);
+    expect(sink.injectMouseEvent).toHaveBeenCalledExactlyOnceWith(2, -1, 0b101);
+    expect(sink.injectMouseEventBatch).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the retired PCM scheduler export explicitly unavailable", async () => {

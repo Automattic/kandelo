@@ -1,5 +1,5 @@
 import { connectorModeSize } from "../../../host/src/dri/kms-registry";
-import { absolutePointerValue, type InputEvent } from "../../../host/src/input/input-source.js";
+import { absolutePointerValue, type InputEvent, type MouseInputPacket } from "../../../host/src/input/input-source.js";
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
@@ -313,6 +313,7 @@ export interface KernelLike {
    * bit0=left, bit1=right, bit2=middle.
    */
   injectMouseEvent?(dx: number, dy: number, buttons: number): void;
+  injectMouseEventBatch?(packets: readonly MouseInputPacket[]): void;
   /**
    * Inject one evdev record into `/dev/input/event{0,1}`. `device` is
    * 0 for the keyboard, 1 for the pointer; the remaining fields mirror
@@ -760,6 +761,8 @@ export interface KmsDisplayHandle {
    *  positive Y up). `buttons` uses PS/2 bits: bit0=left, bit1=right,
    *  bit2=middle. No-op when the wrapped kernel lacks mouse injection. */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /** Send every legacy packet of one relative motion in the original order. */
+  sendMouseEventBatch?(packets: readonly MouseInputPacket[]): void;
   /** Inject an absolute-position pointer update into evdev
    *  `/dev/input/event1`. `x`/`y` are framebuffer pixels (origin
    *  top-left, matching the canvas drawing buffer); `buttons` uses the
@@ -3553,6 +3556,10 @@ export class LiveKernelHost implements KernelHost {
       stats,
       sendMouseEvent: (dx, dy, buttons) => {
         kernel.injectMouseEvent?.(dx, dy, buttons);
+      },
+      sendMouseEventBatch: packets => {
+        if (kernel.injectMouseEventBatch) kernel.injectMouseEventBatch(packets);
+        else for (const { dx, dy, buttons } of packets) kernel.injectMouseEvent?.(dx, dy, buttons);
       },
       sendPointerAbs: (x, y, buttons) => {
         const inject = kernel.injectInputEvent;

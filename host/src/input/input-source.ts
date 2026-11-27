@@ -21,6 +21,13 @@ export interface InputEvent {
   value: number;
 }
 
+/** One relative packet for the legacy /dev/input/mice device. */
+export interface MouseInputPacket {
+  dx: number;
+  dy: number;
+  buttons: number;
+}
+
 export interface InputSource {
   /** Begin capturing input. `dispatch` is called once per evdev record.
    * Convention: the source emits the type-specific record (EV_KEY,

@@ -191,8 +191,9 @@ describe("kernel telemetry entry authority", () => {
     expect(vblank).toHaveBeenCalledOnce();
   });
 
-  it("registers mouse wake scheduling only in the detached protocol phase", () => {
+  it.each([false, true])("keeps ordered mouse packets and schedules one detached wake (batch=%s)", (batch) => {
     const gate = new KernelEntryGate();
+    const injectMouse = vi.fn(() => 0);
     const schedulingPhaseErrors: unknown[] = [];
     const originalDescriptor = Object.getOwnPropertyDescriptor(
       globalThis,
@@ -219,7 +220,7 @@ describe("kernel telemetry entry authority", () => {
         gate,
         exportNames: ["kernel_inject_mouse_event"],
         implementations: {
-          kernel_inject_mouse_event: vi.fn(() => 0),
+          kernel_inject_mouse_event: injectMouse,
         },
       });
     } finally {
@@ -238,7 +239,16 @@ describe("kernel telemetry entry authority", () => {
     };
     state.pendingPipeReaders.set(1, new Set());
 
-    harness.worker.injectMouseEvent(1, 2, 3);
+    if (batch) {
+      harness.worker.injectMouseEventBatch([
+        { dx: 127, dy: -128, buttons: 3 },
+        { dx: 1, dy: -2, buttons: 3 },
+      ]);
+      expect(injectMouse.mock.calls).toEqual([[127, -128, 3], [1, -2, 3]]);
+    } else {
+      harness.worker.injectMouseEvent(1, 2, 3);
+      expect(injectMouse.mock.calls).toEqual([[1, 2, 3]]);
+    }
 
     expect(schedulingPhaseErrors).toHaveLength(1);
     expect(schedulingPhaseErrors[0]).toBeInstanceOf(

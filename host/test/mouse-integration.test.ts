@@ -30,6 +30,7 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
+import { createWorkerQuiescence } from "../src/worker-quiescence";
 import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -65,7 +66,7 @@ function expectedByte0(dx: number, dy: number, buttons: number): number {
 }
 
 describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
-  it("/dev/input/mice delivers injected PS/2 packets in order", async () => {
+  it.each(["individual", "batched"])("/dev/input/mice delivers %s PS/2 packets in order", async (delivery) => {
     const programBytes = loadProgramWasm(mousetestBinary);
     const kernelWasmBytes = loadProgramWasm(resolveBinary("kernel.wasm"));
     const ptrWidth = detectPtrWidth(programBytes);
@@ -82,6 +83,7 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
     let pid = 0;
 
     let stdout = "";
+    let stderr = "";
     let resolveReady: () => void;
     let rejectReady: (reason: Error) => void;
     const readyPromise = new Promise<void>((resolve, reject) => {
@@ -105,16 +107,7 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       io,
       {
         onExit: (exitPid, exitStatus) => {
-          if (exitPid === pid) {
-            referenceOwners.release(exitPid);
-            kernel.unregisterProcess(exitPid);
-            const w = workers.get(exitPid);
-            if (w) {
-              w.terminate().catch(() => {});
-              workers.delete(exitPid);
-            }
-            resolveExit(exitStatus);
-          }
+          if (exitPid === pid) resolveExit(exitStatus);
         },
       },
     );
@@ -128,7 +121,7 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
           resolveReady();
         }
       },
-      onStderr: () => {},
+      onStderr: (data) => { stderr += new TextDecoder().decode(data); },
     });
 
     await kernel.init(kernelWasmBytes);
@@ -161,11 +154,16 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
       rejectReady(error);
       rejectExit(error);
     };
+    const quiescence = createWorkerQuiescence();
     mainWorker.on("error", rejectWorker);
     mainWorker.on("message", (raw: unknown) => {
       const message = raw as WorkerToHostMessage;
       if (message.type === "error" && message.pid === pid) {
         rejectWorker(new Error(message.message));
+      }
+      if (message.type === "memory_quiescent" && message.pid === pid
+          && message.tid === undefined && message.memoryGroup === undefined) {
+        quiescence.settle();
       }
     });
     workers.set(pid, mainWorker);
@@ -189,17 +187,19 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
         { dx: -2, dy: -7, buttons: 0x00 },
         { dx: 0, dy: 0, buttons: 0x01 },
       ];
-      for (const ev of events) {
-        kernel.injectMouseEvent(ev.dx, ev.dy, ev.buttons);
-      }
+      if (delivery === "batched") kernel.injectMouseEventBatch(events);
+      else for (const ev of events) kernel.injectMouseEvent(ev.dx, ev.dy, ev.buttons);
 
-      // Process exits after reading 3 packets.
+      // Observe the kernel exit and the Worker fence before releasing the
+      // direct fixture's process registration outside the exit callback.
       const exitCode = await Promise.race([
-        exitPromise,
+        Promise.all([exitPromise, quiescence.promise]).then(([status]) => status),
         new Promise<number>((_, reject) =>
           setTimeout(
-            () =>
-              reject(new Error("mousetest didn't exit after 3 packets in 10s")),
+            () => reject(new Error(
+              "mousetest did not exit and retire after three packets within 10s. " +
+              `stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`,
+            )),
             10_000,
           ),
         ),
@@ -221,6 +221,7 @@ describe.skipIf(!existsSync(mousetestBinary))("mouse integration", () => {
     } finally {
       for (const [, w] of workers) await w.terminate().catch(() => {});
       referenceOwners.close();
+      kernel.unregisterProcess(pid);
       void readyPromise.catch(() => {});
       void exitPromise.catch(() => {});
     }

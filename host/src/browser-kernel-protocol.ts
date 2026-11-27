@@ -1,3 +1,4 @@
+import type { MouseInputPacket } from "./input/input-source.js";
 import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
@@ -336,19 +337,10 @@ export interface RegisterPtyOutputMessage {
   pid: number;
 }
 
-/**
- * Main-thread → kernel-worker mouse injection. The main thread captures
- * canvas mouse events and forwards them here; the worker calls
- * `CentralizedKernelWorker.injectMouseEvent` which appends a 3-byte PS/2
- * frame to the kernel queue and wakes any blocked reader of
- * `/dev/input/mice`.
- */
-export interface MouseInjectMessage {
-  type: "mouse_inject";
-  dx: number;
-  dy: number;
-  buttons: number;
-}
+/** Single packet or ordered motion packets for `/dev/input/mice`. */
+export type MouseInjectMessage = { type: "mouse_inject" } & (
+  MouseInputPacket | { packets: readonly MouseInputPacket[] }
+);
 
 /**
  * Main-thread → kernel-worker evdev injection. The main thread's

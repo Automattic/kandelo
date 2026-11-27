@@ -43,7 +43,7 @@ import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
 } from "./networking/browser-cors-proxy";
-import type { InputEvent, InputSource } from "./input/input-source";
+import type { InputEvent, InputSource, MouseInputPacket } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
 
 export type { HttpRequest, HttpResponse };
@@ -1478,6 +1478,11 @@ export class BrowserKernel {
    */
   injectMouseEvent(dx: number, dy: number, buttons: number): void {
     this.sendToKernel({ type: "mouse_inject", dx, dy, buttons });
+  }
+
+  injectMouseEventBatch(packets: readonly MouseInputPacket[]): void {
+    if (packets.length === 0) return;
+    this.sendToKernel({ type: "mouse_inject", packets });
   }
 
   /**
