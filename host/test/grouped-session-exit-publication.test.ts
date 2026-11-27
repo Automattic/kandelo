@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import { WASM_INDIRECT_CALL_TRAPS } from '../src/generated/abi';
 import { GroupedSessionRuntime } from '../src/grouped-session-runtime';
 import { KernelReentrantEntryError } from '../src/kernel-entry-gate';
 import type { CentralizedKernelWorker } from '../src/kernel-worker';
@@ -27,9 +28,7 @@ it('waits for a deferred root reap when destroy starts after execution retiremen
     {maximumPages: 8, maximumProcesses: 1, maximumTasks: 1}, false, onExit, report);
   // An already-stopped fixture owner: this test checks final publication
   // ownership, not Worker, memory or kernel execution semantics.
-  const process: any = {pid: 123, handle: {}, owner: {
-    contain: async () => {}, generation: {id: 7},
-  }};
+  const process: any = {owner: {pid: 123, handle: {}, generation: {id: 7}}};
   (session as any).processes.set(123, process);
   expect(session.exit(123, 23)).toBe(true);
   await firstAttempt;
@@ -48,30 +47,36 @@ it('waits for a deferred root reap when destroy starts after execution retiremen
   expect(report).not.toHaveBeenCalled();
 });
 
-it('releases settled pthread retirement promises during sustained session churn', async () => {
-  const kernel = {
-    waitForMemoryGroupReplicaQuiescence: async () => {},
-    retireMemoryGroupThread: async () => 0,
-  } as unknown as CentralizedKernelWorker;
+it('routes natural pthread exit to exact retirement after its stop fence during sustained churn', async () => {
+  const waitForMemoryGroupReplicaQuiescence = vi.fn();
+  const retireMemoryGroupThread = vi.fn();
+  const kernel = { waitForMemoryGroupReplicaQuiescence, retireMemoryGroupThread } as unknown as CentralizedKernelWorker;
   const report = vi.fn();
   const session = new GroupedSessionRuntime(kernel, {} as WorkerAdapter,
     {maximumPages: 8}, false, vi.fn(), report);
   const state = session as any;
-  state.processes.set(123, {pid: 123});
+  state.processes.set(123, {owner: {pid: 123}});
   for (let tid = 200; tid < 264; tid++) {
-    state.threads.set(tid, {pid: 123, tid, handle: {}, referencesDisposed: false});
+    const stop = Promise.withResolvers<void>();
+    const retirement = Promise.withResolvers<number>();
+    const thread = {pid: 123, tid, handle: {}, referencesDisposed: false};
+    waitForMemoryGroupReplicaQuiescence.mockReturnValueOnce(stop.promise);
+    retireMemoryGroupThread.mockReturnValueOnce(retirement.promise);
+    state.threads.set(tid, thread);
     expect(session.threadExit(123, tid)).toBe(true);
-    const pending = state.threadRetirements.get(tid);
-    expect(pending).toBeInstanceOf(Promise);
-    expect(session.threadExit(123, tid)).toBe(true);
-    await pending;
-    expect(state.threads.size).toBe(0);
-    expect(state.threadRetirements.size).toBe(0);
+    expect(waitForMemoryGroupReplicaQuiescence).toHaveBeenLastCalledWith(thread.handle);
+    expect(retireMemoryGroupThread).toHaveBeenCalledTimes(tid - 200);
+    stop.resolve();
+    await Promise.resolve();
+    expect(retireMemoryGroupThread).toHaveBeenLastCalledWith(thread.handle);
+    expect(state.threads.get(tid)).toBe(thread);
+    retirement.resolve(0);
+    await vi.waitFor(() => expect(state.threads.size).toBe(0));
   }
   expect(report).not.toHaveBeenCalled();
 });
 
-it('releases failed retirement bookkeeping while preserving the thread for containment', async () => {
+it('reports a failed retirement while preserving the exact thread for containment', async () => {
   const kernel = {
     waitForMemoryGroupReplicaQuiescence: async () => {},
     retireMemoryGroupThread: async () => -5,
@@ -81,10 +86,30 @@ it('releases failed retirement bookkeeping while preserving the thread for conta
   const session = new GroupedSessionRuntime(kernel, {} as WorkerAdapter,
     {maximumPages: 8}, false, vi.fn(), report);
   const state = session as any, thread = {pid: 123, tid: 200, handle: {}, referencesDisposed: false};
-  state.processes.set(123, {pid: 123}); state.threads.set(200, thread);
+  state.processes.set(123, {owner: {pid: 123}}); state.threads.set(200, thread);
   expect(session.threadExit(123, 200)).toBe(true);
-  await expect(state.threadRetirements.get(200)).rejects.toThrow('errno 5');
-  expect(state.threadRetirements.size).toBe(0);
+  await vi.waitFor(() => expect(report).toHaveBeenCalledExactlyOnceWith(123, expect.objectContaining({ message: 'retire grouped pthread: errno 5' })));
   expect(state.threads.get(200)).toBe(thread);
-  expect(report).toHaveBeenCalledOnce();
+});
+
+it('reports an indirect-call trap only for the process that owns the Worker', () => {
+  const recordMemoryGroupCrash = vi.fn(() => 0);
+  const kernel = {recordMemoryGroupCrash} as unknown as CentralizedKernelWorker;
+  const report = vi.fn();
+  const session = new GroupedSessionRuntime(kernel, {} as WorkerAdapter,
+    {maximumPages: 8}, false, vi.fn(), report);
+  const handle = {};
+  const process = {owner: {pid: 123, handle}};
+  const trap = WASM_INDIRECT_CALL_TRAPS.signatureMismatch;
+  const message = {type: 'error' as const, pid: 123, message: 'indirect call type mismatch', wasmIndirectCallTrap: trap};
+  const state = session as unknown as {
+    processes: Map<number, typeof process>;
+    message(owner: typeof process, error: typeof message): void;
+  };
+  state.processes.set(123, process);
+  state.message(process, {...message, pid: 124});
+  expect(recordMemoryGroupCrash).not.toHaveBeenCalled();
+  state.message(process, message);
+  expect(recordMemoryGroupCrash).toHaveBeenCalledExactlyOnceWith(handle, 11, trap);
+  expect(report).toHaveBeenCalledExactlyOnceWith(123, expect.any(Error));
 });

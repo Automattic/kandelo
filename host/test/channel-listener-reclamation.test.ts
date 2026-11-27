@@ -150,10 +150,10 @@ function groupedChannels() {
   const a = groupMemoryObservationFixture({ receipt: task }, pending);
   const b = groupMemoryObservationFixture({ receipt: { ...task, serial: 2n, generation: 1n }, memory: a.memory,
     rootPage: 2, replicaPage: 5, payloadPage: 16 }, pending);
-  const oldLaunch = a.launch, oldSource = a.source, newSource = b.source;
+  const oldSource = a.source, newSource = b.source;
   const old = { ...createChannel(100, a.memory, offset), source: oldSource };
   const store = { pending, memory: a.memory, close: () => { a.close(); b.close(); } };
-  return { store, a, b, old, oldLaunch, oldSource, newSource };
+  return { store, a, b, old, oldSource, newSource };
 }
 
 describe("retired syscall-channel listener reclamation", () => {
@@ -188,12 +188,12 @@ describe("retired syscall-channel listener reclamation", () => {
   });
 
   it("wakes the captured physical word after a virtual PTE changes", async () => {
-    const { store, a, old, oldLaunch } = groupedChannels();
+    const { store, a, old } = groupedChannels();
     const observation = a.transport.prepareChannelObservation(a.handle, a.launch.expectation.receipt, old.channelOffset);
     const waiting = observation.arm(0);
     expect(waiting.async).toBe(true);
     if (!waiting.async) throw Error("native observation was not armed");
-    const ptes = new Uint32Array(old.memory.buffer, oldLaunch.expectation.root + 64, 16);
+    const ptes = new Uint32Array(old.memory.buffer, a.launch.expectation.root + 64, 16);
     let control: { async: true; value: Promise<string> } | undefined;
     let fresh: Int32Array | undefined;
     try {
@@ -242,9 +242,9 @@ describe("retired syscall-channel listener reclamation", () => {
   });
 
   it("requires kernel image custody and releases unarmed or not-equal observations exactly once", () => {
-    const { store, a, oldLaunch } = groupedChannels();
+    const { store, a } = groupedChannels();
     try {
-      expect(() => prepareProcessNativeObservationI32(oldLaunch.source, 0)).toThrow("metadata");
+      expect(() => prepareProcessNativeObservationI32(a.source, 0)).toThrow("metadata");
       const unarmed = a.transport.prepareChannelObservation(a.handle, a.launch.expectation.receipt, 0);
       expect(store.pending.size).toBe(1);
       unarmed.cancelUnarmed(); expect(store.pending.size).toBe(0);

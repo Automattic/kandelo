@@ -99,6 +99,13 @@ export class DeferredWorkerHandle implements WorkerHandle {
     this.pendingMessages.push({ message, transfer });
   }
 
+  /** Deliver to a running backing Worker without queuing or dropping a message. */
+  postMessageToStartedWorker(message: unknown): boolean {
+    if (!this.worker || this.terminated) return false;
+    this.worker.postMessage(message);
+    return true;
+  }
+
   on(event: "message", handler: (message: unknown) => void): void;
   on(event: "error", handler: (error: Error) => void): void;
   on(event: "exit", handler: (code: number) => void): void;

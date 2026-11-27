@@ -6,7 +6,9 @@ experimental: repeated live desktop replacement can time out during Worker
 retirement, leaving the computer locked because storage quiescence is unconfirmed.
 Native Safari and iOS remain untested. The
 [scanner and landing receipt](measurements/2026-11-25-shared-memory-scanner.md)
-records current validation, measurements and limits; the earlier
+records validation, measurements and limits for the initial feature. The
+[Worker startup and retirement receipt](measurements/2026-11-25-grouped-worker-startup.md)
+records the follow-up and its comparison with develop. The earlier
 [WebKit qualification](measurements/2026-11-25-shared-memory-webkit-qualification.md)
 retains the successful runs preceding the reproduced failure.
 The [historical evidence index](measurements/shared-memory-evidence.md) preserves
@@ -32,6 +34,14 @@ and defaults are outside this feature's integration scope.
 
 The Rust kernel owns group identity, membership, budgets and backing leases, physical allocation and page custody, image roots, per-task scratch, shared objects, mapping publication, barriers and retirement. The owner is part of `ProcessTable`; it is not a separate helper module managed by the host. The host retains the corresponding `WebAssembly.Memory`, Worker and native Promise instances.
 
+| Owner | Lifetime and changes |
+| --- | --- |
+| `ProcessTable` process and thread records | POSIX identity, guest wait state, descriptors, logical mappings and thread entry. Fork and clone add identities, exec replaces the image, and exit and reap advance guest state. |
+| `MemoryGroups` group, image and task records | Group budgets and exact execution admissions. Preparation charges them. Publication, cancellation, stop and retirement advance or release those charges. An image may outlive its guest process record. |
+| Physical storage | Page tables and private frames belong to an image. Scratch belongs to a replica. Shared object pages remain charged while descriptors or mappings retain them. Each native wait pins its exact storage until that observation settles. |
+| Kernel continuations | Mapping and execution operations retain preconditions and pending effects through asynchronous progress. Exit publication holds a parent's event through execution stop. Retirement advances transport, reference and physical release. The completion owner retains terminal mailbox authority through its last publication or cancellation. |
+| Host transport and Worker objects | Channel and memory views, import endpoints, native Workers and observation promises serve the exact kernel receipt. Reference disposal closes endpoints and observers. Worker termination and native wait settlement report separate platform facts. |
+
 Page-table scans use a stateless Rust Wasm adjunct instantiated once for each
 backing inside the disposable kernel Worker. It imports that existing memory
 and performs bounded sequential atomic reads directly, returning the next
@@ -48,11 +58,11 @@ Image-mutating mappings, fork and pthread-control reservations enter a kernel-ow
 
 Root preparation, mapping, fork, exec replacement and pthread preparation use kernel-owned continuations. Rust computes grouped layouts from the SDK artifact and retains exact admissions through allocator contention and cancellation. Normal executable commits retain the parsed layout metadata; direct byte-supplied roots read their attached executable once before admission. The host receives copied layouts and transport descriptors.
 
-After exec commit, the retained Rust controller selects detachment, exact stop observation, native Worker termination/join, replacement installation or signal cancellation, old-image retirement, replacement binding/start and final publication. The host executes the issued effect and reports its completion with the exact future receipt and effect identity. Out-of-order or repeated completions cannot advance the operation. A failed platform action retains custody; it does not become proof of Worker absence, stop or reference release. Registration still reports actual platform bindings through the kernel entry gate.
+After exec commit, the retained Rust controller selects detachment, exact stop observation, native Worker termination/join, replacement installation or signal cancellation, old-image retirement, replacement binding/start and final publication. At the join effect the kernel adapter uses the existing Worker bindings for the exact predecessor group, process and generation. A binding already detached has passed its own containment. The host reports completion with the exact future receipt and effect identity. Out-of-order or repeated completions cannot advance the operation. A failed platform action retains custody; it does not become proof of Worker absence, stop or reference release. Registration still reports actual platform bindings through the kernel entry gate.
 
 Worker terminal fences, native exit/join observations and sealed never-started handles are reported as distinct facts to the actual Rust group owner. Rust uses the bound platform capability to decide whether a native exit is a join; a browser's synthetic exit leaves execution custody intact. One host object holder retains real endpoints, callbacks and native observations, without deciding release eligibility.
 
-Normal image/thread retirement first detaches and settles its transport. Rust then selects each remaining task's reference disposer and retains the corresponding charge until JavaScript acknowledges that exact disposal. Stopped scratch and image pages cannot be reclaimed while references remain bound or a disposer is outstanding. A failed disposer retains custody and is not silently retried as successful cleanup.
+Normal image/thread retirement first detaches and settles its transport. Rust then authorizes an exact task's reference disposal and retains the corresponding charge until JavaScript acknowledges it. The issued effect and launch rollback share the same pending host disposer. An independent rollback requests authorization before disposal. Stopped scratch and image pages remain charged until the exact disposal and native-wait observations settle. A disposer failure remains attached to that Worker and leaves the kernel's acknowledgement outstanding.
 
 Post-construction image and thread retirement also use kernel-owned continuations. Rust checks eligibility and exact receipts, identifies exec futures requiring cancellation, and waits for actual host detachment before reclaiming storage. Native retry replies carry an observation identity and backing resource, without granting an execution descriptor after source revocation.
 
@@ -61,7 +71,7 @@ A reaped process-group leader retained in `Limbo` carries identity, not live exe
 
 Grouped completion authority also belongs to the actual `ProcessTable`. It retains the exact task/channel/request, full-width result, prepared signal and native observation identity. Rust consumes flags and grants dispatch, publication, stop holds, interruption, discard and the terminal unwind selected by actual thread exit, process exit or exec commit. Native Promise settlement grants no publication or reuse permission. A completion holds physical controls independently of native pins until Rust accepts its final acknowledgement; physical release prunes idle metadata without a later host callback. Ordinary signal dequeue and direct host transfer publication cannot bypass this owner for grouped tasks.
 
-The actual Rust root, fork, exec and pthread owners select execution transactions and cancellation. Rust also selects Worker containment before reference disposal and orders pthread retirement against whole-image retirement. An accepted Node native join or sealed constructor absence already satisfies containment; a browser terminal fence still requires the requested platform termination. References and physical frames remain charged until their distinct acknowledgements and native waits settle.
+The actual Rust root, fork, exec and pthread owners select execution transactions and cancellation. Rust also selects Worker containment before reference disposal and orders pthread retirement against whole-image retirement. Image retirement joins existing pthread retirements before selecting transport detachment. A later pthread retirement joins that exact image retirement. For natural pthread exit, the host starts retirement from the logical `SYS_EXIT` notification and waits for the exact Worker stop observation. An accepted Node native join or sealed constructor absence already satisfies containment; a browser terminal fence still requires the requested platform termination. References and physical frames remain charged until their distinct acknowledgements and native waits settle.
 
 Group shutdown seals admission and selects current members in the actual Rust `ProcessTable`, using normal signal delivery. Native creator draining starts after that stop request, so a pending or stopped launch cannot hold the shutdown open indefinitely. A constructed root awaiting readiness or backing delivery receives exact scalar-only cancellation and must return a real terminal fence. An already completed native retirement can satisfy its late acknowledgement. TypeScript retains genuine platform objects, native observations and pending platform operations. Existing IPC, fork serialization, dynamic loading, graphics presentation and build/lazy-loading helpers remain in their normal layers unless this feature placed group policy there. Moving ordinary algorithms to Rust is not a requirement of this feature.
 
@@ -135,6 +145,20 @@ launch delivery after checking the exact execution and pending default signals.
 A stopped operation stays pending in Rust. TypeScript retains native objects
 and executes each granted effect in the same kernel-entry transaction; grouped
 starts never enter the ordinary host deferred-constructor registry.
+
+Root, fork, exec and pthread effects use the same host Worker object for
+scalar-only preparation, readiness observation and memory delivery. The
+readiness observer matches the exact expectation sent to the Worker. A memory
+delivery requires a started backing Worker on that same deferred handle and
+fails if the handle has retired. Reference disposal cancels any pending
+readiness observation. Rust still selects the sequencing and failure path of
+each operation, including fork replay and old-image exec retirement.
+
+The launch transport carries scalar identity and the backing envelope. The
+kernel Worker uses the registered image's translated address-space view for
+syscall and device access. Each guest Worker constructs its own view upon
+receiving the envelope. The session reads a process's PID and replica handle
+from its Worker owner.
 
 Exec readiness and memory delivery are separate kernel-selected effects. While
 handoff is pending, the actual exec owner retains a replacement's normal or
@@ -490,8 +514,8 @@ in-memory shared objects and compatible participants; it does not complete gener
 shared-file growth/truncation, persistent writable sharing or mixed graphical clients.
 
 Validation must distinguish native, Node, browser, ABI, conformance and resource
-results. Chromium, Firefox and WebKit are preview targets within the
-[current qualification scope](measurements/2026-11-25-shared-memory-webkit-qualification.md).
+results. Chromium and Firefox are supported preview targets. WebKit remains
+experimental within the [landing receipt's scope](measurements/2026-11-25-shared-memory-scanner.md).
 Playwright WebKit is not native Safari evidence. Record failed
 and unrun checks, and distinguish the pinned tested runtime from later source
 integration. A matched ordinary control measures group costs; it does not replace

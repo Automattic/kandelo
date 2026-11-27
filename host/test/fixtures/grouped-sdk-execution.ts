@@ -330,7 +330,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
             const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
           } });
           return prepareGroupedExecWorker({ kernel: execKernel, request, adapter: processAdapter, externrefs: owner, imports,
-            previousImage: rootHandle, previousWorkers: [processWorker, ...previousThreads.map(thread => thread.worker)],
+            previousImage: rootHandle,
             previousGeneration: generation, terminationProvesQuiescence: options.joinOnExit,
             onCommitted: () => {
               execHandoff = true;
@@ -895,7 +895,7 @@ export async function runSdkExecution(options: SdkExecutionOptions, machine?: Sd
           let native!: WorkerHandle, readiness!: Promise<void>;
           const worker = new DeferredWorkerHandle(() => {
             if (!launch) throw Error('Root fixture lacks kernel publication');
-            const { assertLive: _live, ...expected } = launch.expectation;
+            const { expectation: expected } = launch;
             native = processAdapter.createWorker(createGroupedWorkerPrepare(expected));
             readiness = waitForGroupedWorkerReady(native, expected);
             void readiness.catch(() => {});

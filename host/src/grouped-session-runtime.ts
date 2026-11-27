@@ -5,13 +5,11 @@ import * as G from './generated/program-extensions';
 import { ERRNO } from './generated/abi';
 import { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import { ForkHostImportOwnerRuntime } from './fork-host-import-runtime';
-import type { PreparedGroupReplica, GroupReplicaLaunch } from './group-memory-transport';
-import type { WorkerAdapter, WorkerHandle } from './worker-adapter';
-import { DeferredWorkerHandle } from './deferred-worker-handle';
+import type { GroupReplicaLaunch } from './group-memory-transport';
+import type { WorkerAdapter } from './worker-adapter';
 import { prepareGroupedExecWorker } from './grouped-exec-launch';
 import { launchGroupedForkWorker } from './grouped-fork-launch';
 import { launchGroupedThreadWorker } from './grouped-thread-launch';
-import { createGroupedWorkerPrepare, createGroupedWorkerLaunch, waitForGroupedWorkerReady } from './grouped-worker-initialization';
 import { retryKernelEntryResult as retry } from './kernel-entry-retry';
 import type { MemoryGroupUsage } from './memory-group-usage';
 import type { CentralizedWorkerInitMessage, WorkerToHostMessage } from './worker-protocol';
@@ -26,15 +24,11 @@ export interface TrustedMemoryGroupOptions {
   /** Includes pthreads and pending/retiring executions, not just processes. */
   maximumTasks?: number;
 }
-type Layout = ProcessMemoryLayout;
-type Ownership = GroupedWorkerObjects;
 interface Process {
-  pid: number;
-  handle: PreparedGroupReplica;
-  owner: Ownership;
+  owner: GroupedWorkerObjects;
   bytes: ArrayBuffer;
   module: WebAssembly.Module;
-  layout: Layout;
+  layout: ProcessMemoryLayout;
   retiring?: Promise<void>;
   replacing?: boolean;
 }
@@ -48,7 +42,6 @@ type ExecRequest = Parameters<NonNullable<CentralizedKernelCallbacks['onGroupedE
 export class GroupedSessionRuntime {
   private readonly processes = new Map<number, Process>();
   private readonly threads = new Map<number, GroupedWorkerObjects>();
-  private readonly threadRetirements = new Map<number, Promise<void>>();
   private readonly exitPublications = new Set<Promise<void>>();
   private readonly externrefs = new ForkExternrefProcessOwner();
   private readonly imports = new ForkHostImportOwnerRuntime(this.externrefs);
@@ -92,7 +85,7 @@ export class GroupedSessionRuntime {
     });
   }
   has(pid: number): boolean { return this.processes.has(pid); }
-  private current(process: Process): boolean { return this.processes.get(process.pid) === process && !process.replacing && !process.retiring; }
+  private current(process: Process): boolean { return this.processes.get(process.owner.pid) === process && !process.replacing && !process.retiring; }
   private number(value: number, operation: string): number {
     if (value < 0) throw Error(`${operation}: errno ${-value}`);
     return value;
@@ -123,12 +116,13 @@ export class GroupedSessionRuntime {
   }
   private fault(process: Process, error: Error, trap = observeWasmIndirectCallTrap(error)): void {
     if (!this.current(process)) return;
-    this.report(process.pid, error);
-    void retry(() => this.kernel.recordMemoryGroupCrash(process.handle, 11, trap)).catch(failure => this.report(process.pid, failure));
+    const { pid, handle } = process.owner;
+    this.report(pid, error);
+    void retry(() => this.kernel.recordMemoryGroupCrash(handle, 11, trap)).catch(failure => this.report(pid, failure));
   }
   private message(process: Process, message: WorkerToHostMessage): void {
     if (!this.current(process)) return;
-    if (message.type === 'error' && message.pid === process.pid) {
+    if (message.type === 'error' && message.pid === process.owner.pid) {
       this.fault(process, Error(message.message), message.wasmIndirectCallTrap);
     }
   }
@@ -172,22 +166,18 @@ export class GroupedSessionRuntime {
     const { receipt, handle, layout } = prepared;
     const generation = this.externrefs.startGeneration(pid);
     let launch!: GroupReplicaLaunch;
-    let expected!: Omit<GroupReplicaLaunch['expectation'], 'assertLive'>;
     let init!: Omit<CentralizedWorkerInitMessage, 'memory'>;
     let observed = false;
-    let nativeWorker: WorkerHandle | undefined, readiness: Promise<void> | undefined;
-    const worker = new DeferredWorkerHandle(() => {
-      if (this.closed || !this.current(process)) throw Error('Grouped root admission closed');
-      const actual = this.adapter.createWorker(createGroupedWorkerPrepare(expected));
-      nativeWorker = actual;
-      // Observe immediately so readiness cannot race installation of the next
-      // kernel-requested effect. Its result is consumed by that effect.
-      readiness = waitForGroupedWorkerReady(actual, expected);
-      void readiness.catch(() => {});
-      return actual;
-    });
-    const owner = new GroupedWorkerObjects(handle, receipt, generation, worker, () => this.externrefs.releaseGeneration(generation));
-    const process: Process = { pid, handle, owner, bytes, module, layout };
+    const owner = new GroupedWorkerObjects(handle, receipt, generation, {
+      adapter: this.adapter,
+      launch: () => {
+        if (this.closed || !this.current(process)) throw Error('Grouped root admission closed');
+        return launch;
+      },
+      readinessTimeoutMs: 10000,
+    }, () => this.externrefs.releaseGeneration(generation));
+    const { worker } = owner;
+    const process: Process = { owner, bytes, module, layout };
     const bindWorker = () => {
       if (observed) return;
       this.kernel.observeMemoryGroupReplicaWorker(handle, worker, { terminationProvesQuiescence: this.joins,
@@ -196,11 +186,7 @@ export class GroupedSessionRuntime {
       this.processes.set(pid, process);
     };
     await this.kernel.runMemoryGroupRootLaunch(handle, {
-      publishTransport: result => {
-        launch = result;
-        const { assertLive: _live, ...identity } = launch.expectation;
-        expected = identity;
-      },
+      publishTransport: result => { launch = result; },
       bindWorker,
       registerProcess: () => this.kernel.registerMemoryGroupProcess(handle, [layout.channelOffset], {
         ...layout, ptrWidth: 4, argv, env }),
@@ -229,13 +215,10 @@ export class GroupedSessionRuntime {
       startWorker: () => {
         if (this.closed || !worker.start()) throw Error('Grouped root start cancelled');
       },
-      waitReady: async () => {
-        if (!readiness) throw Error('Grouped root has no constructed Worker');
-        await readiness;
-      },
+      waitReady: () => owner.waitReady(),
       deliverLaunch: () => {
-        if (!nativeWorker || !this.current(process)) throw Error('Grouped root replaced before launch delivery');
-        nativeWorker.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+        if (!this.current(process)) throw Error('Grouped root replaced before launch delivery');
+        owner.deliverLaunch(init);
       },
       sealAbsence: () => {
         bindWorker();
@@ -258,7 +241,7 @@ export class GroupedSessionRuntime {
       maximumVirtualPages: parent.layout.maximumPages,
       terminationProvesQuiescence: this.joins,
       isCurrent: owner => this.processes.get(owner.pid)?.owner === owner,
-      retain: owner => { child = { ...parent, pid: owner.pid, handle: request.childReplica, owner,
+      retain: owner => { child = { ...parent, owner,
         layout: { ...parent.layout, channelOffset: request.channelOffset }, retiring: undefined, replacing: false }; this.processes.set(owner.pid, child); },
       discard: owner => { if (this.processes.get(owner.pid)?.owner === owner) this.processes.delete(owner.pid); },
       onMessage: message => this.message(child, message), onError: error => this.fault(child, error),
@@ -272,51 +255,46 @@ export class GroupedSessionRuntime {
       adapter: this.adapter, imports: this.imports, generation: process.owner.generation, programBytes: process.bytes,
       terminationProvesQuiescence: this.joins, isCurrent: thread => this.threads.get(thread.tid) === thread,
       retain: thread => this.threads.set(thread.tid, thread), discard: thread => this.threads.delete(thread.tid),
-      onMessage: (message, thread) => { if (message.type === 'thread_exit') this.threadExit(thread.pid, thread.tid); else this.message(process, message); },
+      onMessage: message => this.message(process, message),
       onError: error => this.fault(process, error), onExit: (code, thread) => { if (code && !thread.quiescent) this.fault(process, Error(`Grouped pthread Worker exit ${code}`)); },
     });
   }
   threadExit(pid: number, tid: number): boolean {
     const thread = this.threads.get(tid), process = this.processes.get(pid);
     if (!thread || thread.pid !== pid) return false;
-    if (!process || thread.referencesDisposed || this.threadRetirements.has(tid)) return true;
-    const retirement = (async () => {
+    if (!process || thread.referencesDisposed) return true;
+    // The kernel calls this once after logical SYS_EXIT. The later Worker
+    // thread_exit message repeats it. Only the exact terminal fence proves stop.
+    void (async () => {
       await this.kernel.waitForMemoryGroupReplicaQuiescence(thread.handle);
       this.number(await retry(() => this.kernel.retireMemoryGroupThread(thread.handle)), 'retire grouped pthread');
       this.threads.delete(tid);
-    })();
-    this.threadRetirements.set(tid, retirement);
-    const settled = () => {
-      if (this.threadRetirements.get(tid) === retirement) this.threadRetirements.delete(tid);
-    };
-    void retirement.then(settled, error => { settled(); this.fault(process, error); });
+    })().catch(error => this.fault(process, error));
     return true;
   }
   exec(request: ExecRequest): ReturnType<NonNullable<CentralizedKernelCallbacks['onGroupedExec']>> {
-    const previous = this.processes.get(request.pid);
+    const { pid } = request;
+    const previous = this.processes.get(pid);
     if (!previous || this.closed || !request.groupedExec) return Promise.resolve(-95);
-    const oldThreads = [...this.threads.values()].filter(thread => thread.pid === request.pid);
-    return Promise.resolve(prepareGroupedExecWorker({ kernel: this.kernel, request, previousImage: previous.handle,
-      previousWorkers: [previous.owner.worker, ...oldThreads.map(thread => thread.worker)],
+    return Promise.resolve(prepareGroupedExecWorker({ kernel: this.kernel, request, previousImage: previous.owner.handle,
       previousGeneration: previous.owner.generation, externrefs: this.externrefs, imports: this.imports, adapter: this.adapter,
       terminationProvesQuiescence: this.joins,
       isCurrent: owner => this.processes.get(owner.pid)?.owner === owner,
       onCommitted: () => { previous.replacing = true; },
-      retirePreviousReferences: async () => {
-        for (const thread of oldThreads) {
-          this.threads.delete(thread.tid);
+      retirePreviousReferences: () => {
+        for (const thread of this.threads.values()) {
+          if (thread.generation === previous.owner.generation) this.threads.delete(thread.tid);
         }
-
       },
       retain: owner => {
         const layout = request.groupedExec!.layout;
-        this.processes.set(owner.pid, { pid: owner.pid, owner, handle: owner.handle, bytes: request.targetBytes,
+        this.processes.set(owner.pid, { owner, bytes: request.targetBytes,
           module: request.targetModule, layout });
       },
       onTerminated: (_signal, status) => {
-        this.processes.delete(previous.pid);
-        void this.publishRetiredExit(previous.pid, status, previous.owner.generation.id)
-          .catch(error => this.report(previous.pid, error instanceof Error ? error : Error(String(error))));
+        this.processes.delete(pid);
+        void this.publishRetiredExit(pid, status, previous.owner.generation.id)
+          .catch(error => this.report(pid, error instanceof Error ? error : Error(String(error))));
       },
       onMessage: (message, owner) => { const current = this.processes.get(owner.pid); if (current?.owner === owner) this.message(current, message); },
       onError: (error, owner) => { const current = this.processes.get(owner.pid); if (current?.owner === owner) this.fault(current, error); },
@@ -329,9 +307,9 @@ export class GroupedSessionRuntime {
     if (process.replacing || process.retiring) return true;
     process.retiring = (async () => {
       const members = [...this.threads.values()].filter(thread => thread.pid === pid);
-      const retired = await retry(() => this.kernel.retireMemoryGroupImage(process.handle));
+      const retired = await retry(() => this.kernel.retireMemoryGroupImage(process.owner.handle));
       if (retired !== 0) throw Error(`Grouped image retirement pid=${pid}: errno ${-retired}`);
-      for (const thread of members) { this.threads.delete(thread.tid); this.threadRetirements.delete(thread.tid); }
+      for (const thread of members) this.threads.delete(thread.tid);
       if (this.processes.get(pid) === process) this.processes.delete(pid);
       await this.publishRetiredExit(pid, status, process.owner.generation.id);
     })();
@@ -357,7 +335,7 @@ export class GroupedSessionRuntime {
     const live = [...this.processes.values()];
     for (const process of live) {
       // The kernel publishes exit only after its exact all-replica stop fence.
-      while (!process.retiring && this.processes.get(process.pid) === process) {
+      while (!process.retiring && this.processes.get(process.owner.pid) === process) {
         await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
       await process.retiring;

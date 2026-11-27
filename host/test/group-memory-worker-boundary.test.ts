@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import * as G from '../src/generated/program-extensions';
-import { ABI_SYSCALLS, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE, CH_STATUS, CH_SYSCALL, CH_RETURN, CH_REQUEST_FLAGS, CH_TOTAL_SIZE, ERRNO } from '../src/generated/abi';
+import { ABI_SYSCALLS, CHANNEL_STATUS_PENDING, CHANNEL_STATUS_COMPLETE, CH_STATUS, CH_SYSCALL, CH_RETURN, CH_REQUEST_FLAGS, CH_TOTAL_SIZE, ERRNO, MEMORY_GROUP_PROTOCOL as P } from '../src/generated/abi';
 import { WasmPosixKernel, getWasmPosixKernelRuntimeAccess } from '../src/kernel';
 import { createCentralizedKernelWorkerTestDouble, CAPTURED_STDIO } from '../src/kernel-worker';
 import { allocateKernelScratchRegion } from '../src/kernel-scratch';
@@ -12,7 +12,7 @@ import { FixedTreeBackend } from './support/fixed-tree-backend';
 import { retryKernelEntryResult } from '../src/kernel-entry-retry';
 import { DeferredWorkerHandle } from '../src/deferred-worker-handle';
 import { MockWorkerHandle } from '../src/worker-adapter';
-import { GroupMemoryStorageRefusal } from '../src/group-memory-transport';
+import { GroupMemoryStorageRefusal, GroupMemoryTransport } from '../src/group-memory-transport';
 
 // The actual Rust kernel owns allocation and lifecycle here. The test-only
 // bridge installs its exact gate/scratch on the host worker; no fake owner or
@@ -52,9 +52,9 @@ it('registers the actual Rust-owned image with an explicit virtual channel', asy
     const launch = h.worker.publishMemoryGroupReplica(h.handle);
     if (typeof launch === 'number') throw Error(`Publication refused: ${launch}`);
     expect(launch.expectation.receipt).toEqual(h.receipt);
-    expect(launch.source.byteLength).toBe(4 * 65536);
     h.worker.registerMemoryGroupProcess(h.handle, [65536], { brkBase: 3 * 65536,
       brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 });
+    expect((h.worker as any).processes.get(h.pid).source.byteLength).toBe(4 * 65536);
     expect(await retryKernelEntryResult(() => inspectBacking(h))).toMatchObject({ images: 1, replicas: 1, exposedReplicas: 1 });
     expect(await retryKernelEntryResult(() => h.worker.cancelUnexposedMemoryGroupReplica(h.handle))).toBe(-22);
     const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
@@ -114,19 +114,24 @@ it('reports allocator contention without poisoning inspection or changing owners
 }, 30_000);
 
 it.each(['group', 'pid', 'tid', 'serial', 'generation'] as const)('contains a foreign terminal %s without freeing the real Rust allocation', async key => {
-  const h = await published();
+  const h = await published(), worker = h.worker as any;
   try {
+    worker.usePolling = true;
+    h.worker.registerMemoryGroupProcess(h.handle, [65536], { brkBase: 3 * 65536,
+      brkLimit: 16 * 65536, mmapBase: 4 * 65536, controlBase: 0, controlEnd: 3 * 65536, maxAddr: 16 * 65536 });
+    worker.stopPolling();
+    const { source } = worker.processes.get(h.pid);
     const concrete = new MockWorkerHandle();
     h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
     const before = new Uint8Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_BITMAP, G.MEMORY_GROUP_BITMAP_BYTES).slice();
     const forged = { ...h.receipt, [key]: typeof h.receipt[key] === 'bigint' ? h.receipt[key] as bigint ^ (1n << 40n) : Number(h.receipt[key]) + 1 };
     expect(() => concrete.simulateMessage({ type: 'memory_quiescent', pid: h.pid, memoryGroup: forged })).toThrow(/Wrong terminal/);
     expect(() => inspectBacking(h)).toThrow();
-    expect(() => h.launch.source.readBytes(0, 1)).toThrow();
+    expect(() => source.readBytes(0, 1)).toThrow('retired');
     // Fatal containment makes inspection unavailable. Read only the retained
     // test-owned backing to prove its allocation bits were not returned.
     expect(new Uint8Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_BITMAP, G.MEMORY_GROUP_BITMAP_BYTES)).toEqual(before);
-  } finally { h.scratch.revoke(); }
+  } finally { worker.stopPolling(); h.scratch.revoke(); }
 }, 30_000);
 
 it.each([true, false])('accepts only the bound Worker fence or a concrete Node join (joins=%s)', async joins => {
@@ -197,6 +202,77 @@ it('retains the Rust allocation after a failed asynchronous host closer without 
   } finally { h.scratch.revoke(); }
 }, 30_000);
 
+it.each([false, true])('direct retirement shares exact Worker disposal with rollback (failure=%s)', async fail => {
+  const h = await published();
+  const commands = P.retirement_control.commands;
+  const control = vi.spyOn(GroupMemoryTransport.prototype, 'retirementControl');
+  const queued = vi.fn(() => {
+    expect(control.mock.calls.some(([, command]) => command === commands.referencesDetached)).toBe(false);
+    return undefined;
+  });
+  let rollback!: Promise<boolean>;
+  const failure = Error('Worker reference disposal failed');
+  const dispose = vi.fn(() => {
+    rollback = h.worker.releaseMemoryGroupWorkerReferences(h.handle);
+    void rollback.catch(() => {});
+    if (fail) throw failure;
+    h.access.gate.runOrDeferVoidIngress('hold retirement acknowledgement behind queued ingress', () => {
+      expect(h.access.gate.runOrDeferVoidIngress('run before acknowledgement', queued)).toBe(true);
+      return undefined;
+    });
+  });
+  try {
+    const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
+    h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false, retireHostReferences: dispose });
+    const before = inspectBacking(h).allocatedPages;
+    const retire = h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete);
+    if (fail) {
+      await expect(retire).rejects.toBe(failure);
+      await expect(rollback).rejects.toBe(failure);
+      await expect(h.worker.releaseMemoryGroupWorkerReferences(h.handle)).rejects.toBe(failure);
+      expect(inspectBacking(h)).toMatchObject({ images: 1, allocatedPages: before });
+    } else {
+      await expect(retire).resolves.toBe(true);
+      await expect(rollback).resolves.toBe(true);
+      expect(queued).toHaveBeenCalledOnce();
+      expect(inspectBacking(h)).toMatchObject({ images: 0, allocatedPages: 1 });
+    }
+    const calls = control.mock.calls.map(([, command]) => command);
+    expect(calls).not.toContain(commands.beginReferences);
+    expect(calls.filter(command => command === commands.referencesDetached)).toHaveLength(fail ? 0 : 1);
+    expect(dispose).toHaveBeenCalledOnce();
+  } finally { control.mockRestore(); h.scratch.revoke(); }
+}, 30_000);
+
+it('uses the issued effect when a concurrent rollback refuses detachment before disposal', async () => {
+  const h = await published();
+  const commands = P.retirement_control.commands;
+  const retirementControl = GroupMemoryTransport.prototype.retirementControl;
+  let rollback: Promise<boolean> | undefined;
+  const control = vi.spyOn(GroupMemoryTransport.prototype, 'retirementControl').mockImplementation(function (this: GroupMemoryTransport, ...args) {
+    // Inject the scalar refusal at the host boundary. All genuine effects,
+    // including the selected detachment and its ACK, come from real Rust.
+    if (args[1] === commands.beginReferences) throw new GroupMemoryStorageRefusal(ERRNO.EBUSY);
+    const reply = retirementControl.apply(this, args);
+    if (!rollback && reply.effect === P.retirement_control.detach_references) {
+      rollback = h.worker.releaseMemoryGroupWorkerReferences(h.handle);
+    }
+    return reply;
+  });
+  try {
+    const dispose = vi.fn();
+    const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
+    h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false, retireHostReferences: dispose });
+    await expect(h.worker.retireMemoryGroupUnstartedProcess(h.handle, concrete)).resolves.toBe(true);
+    await expect(rollback).resolves.toBe(false);
+    expect(dispose).toHaveBeenCalledOnce();
+    const calls = control.mock.calls.map(([, command]) => command);
+    expect(calls.filter(command => command === commands.beginReferences)).toHaveLength(1);
+    expect(calls.filter(command => command === commands.referencesDetached)).toHaveLength(1);
+    expect(inspectBacking(h)).toMatchObject({ images: 0, allocatedPages: 1 });
+  } finally { control.mockRestore(); h.scratch.revoke(); }
+}, 30_000);
+
 it('returns scalar diagnostics and refuses actual allocator contention without blocking admission inspection', async () => {
   const h = await published();
   try {
@@ -228,7 +304,6 @@ it('returns the actual never-exposed image only after exact Rust cancellation', 
 for (const wake of ['notify', 'timeout'] as const) {
   it(`publishes a real Rust-owned completion after notification queue ${wake}`, async () => {
     const h = await published(), worker = h.worker as any;
-    const source = h.launch.source;
     const queue = new Int32Array(h.launch.envelope.memory.buffer, G.MEMORY_GROUP_WAIT_HEADER, 1);
     const concrete = new DeferredWorkerHandle(() => new MockWorkerHandle());
     try {
@@ -238,6 +313,7 @@ for (const wake of ['notify', 'timeout'] as const) {
       worker.stopPolling();
       h.worker.observeMemoryGroupReplicaWorker(h.handle, concrete, { terminationProvesQuiescence: false });
       const channel = worker.processes.get(h.pid).channels[0];
+      const { source } = channel;
       source.atomicStoreI32(65536 + CH_SYSCALL, ABI_SYSCALLS.Getpid);
       source.atomicStoreI32(65536 + CH_REQUEST_FLAGS, 0);
       source.atomicStoreI32(65536 + CH_STATUS, CHANNEL_STATUS_PENDING);

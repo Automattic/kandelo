@@ -10,7 +10,10 @@ import { validateKernelScratchRegionOwnership, type KernelScratchRegion } from '
 declare const replicaBrand: unique symbol;
 export interface PreparedGroupReplica { readonly [replicaBrand]: true }
 export interface GroupImageLayout { readonly initialVirtualPages: number; readonly maximumVirtualPages: number; readonly scratchBytes: number }
-export interface GroupReplicaLaunch { readonly envelope: ProcessMemoryEnvelope; readonly source: GroupProcessAddressSpace; readonly expectation: GroupReplicaMemoryExpectation }
+export interface GroupReplicaLaunch {
+  readonly envelope: ProcessMemoryEnvelope;
+  readonly expectation: Omit<GroupReplicaMemoryExpectation, 'assertLive'>;
+}
 export interface GroupMemoryEntry { readonly scope: KernelVoidIngressScope; readonly instance: WebAssembly.Instance }
 export interface GroupMemoryTransportHost {
   readonly memory: (resource: bigint) => WebAssembly.Memory;
@@ -27,13 +30,11 @@ export class GroupMemoryStorageRefusal extends Error {
 }
 interface Replica {
   readonly descriptor: Descriptor;
-  readonly live: { value: boolean };
+  live: boolean;
   readonly quiescent: Promise<void>;
   readonly resolveQuiescent: () => void;
-  source?: GroupProcessAddressSpace;
 }
 interface ImageTransport {
-  readonly root: number;
   readonly live: { value: boolean };
   source?: GroupProcessAddressSpace;
 }
@@ -92,8 +93,8 @@ export class GroupMemoryTransport {
     const handle = Object.freeze(Object.create(null)) as PreparedGroupReplica;
     let resolveQuiescent!: () => void;
     const quiescent = new Promise<void>(resolve => { resolveQuiescent = resolve; });
-    this.#replicas.set(handle, { descriptor, live: { value: true }, quiescent, resolveQuiescent });
-    if (!this.#images.has(descriptor.root)) this.#images.set(descriptor.root, { root: descriptor.root, live: { value: true } });
+    this.#replicas.set(handle, { descriptor, live: true, quiescent, resolveQuiescent });
+    if (!this.#images.has(descriptor.root)) this.#images.set(descriptor.root, { live: { value: true } });
     return handle;
   }
   action(receipt: MemoryGroupTaskReceipt, action: number, entry: GroupMemoryEntry, token = 0n, argument = 0):
@@ -259,7 +260,6 @@ export class GroupMemoryTransport {
   forgetRetiredExecution(handle: PreparedGroupReplica, image: boolean): readonly PreparedGroupReplica[] {
     const root = this.#replica(handle).descriptor.root, removed: PreparedGroupReplica[] = [];
     for (const [key, replica] of this.#replicas) if (key === handle || image && replica.descriptor.root === root) {
-      replica.live.value = false; replica.source?.detachHostAccess(); replica.source = undefined;
       removed.push(key); this.#replicas.delete(key);
     }
     if (image) this.#images.delete(root);
@@ -335,16 +335,16 @@ export class GroupMemoryTransport {
   }
   bindPublishedExecution(handle: PreparedGroupReplica, bytes: Uint8Array): GroupReplicaLaunch {
     const replica = this.#replica(handle);
-    const descriptor = this.#reply(bytes, replica.descriptor.receipt), memory = this.host.memory(descriptor.resource), live = replica.live;
-    const assertLive = () => { if (!live.value) throw new ProcessAddressFault('retired'); };
+    const descriptor = this.#reply(bytes, replica.descriptor.receipt), memory = this.host.memory(descriptor.resource);
     const { resource: _resource, ...identity } = descriptor;
-    const expectation = Object.freeze({ ...identity, assertLive });
+    const expectation = Object.freeze(identity);
     const envelope = encodeProcessMemoryDescriptor(memory, { kind: G.MEMORY_GROUP_MODULE,
       receipt: descriptor.receipt, root: descriptor.root, replica: descriptor.replica, scratch: descriptor.scratch,
-      maximumVirtualPages: descriptor.maximumVirtualPages, scratchBytes: descriptor.scratchBytes }, { ...expectation, memory });
-    const source = new GroupProcessAddressSpace({ memory, root: descriptor.root, maximumPages: descriptor.maximumVirtualPages, assertLive });
-    replica.source = source;
-    return Object.freeze({ envelope, source, expectation });
+      maximumVirtualPages: descriptor.maximumVirtualPages, scratchBytes: descriptor.scratchBytes }, {
+      ...expectation, memory,
+      assertLive: () => { if (this.#closed || !replica.live) throw new ProcessAddressFault('retired'); },
+    });
+    return Object.freeze({ envelope, expectation });
   }
   imageSource(handle: PreparedGroupReplica): GroupProcessAddressSpace {
     const replica = this.#replica(handle), descriptor = replica.descriptor, image = this.#images.get(descriptor.root)!;
@@ -361,7 +361,9 @@ export class GroupMemoryTransport {
     return Object.freeze({ receipt: descriptor.receipt, memory: this.host.memory(descriptor.resource), source: this.imageSource(handle), maximumVirtualPages: descriptor.maximumVirtualPages });
   }
   acceptReplicaStop(handle: PreparedGroupReplica): void {
-    const replica = this.#replica(handle); replica.live.value = false; replica.source?.detachHostAccess(); replica.source = undefined; replica.resolveQuiescent();
+    const replica = this.#replica(handle);
+    replica.live = false;
+    replica.resolveQuiescent();
   }
   waitForReplicaQuiescence(handle: PreparedGroupReplica): Promise<void> { return this.#replica(handle).quiescent; }
   waitForImageQuiescence(handle: PreparedGroupReplica): Promise<void> {
@@ -380,7 +382,7 @@ export class GroupMemoryTransport {
   }
   quarantine(handle: PreparedGroupReplica, entry: GroupMemoryEntry): void {
     const result = this.action(this.receipt(handle), P.storage.actions.quarantine, entry);
-    const replica = this.#replica(handle); replica.live.value = false; replica.source?.detachHostAccess(); replica.source = undefined;
+    this.#replica(handle).live = false;
     if (result.status !== 0 && result.status !== -ERRNO.EAGAIN) this.#fault(`Kernel quarantine refused: ${result.status}`);
   }
   forgetCancelledReplica(handle: PreparedGroupReplica, entry: GroupMemoryEntry): void {
@@ -389,7 +391,7 @@ export class GroupMemoryTransport {
     const result = this.action(this.receipt(handle), P.storage.actions.status, entry);
     if (result.status !== -ERRNO.ESRCH) this.#fault(`Kernel cancellation acknowledgement refused: ${result.status}`);
     const replica = this.#replica(handle), receipt = replica.descriptor.receipt;
-    replica.live.value = false; replica.source?.detachHostAccess(); replica.resolveQuiescent();
+    replica.resolveQuiescent();
     if (receipt.pid === receipt.tid) {
       this.#detachImage(handle); this.#images.delete(replica.descriptor.root);
     }
@@ -401,7 +403,7 @@ export class GroupMemoryTransport {
   }
   releaseUnexposedImage(receipt: MemoryGroupTaskReceipt): void {
     for (const [handle, replica] of this.#replicas) if (replica.descriptor.receipt.pid === receipt.pid && replica.descriptor.receipt.generation === receipt.generation) {
-      replica.live.value = false; replica.source?.detachHostAccess(); this.#replicas.delete(handle); this.#images.delete(replica.descriptor.root);
+      this.#replicas.delete(handle); this.#images.delete(replica.descriptor.root);
     }
   }
   prepareChannelObservation(handle: PreparedGroupReplica, receipt: MemoryGroupTaskReceipt, address: number, entry: GroupMemoryEntry): NativeI32Observation {
@@ -451,6 +453,5 @@ export class GroupMemoryTransport {
     // Emergency JS detachment proves no physical release. The Rust group
     // and all of its uncertain Worker/native-wait charges remain retained.
     for (const image of this.#images.values()) { image.live.value = false; image.source?.detachHostAccess(); image.source = undefined; }
-    for (const replica of this.#replicas.values()) { replica.live.value = false; replica.source?.detachHostAccess(); replica.source = undefined; }
   }
 }

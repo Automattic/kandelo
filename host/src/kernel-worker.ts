@@ -1782,7 +1782,7 @@ export interface GroupedRootPlatformEffects {
 
 export interface GroupedExecPlatformEffects {
   detachPrevious(previous: PreparedGroupReplica): void;
-  joinPrevious(): Promise<void>;
+  previousWorkersJoined?(): void | Promise<void>;
   retirePreviousReferences(): void | Promise<void>;
   bindReplacement(handle: PreparedGroupReplica, launch: GroupReplicaLaunch, secureExec: boolean): Promise<void>;
   startReplacement(): void;
@@ -2230,7 +2230,6 @@ interface PendingThreadChannelAttachment {
   readonly source: ProcessMemorySource;
   attachedChannelOffset?: number;
   attachedChannel?: ChannelInfo;
-  groupedReplica?: PreparedGroupReplica;
   bindingOperation?: bigint;
   readonly creatorChannel: ChannelInfo;
   readonly creatorRequest: FrozenChannelRequest | undefined;
@@ -2273,7 +2272,6 @@ interface GroupThreadControlOwner {
 }
 interface GroupThreadRetirement {
   readonly receipt: MemoryGroupTaskReceipt;
-  owner?: GroupThreadControlOwner;
   readonly finished: Promise<number>;
   released: boolean;
 }
@@ -8813,37 +8811,50 @@ export class CentralizedKernelWorker {
     await containment;
   }
 
-  async releaseMemoryGroupWorkerReferences(handle: PreparedGroupReplica): Promise<boolean> {
+  releaseMemoryGroupWorkerReferences(handle: PreparedGroupReplica): Promise<boolean> {
+    return this.#releaseGroupWorkerReferences(handle, false);
+  }
+
+  async #releaseGroupWorkerReferences(handle: PreparedGroupReplica, detachmentIssued: boolean): Promise<boolean> {
     const objects = this.#groupWorkerReferences.get(handle);
     if (!objects) return this.#disposedGroupWorkerReferences.has(handle);
-    if (objects.pending) return objects.pending;
+    while (objects.pending) {
+      const released = await objects.pending;
+      // A rollback refusal before detachment can race an issued retirement
+      // effect. That effect still owns the right to run the disposer.
+      if (released || !detachmentIssued) return released;
+    }
     const protocol = MEMORY_GROUP_PROTOCOL.retirement_control;
-    const pending = (async (): Promise<boolean> => {
-      let reply = await retryKernelEntryResult(() => {
-        let result: GroupOperationEffect | undefined;
-        this.#runImmediateKernelEntry('request kernel-owned reference detachment', entry => {
-          try { result = objects.store.retirementControl(objects.receipt, protocol.commands.beginReferences, entry); }
-          catch (error) { if (!(error instanceof GroupMemoryStorageRefusal) || error.errno !== EBUSY) throw error; }
-          return undefined;
+    // Publish the shared operation before any disposer can reenter the host.
+    const pending = Promise.resolve().then(async () => {
+      let effect: number = protocol.detach_platform;
+      if (!detachmentIssued) {
+        let reply = await retryKernelEntryResult(() => {
+          let result: GroupOperationEffect | undefined;
+          this.#runImmediateKernelEntry('request kernel-owned reference detachment', entry => {
+            try { result = objects.store.retirementControl(objects.receipt, protocol.commands.beginReferences, entry); }
+            catch (error) { if (!(error instanceof GroupMemoryStorageRefusal) || error.errno !== EBUSY) throw error; }
+            return undefined;
+          });
+          return result;
         });
-        return result;
-      });
-      if (!reply) return false;
-      while (reply.effect === protocol.contain_worker) {
-        await this.#containRetiringMemoryGroupWorker(handle);
-        reply = await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.beginReferences));
+        if (!reply) { objects.pending = undefined; return false; }
+        while (reply.effect === protocol.contain_worker) {
+          await this.#containRetiringMemoryGroupWorker(handle);
+          reply = await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.beginReferences));
+        }
+        effect = reply.effect;
       }
-      if (reply.effect === protocol.detach_platform) {
+      if (effect === protocol.detach_platform) {
         objects.dispose();
         await retryKernelEntryResult(() => this.#retirementControlCall(objects.store, objects.receipt, protocol.commands.referencesDetached));
-      } else if (reply.effect !== MEMORY_GROUP_PROTOCOL.driver.effects.complete) this.#memoryGroupProtocolError('Unknown reference-detachment effect');
+      } else if (effect !== MEMORY_GROUP_PROTOCOL.driver.effects.complete) this.#memoryGroupProtocolError('Unknown reference-detachment effect');
       this.#groupWorkerReferences.delete(handle);
       this.#groupWorkerReferenceKeys.delete(`${objects.receipt.group}:${objects.receipt.serial}`);
       this.#disposedGroupWorkerReferences.add(handle);
       return true;
-    })();
+    });
     objects.pending = pending;
-    void pending.then(released => { if (!released) objects.pending = undefined; }, () => {});
     return pending;
   }
 
@@ -9158,9 +9169,19 @@ export class CentralizedKernelWorker {
           case effects.waitWorkers:
             await state.store.waitForImageQuiescence(previous);
             break;
-          case effects.joinPrevious:
-            await platform.joinPrevious();
+          case effects.joinPrevious: {
+            // Resolve the predecessor's Workers at the kernel's post-stop
+            // effect. A pthread already disposed has passed containment.
+            const receipt = state.store.receipt(previous);
+            const joins: Promise<number>[] = [];
+            for (const objects of this.#groupWorkerReferences.values()) {
+              if (objects.store === state.store && objects.receipt.group === receipt.group && objects.receipt.pid === receipt.pid
+                  && objects.receipt.generation === receipt.generation) joins.push(objects.worker.terminate());
+            }
+            await Promise.all(joins);
+            await platform.previousWorkersJoined?.();
             break;
+          }
           case effects.installReplacement: {
             const published = await retryKernelEntryResult(() => this.publishMemoryGroupReplica(state.handle!));
             if (typeof published === 'number') throw Error(`Cannot publish grouped exec replacement: errno ${-published}`);
@@ -11362,7 +11383,7 @@ export class CentralizedKernelWorker {
   /** The exact thread may recycle while its peers keep executing. This API
    * owns references and actual old-channel settlement, never just a numeric
    * TID or a completed pthread_join. Whole-image retirement joins this owner. */
-  retireMemoryGroupThread(handle: PreparedGroupReplica, retireHostReferences: () => void = () => {}): Promise<number> {
+  retireMemoryGroupThread(handle: PreparedGroupReplica): Promise<number> {
     const previous = this.#groupThreadRetirements.get(handle);
     if (previous) return previous.finished;
     let record: GroupThreadRetirement | undefined, image: Promise<void> | undefined, refusal = -EBUSY;
@@ -11370,7 +11391,6 @@ export class CentralizedKernelWorker {
       const owner = this.#memoryGroupThreadControls.get(handle);
       if (!owner) { refusal = -EINVAL; return undefined; }
       const launch = this.#groupThreadNativeOperations.get(handle);
-      const launches = launch && !launch.done ? [launch.finished] : [];
       try {
         const initial = owner.store.retirementControl(owner.receipt, MEMORY_GROUP_PROTOCOL.retirement_control.commands.beginThread, entry);
         if (initial.effect === MEMORY_GROUP_PROTOCOL.retirement_control.join_image_retirement) {
@@ -11380,7 +11400,7 @@ export class CentralizedKernelWorker {
             { group: owner.receipt.group, pid: owner.receipt.pid, tid: owner.receipt.pid, generation: owner.receipt.generation });
           if (selected.serial !== root.receipt.serial) this.#memoryGroupProtocolError('Changed image retirement binding');
           image = root.settled;
-        } else record = this.#beginGroupThreadRetirement(owner, launches, retireHostReferences, initial, entry);
+        } else record = this.#beginGroupThreadRetirement(owner, launch && !launch.done ? launch.finished : undefined, initial, entry);
       }
       catch (error) { if (!(error instanceof GroupMemoryStorageRefusal)) throw error; refusal = -error.errno; }
       return undefined;
@@ -11388,26 +11408,26 @@ export class CentralizedKernelWorker {
     return image ? image.then(() => 0) : record?.finished ?? Promise.resolve(refusal);
   }
 
-  #beginGroupThreadRetirement(owner: GroupThreadControlOwner, launches: readonly Promise<void>[],
-    retireHostReferences: () => void, initial: GroupOperationEffect, entry: KernelWorkerEntryContext): GroupThreadRetirement {
+  #beginGroupThreadRetirement(owner: GroupThreadControlOwner, launch: Promise<void> | undefined,
+    initial: GroupOperationEffect, entry: KernelWorkerEntryContext): GroupThreadRetirement {
     if (this.#groupThreadRetirements.has(owner.handle)) this.#memoryGroupProtocolError('Duplicate exact thread retirement');
     let resolve!: (result: number) => void, reject!: (cause: unknown) => void;
     const finished = new this.#promiseReceiver<number>((yes, no) => { resolve = yes; reject = no; });
-    const record: GroupThreadRetirement = { owner, receipt: owner.receipt, finished, released: false };
+    const record: GroupThreadRetirement = { receipt: owner.receipt, finished, released: false };
     this.#groupThreadRetirements.set(owner.handle, record); this.#pendingGroupThreadRetirements.add(record);
     entry.deferProtocolEffect(() => {
-      void this.#settleGroupThreadRetirement(record, launches, retireHostReferences, initial).then(resolve, reject)
+      void this.#settleGroupThreadRetirement(owner, record, launch, initial).then(resolve, reject)
         .finally(() => { this.#pendingGroupThreadRetirements.delete(record); });
       return undefined;
     });
     return record;
   }
 
-  async #settleGroupThreadRetirement(record: GroupThreadRetirement, launches: readonly Promise<void>[],
-    retireHostReferences: () => void, initial: GroupOperationEffect): Promise<number> {
-    const owner = record.owner!;
+  async #settleGroupThreadRetirement(owner: GroupThreadControlOwner, record: GroupThreadRetirement,
+    launch: Promise<void> | undefined, initial: GroupOperationEffect): Promise<number> {
     await this.#driveRetirementControl(owner.store, owner.receipt, initial, async () => {
-      await Promise.all(launches);
+      // Leave the detached retirement-start effect before re-entering the gate.
+      await launch;
       await retryKernelEntryResult(() => this.#runImmediateKernelEntry('detach retiring pthread transport', entry => {
         const registration = this.processes.get(owner.receipt.pid);
         if (registration?.source === owner.source && registration.channels.some(channel => channel.channelOffset === owner.channelOffset)) {
@@ -11415,14 +11435,13 @@ export class CentralizedKernelWorker {
         }
         return undefined;
       }));
-      retireHostReferences();
       await this.settleRetiredChannelListeners(owner.receipt.pid, owner.memory, owner.channelOffset, owner.source);
     });
     await retryKernelEntryResult(() => this.#runImmediateKernelEntry('drop retired thread platform handles', entry => {
       owner.store.retirementControl(owner.receipt, MEMORY_GROUP_PROTOCOL.retirement_control.commands.ack, entry);
       owner.store.forgetRetiredExecution(owner.handle, false);
       this.#memoryGroupReplicas.delete(owner.handle); this.#memoryGroupThreadControls.delete(owner.handle);
-      record.owner = undefined; record.released = true; return undefined;
+      record.released = true; return undefined;
     }));
     return 0;
   }
@@ -11474,7 +11493,7 @@ export class CentralizedKernelWorker {
         const objects = handle && this.#groupWorkerReferences.get(handle);
         if (!objects || ['group', 'pid', 'tid', 'serial', 'generation'].some(key =>
           selected[key as keyof MemoryGroupTaskReceipt] !== objects.receipt[key as keyof MemoryGroupTaskReceipt])
-            || !await this.releaseMemoryGroupWorkerReferences(handle!)) this.#memoryGroupProtocolError('Kernel-selected reference objects are missing or unretired');
+            || !await this.#releaseGroupWorkerReferences(handle!, true)) this.#memoryGroupProtocolError('Kernel-selected reference objects are missing or unretired');
       } else if (reply.effect === protocol.retirement_control.detach_platform) {
         if (!detach) this.#memoryGroupProtocolError('Missing retirement platform effect');
         await detach(); command = protocol.retirement_control.commands.platformDetached;
@@ -11533,7 +11552,6 @@ export class CentralizedKernelWorker {
         for (const pending of [...this.pendingGroupImageOperations.values(), ...this.retiringGroupMappings]) {
           if (pending.registration.source === owner.source && !pending.done) operations.add(pending.finished);
         }
-        for (const retiring of this.#pendingGroupThreadRetirements) if (retiring.owner?.source === owner.source) operations.add(retiring.finished.then(() => undefined));
         if (registration?.source === owner.source) {
           if (registration.grouped?.handle !== owner.handle) this.#memoryGroupProtocolError('Retiring image platform binding changed');
           if (!this.#deactivateProcessWithinKernelEntry(owner.pid, entry, owner.memory)) this.#memoryGroupProtocolError('Cannot detach retiring image transport');
@@ -23305,7 +23323,6 @@ export class CentralizedKernelWorker {
         reply = pending.store.operation(pending.receipt, protocol.commands.threadBound, pending.operation, 0, entry);
         if (!reply || reply.effect !== protocol.effects.threadLaunch || reply.errno !== 0) this.#memoryGroupProtocolError('Kernel did not retain pthread native startup');
         const launch = pending.store.bindPublishedExecution(handle, reply.storage);
-        thread.groupedReplica = handle;
         this.#memoryGroupThreadControls.set(handle, { handle, rootHandle: owner.rootHandle, store: pending.store,
           source: thread.source as GroupProcessAddressSpace, memory: thread.memory, receipt: owner.receipt, channelOffset: allocation.channelOffset });
         preparation.plan = { status: 'ready', handle, launch, allocation,
@@ -23400,7 +23417,7 @@ export class CentralizedKernelWorker {
         if (reply && reply.flags & MEMORY_GROUP_PROTOCOL.driver.flags.threadRetired) {
           pending.store.forgetCancelledReplica(preparation.handle, entry);
           this.#memoryGroupReplicas.delete(preparation.handle); this.#memoryGroupThreadControls.delete(preparation.handle);
-          if (thread) { thread.groupedReplica = undefined; thread.controlOwner = undefined; }
+          if (thread) thread.controlOwner = undefined;
         }
       }
       preparation.nativeWake?.(); preparation.nativeWake = undefined;
@@ -26139,8 +26156,7 @@ export class CentralizedKernelWorker {
    * Handle SYS_EXIT/SYS_EXIT_GROUP: notify the kernel and clean up.
    *
    * For SYS_EXIT from a non-main channel (thread exit): notify kernel,
-   * remove channel, complete its mailbox, and let the host terminate the
-   * backing Worker when it installed a thread-exit callback.
+   * remove the channel, complete its mailbox and report logical exit.
    * For SYS_EXIT from main channel or SYS_EXIT_GROUP: current behavior.
    */
   private handleExit(
@@ -26155,9 +26171,8 @@ export class CentralizedKernelWorker {
     const isMainChannel = this.isMainProcessChannel(channel);
 
     if (syscallNr === SYS_EXIT && !isMainChannel) {
-      // Thread exit: finalize kernel-side thread state, complete the channel,
-      // then ask the host to tear down the backing Worker (browser + Node both
-      // wire onThreadExit).
+      // Report logical exit after finalizing the thread and completing its
+      // channel. Worker stop is proven separately.
       const tid = this.guestTidForChannel(channel);
       this.#finalizeThreadExitWithinKernelEntry(
         channel.pid,

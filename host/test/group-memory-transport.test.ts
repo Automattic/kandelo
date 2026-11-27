@@ -66,12 +66,16 @@ describe.each([4, 8] as const)('Rust group storage transport at kernel pointer w
     expect(launch.expectation.receipt).toEqual(h.receipt);
     expect(launch.envelope.memory).toBe(h.fixture.memory);
     expect(launch.expectation).not.toHaveProperty('resource');
+    expect(launch.expectation).not.toHaveProperty('assertLive');
     expect(launch.envelope.descriptor).not.toHaveProperty('resource');
+    const published = h.packet.slice();
     h.packet.fill(0);
     expect(h.store.receipt(handle)).toEqual(h.receipt);
-    expect(launch.source.readBytes(0, 4)).toEqual(new Uint8Array(4));
+    const { source } = h.store.processRegistration(handle);
+    expect(source.readBytes(0, 4)).toEqual(new Uint8Array(4));
     h.store.close();
-    expect(() => launch.source.readBytes(0, 1)).toThrow('retired');
+    expect(() => source.readBytes(0, 1)).toThrow('retired');
+    expect(() => h.store.bindPublishedExecution(handle, published)).toThrow('retired');
   });
 
   it.each([ERRNO.ENOMEM, ERRNO.EAGAIN])('preserves Rust preparation refusal %s without resolving a platform resource', errno => {

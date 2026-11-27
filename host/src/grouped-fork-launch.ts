@@ -3,11 +3,9 @@ import type { CentralizedKernelWorker, GroupedForkLaunchRequest } from './kernel
 import type { ForkExternrefProcessOwner } from './fork-externref-process-owner';
 import type { ForkExternrefGeneration } from './fork-reference-broker';
 import type { ForkHostImportOwnerRuntime, ForkHostImportOwnerWorker } from './fork-host-import-runtime';
-import { DeferredWorkerHandle } from './deferred-worker-handle';
-import { createGroupedWorkerLaunch, createGroupedWorkerPrepare, observeGroupedWorkerReady } from './grouped-worker-initialization';
 import { MEMORY_GROUP_PROTOCOL, PROCESS_FORK_MODE_FORK } from './generated/abi';
 import type { CentralizedWorkerInitMessage } from './worker-protocol';
-import type { WorkerAdapter, WorkerHandle } from './worker-adapter';
+import type { WorkerAdapter } from './worker-adapter';
 import type { GroupReplicaLaunch } from './group-memory-transport';
 import { MemoryGroupProtocolFault } from './memory-group-protocol';
 
@@ -40,8 +38,7 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
   let ownership!: GroupedWorkerObjects;
   let generation: ForkExternrefGeneration | undefined, endpoint: ForkHostImportOwnerWorker | undefined;
   let launch!: GroupReplicaLaunch, init!: Omit<CentralizedWorkerInitMessage, 'memory'>;
-  let native: WorkerHandle | undefined, factoryAttempted = false, observed = false;
-  let readiness: ReturnType<typeof observeGroupedWorkerReady> | undefined;
+  let observed = false;
   let replayResult!: Promise<void>, replayReady!: () => void, replayError!: (error: Error) => void;
   let forward: ((message: any) => void) | undefined;
   const messages: any[] = [];
@@ -52,15 +49,8 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
         request.parentSource, 4, request.continuation.forkBufAddr).generation;
       replayResult = new Promise<void>((resolve, reject) => { replayReady = resolve; replayError = reject; });
       void replayResult.catch(() => {});
-      const worker = new DeferredWorkerHandle(() => {
-        const { assertLive: _live, ...expected } = launch.expectation;
-        factoryAttempted = true;
-        native = options.adapter.createWorker(createGroupedWorkerPrepare(expected));
-        readiness = observeGroupedWorkerReady(native, expected);
-        void readiness.result.catch(() => {});
-        return native;
-      });
-      ownership = new GroupedWorkerObjects(request.childReplica, receipt, generation, worker,
+      ownership = new GroupedWorkerObjects(request.childReplica, receipt, generation,
+        { adapter: options.adapter, launch: () => launch },
         () => externrefs.releaseGeneration(generation!));
     },
     publishTransport: value => { launch = value; },
@@ -105,7 +95,6 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
       const onExit = (code: number) => { if (forward) options.onExit(code, ownership); else { exits.push(code); replayError(Error(`Grouped fork native exit ${code}`)); } };
       ownership.worker.on('message', onMessage); ownership.worker.on('error', onError); ownership.worker.on('exit', onExit);
       ownership.attachObserverCleanup(() => {
-        readiness?.cancel(Error('Kernel disposed native fork readiness'));
         ownership.worker.off('message', onMessage); ownership.worker.off('error', onError); ownership.worker.off('exit', onExit);
         messages.length = errors.length = exits.length = 0;
       });
@@ -118,11 +107,11 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
         kernelAbiVersion: kernel.getKernelAbiVersion(), kernelAbiContractDigest: kernel.getKernelAbiContractDigest() ?? undefined };
     },
     startWorker: () => { if (!ownership.worker.start()) throw Error('Native fork constructor was cancelled'); },
-    constructorUncertain: () => factoryAttempted && !native,
-    waitReady: () => { if (!readiness) throw Error('Native fork readiness has no Worker'); return readiness.result; },
+    constructorUncertain: () => ownership.constructorUncertain,
+    waitReady: () => ownership.waitReady(),
     deliverLaunch: () => {
-      if (!native || !options.isCurrent(ownership)) throw Error('Native fork launch lost its Worker');
-      native.postMessage(createGroupedWorkerLaunch(init, launch.envelope));
+      if (!options.isCurrent(ownership)) throw Error('Native fork launch lost its Worker');
+      ownership.deliverLaunch(init);
     },
     waitReplay: () => replayResult,
     installRuntimeListeners: () => {
@@ -132,7 +121,7 @@ export async function launchGroupedForkWorker(options: GroupedForkWorkerOptions)
       for (const code of exits.splice(0)) options.onExit(code, ownership);
     },
     cancelNativeObservers: () => {
-      readiness?.cancel(Error('Kernel cancelled native fork readiness'));
+      ownership?.cancelReadiness(Error('Kernel cancelled native fork readiness'));
       replayError?.(Error('Kernel cancelled native fork replay'));
     },
     sealAbsence: () => {

@@ -155,8 +155,9 @@ describe("spawn host parity", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const source = readFileSync(entry, "utf8");
       expect(source, `${entry} must accept a target-shaped request`).toMatch(
-        /onExec:\s*async\s*\(request\)\s*=>[\s\S]*handleExec\(request\)/,
+        /const prepareExecLaunch = async \(request: PreparedExecLaunchRequest\) =>[\s\S]*?groupedSession\.exec\(request\) : handleExec\(request\)/,
       );
+      expect(source).toMatch(/onExec: prepareExecLaunch,\s*onGroupedExec: prepareExecLaunch,/);
       expect(source, `${entry} must remove the Task 10 staging gate`).not.toContain(
         "preparedExecTargetReaderPending",
       );
