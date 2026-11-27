@@ -635,18 +635,13 @@ export class ForkActivationRegistry {
   >();
   private readonly activationTables =
     new Map<number, ForkActivationTableCatalogEntry[]>();
-  /**
-   * Live process catalog used only for short table-delta recipes.
-   *
-   * Unlike a fork transaction catalog, this catalog follows dlopen/dlclose so
-   * a successful guest mutation can be encoded in O(changed range) without
-   * rebuilding every activation's function index on each table.set/fill.
-   */
-  private readonly tablePatchFunctions = new ForkFunctionCatalog();
+  // The instrumenter supplies immutable function ordinals for each activation.
+  // Registration and removal require an idle registry, so capture, replay and
+  // table patches all resolve against the same activation-owned snapshot.
+  private readonly functions = new ForkFunctionCatalog();
   private phase: RegistryPhase = "idle";
   private arena: ForkModuleStateArena | null = null;
   private references: ForkReferenceTransaction | null = null;
-  private functions: ForkFunctionCatalog | null = null;
   private readonly staticRoots = new ForkStaticRootCatalog();
   private readonly gcTransit = new ForkAnyrefTransitTable();
   private readonly gcProvenance = new ForkGcProvenanceRegistry();
@@ -685,7 +680,7 @@ export class ForkActivationRegistry {
       throw error;
     }
     try {
-      this.tablePatchFunctions.register(
+      this.functions.register(
         ownedRegistration.activationId,
         ownedRegistration.functionCatalog,
       );
@@ -754,7 +749,7 @@ export class ForkActivationRegistry {
       this.bindTableCoordinates(table);
     }
     this.registrations.delete(activationId);
-    this.tablePatchFunctions.unregister(activationId);
+    this.functions.unregister(activationId);
     this.bootstrapped.delete(activationId);
     this.staticRoots.unregister(activationId);
   }
@@ -871,7 +866,7 @@ export class ForkActivationRegistry {
         recipe = null;
       } else if (typeof value === "function") {
         try {
-          const encoded = this.tablePatchFunctions.encode(value);
+          const encoded = this.functions.encode(value);
           if (!encoded) return null;
           recipe = {
             activationId: encoded.moduleActivation,
@@ -941,7 +936,7 @@ export class ForkActivationRegistry {
       }
       const value = run.function === null
         ? null
-        : this.tablePatchFunctions.decode({
+        : this.functions.decode({
             moduleActivation: run.function.activationId,
             ordinal: run.function.ordinal,
           });
@@ -1289,9 +1284,8 @@ export class ForkActivationRegistry {
     // A prior trap must never make a stale object appear as a recipe hit.
     this.gcProvenance.abortPending();
     this.gcTransit.clear();
-    const functions = this.buildFunctionCatalog();
     const references = new ForkReferenceTransaction(
-      functions,
+      this.functions,
       this.externrefs,
       this.memory,
       this.allocateScratch,
@@ -1301,7 +1295,6 @@ export class ForkActivationRegistry {
       this.typedReplayOwner(),
     );
     references.beginCapture();
-    this.functions = functions;
     this.references = references;
     this.arena = arena;
     this.phase = "capture";
@@ -1339,9 +1332,8 @@ export class ForkActivationRegistry {
     }
     this.gcProvenance.abortPending();
     this.gcTransit.clear();
-    const functions = this.buildFunctionCatalog();
     const references = new ForkReferenceTransaction(
-      functions,
+      this.functions,
       this.externrefs,
       this.memory,
       this.allocateScratch,
@@ -1351,7 +1343,6 @@ export class ForkActivationRegistry {
       this.typedReplayOwner(),
     );
     references.beginCapture();
-    this.functions = functions;
     this.references = references;
     this.arena = arena;
     this.phase = "table-capture";
@@ -1410,9 +1401,8 @@ export class ForkActivationRegistry {
         activation.templateId,
       );
     }
-    const functions = this.buildFunctionCatalog();
     const references = new ForkReferenceTransaction(
-      functions,
+      this.functions,
       this.externrefs,
       this.memory,
       this.allocateScratch,
@@ -1422,7 +1412,6 @@ export class ForkActivationRegistry {
       this.typedReplayOwner(),
     );
     references.attachChild(records);
-    this.functions = functions;
     this.references = references;
     this.arena = arena;
     this.phase = "table-replay";
@@ -1501,9 +1490,8 @@ export class ForkActivationRegistry {
         activation.templateId,
       );
     }
-    const functions = this.buildFunctionCatalog();
     const references = new ForkReferenceTransaction(
-      functions,
+      this.functions,
       this.externrefs,
       this.memory,
       this.allocateScratch,
@@ -1513,7 +1501,6 @@ export class ForkActivationRegistry {
       this.typedReplayOwner(),
     );
     references.attachChild(decodedReferences ?? records);
-    this.functions = functions;
     this.references = references;
     this.arena = arena;
     this.phase = "child-replay";
@@ -1606,7 +1593,7 @@ export class ForkActivationRegistry {
     this.registrations.clear();
     this.bootstrapped.clear();
     this.activationTables.clear();
-    this.tablePatchFunctions.clear();
+    this.functions.clear();
     this.tableCoordinates = new WeakMap();
     this.staticRoots.clear();
     this.gcProvenance.clear();
@@ -1614,14 +1601,6 @@ export class ForkActivationRegistry {
 
   phaseName(): RegistryPhase {
     return this.phase;
-  }
-
-  private buildFunctionCatalog(): ForkFunctionCatalog {
-    const functions = new ForkFunctionCatalog();
-    for (const activation of this.activations()) {
-      functions.register(activation.activationId, activation.functionCatalog);
-    }
-    return functions;
   }
 
   private requireActivationTable(
@@ -1777,8 +1756,6 @@ export class ForkActivationRegistry {
   }
 
   private resetTransaction(): void {
-    this.functions?.clear();
-    this.functions = null;
     this.references = null;
     this.arena = null;
     this.phase = "idle";
