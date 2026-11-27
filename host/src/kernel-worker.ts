@@ -31377,9 +31377,7 @@ export class CentralizedKernelWorker {
    * process blocked on `sys_read` / `sys_poll` against the device.
    * The per-OFD ring caps at 1024 records; overflow latches `dropped`
    * and the next read returns `SYN_DROPPED` (kernel A4/A5). Wake
-   * routing reuses `scheduleWakeBlockedRetries` so the existing
-   * pending-readers tick services event ofds too — same shape as
-   * `injectMouseEvent` for `/dev/input/mice`.
+   * routing shares the frame path used by browser and Node input sources.
    */
   injectInputEvent(
     device: 0 | 1,
@@ -31387,22 +31385,7 @@ export class CentralizedKernelWorker {
     code: number,
     value: number,
   ): void {
-    this.#runOrDeferKernelEntry(
-      "evdev input and wake",
-      (entry) => {
-        const inject = entry.instance.exports.kernel_input_event as
-          | ((
-              device: number,
-              ev_type: number,
-              code: number,
-              value: number,
-            ) => void)
-          | undefined;
-        if (!inject) return;
-        inject(device, ev_type, code, value);
-        this.scheduleWakeBlockedRetries(entry);
-      },
-    );
+    this.injectInputEventBatch([{ device, ev_type, code, value }]);
   }
 
   /**
@@ -31438,6 +31421,10 @@ export class CentralizedKernelWorker {
         for (const r of records) {
           inject(r.device, r.ev_type, r.code, r.value);
         }
+        // An evdev frame can make a Rust-owned epoll wait ready without a
+        // later guest syscall to drain it. Publish readiness after the
+        // complete frame in this already admitted kernel entry.
+        this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         this.scheduleWakeBlockedRetries(entry);
       },
     );

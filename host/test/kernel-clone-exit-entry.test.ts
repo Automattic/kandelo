@@ -571,6 +571,30 @@ describe("clone and exit entry authority", () => {
     ]);
   });
 
+  it("drains Rust wakeups after the whole evdev frame is queued", () => {
+    const order: string[] = [];
+    const inputEvent = vi.fn((_device: number, eventType: number) => {
+      order.push(`event ${eventType}`);
+      return 0;
+    });
+    const drainWakeups = vi.fn(() => {
+      order.push("wake drain");
+      return 0;
+    });
+    const { worker } = makeHarness(4, {}, {
+      kernel_input_event: inputEvent,
+      kernel_drain_wakeup_events: drainWakeups,
+    });
+
+    worker.injectInputEventBatch([
+      { device: 0, ev_type: 1, code: 30, value: 1 },
+      { device: 0, ev_type: 0, code: 0, value: 0 },
+    ]);
+
+    expect(order).toEqual(["event 1", "event 0", "wake drain"]);
+    expect(inputEvent.mock.calls).toEqual([[0, 1, 30, 1], [0, 0, 0, 0]]);
+  });
+
   it("keeps host exit state private when Rust cannot prove the committed status", async () => {
     const onExit = vi.fn();
     const onKernelFatal = vi.fn();
