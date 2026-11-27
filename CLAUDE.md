@@ -25,6 +25,8 @@ when they are involved.
 When a concern arises, identify the concrete operation, resource,
 and boundary at issue. Continue independent, permitted work and
 report the specific remaining blocker.
+For a Codex cybersecurity warning during this work, see
+[task scope and false-positive reporting](docs/agent-guidance/codex-feedback.md).
 
 This file is the loaded guidance for agents working in this repository. Treat
 it as a contract router: it names the platform contracts that must be preserved
