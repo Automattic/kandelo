@@ -3,6 +3,7 @@ import { ProcessMemoryAllocator } from "../src/process-memory";
 import { lookupComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserProcessMemoryFactory } from "../src/browser-process-memory-factory";
+import { readThreadTlsRequirements } from "../src/thread-allocator";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
@@ -329,15 +330,16 @@ function rejectedAllocation(error: unknown): () => Promise<unknown> {
   const code = ts.transpileModule(declaration.getText(source), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText;
-  const invoke = new Function("processMemoryAllocator", "extractHeapBase", "computeProcessMemoryLayout",
+  const invoke = new Function("processMemoryAllocator", "extractHeapBase", "readThreadTlsRequirements", "computeProcessMemoryLayout",
     "maxPages", "defaultThreadSlots", "processMemoryAllocationDiagnostics", "isProcessMemoryCreatorAdmissionClosed", "formatError",
     code + "\nreturn createFreshProcessMemory;")(
       { acquireWhenAvailable: () => Promise.reject(error) },
-      () => 65536, () => ({ initialPages: 1, maximumPages: 4 }), 4, 1,
+      () => 65536, readThreadTlsRequirements, () => ({ initialPages: 1, maximumPages: 4 }), 4, 1,
       () => ({ operation: "controlled allocation" }), isProcessMemoryCreatorAdmissionClosed,
       (reason: unknown) => reason instanceof Error ? reason.message : String(reason),
     );
-  return () => invoke(100, new ArrayBuffer(0), 4, 4);
+  const emptyWasmModule = Uint8Array.of(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00);
+  return () => invoke(100, emptyWasmModule.buffer, 4, 4);
 }
 
 describe("browser process allocation diagnostics", () => {
