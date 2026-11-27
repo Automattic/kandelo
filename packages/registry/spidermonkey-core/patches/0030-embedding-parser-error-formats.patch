@@ -1,0 +1,83 @@
+# Kandelo patch rationale (embedding-specific parser error wording)
+#
+# Select the embedding's format while building an actual compiler error report.
+# The default formatter, parser identity, source position and typed metadata are
+# preserved. The callback returns static formats on or off the compiler thread.
+#
+--- a/js/public/CompileOptions.h
++++ b/js/public/CompileOptions.h
+@@ -61,6 +61,7 @@
+ 
+ #include "js/CharacterEncoding.h"  // JS::ConstUTF8CharsZ
+ #include "js/ColumnNumber.h"       // JS::ColumnNumberOneOrigin
++#include "js/ErrorReport.h"        // JSErrorCallback
+ #include "js/Prefs.h"              // JS::Prefs::*
+ #include "js/TypeDecls.h"          // JS::MutableHandle (fwd)
+ 
+@@ -305,6 +306,9 @@
+   friend class JS_PUBLIC_API InstantiateOptions;
+ 
+  public:
++  // Optional parser error formats supplied by the embedding. The callback
++  // and its format strings must be static and safe on compilation threads.
++  JSErrorCallback parserErrorFormat = nullptr;
+   bool selfHostingMode = false;
+   bool discardSource = false;
+   bool sourceIsLazy = false;
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -2518,6 +2518,7 @@
+   deferDebugMetadata_ = rhs.deferDebugMetadata_;
+   eagerDelazificationStrategy_ = rhs.eagerDelazificationStrategy_;
+ 
++  parserErrorFormat = rhs.parserErrorFormat;
+   selfHostingMode = rhs.selfHostingMode;
+   discardSource = rhs.discardSource;
+   sourceIsLazy = rhs.sourceIsLazy;
+--- a/js/src/frontend/ErrorReporter.h
++++ b/js/src/frontend/ErrorReporter.h
+@@ -13,12 +13,9 @@
+ #include <stdint.h>  // for uint32_t
+ 
+ #include "js/ColumnNumber.h"  // JS::LimitedColumnNumberOneOrigin
++#include "js/CompileOptions.h"  // JS::ReadOnlyCompileOptions
+ #include "js/UniquePtr.h"
+ #include "vm/ErrorReporting.h"  // ErrorMetadata, ReportCompile{Error,Warning}
+-
+-namespace JS {
+-class JS_PUBLIC_API ReadOnlyCompileOptions;
+-}
+ 
+ namespace js {
+ namespace frontend {
+@@ -177,6 +174,7 @@
+                           va_list* args,
+                           JS::ParserDiagnostic* diagnostic = nullptr) const {
+     ErrorMetadata metadata;
++    metadata.parserErrorFormat = options().parserErrorFormat;
+     if (!diagnostic) {
+       diagnostic = reportingParserDiagnostic_;
+       reportingParserDiagnostic_ = nullptr;
+--- a/js/src/vm/ErrorReporting.h
++++ b/js/src/vm/ErrorReporting.h
+@@ -30,6 +30,7 @@
+  * no offset (i.e. with respect to a script overall).
+  */
+ struct ErrorMetadata {
++  JSErrorCallback parserErrorFormat = nullptr;
+   JS::ParserDiagnostic parserDiagnostic;
+   // The file/URL where the error occurred.
+   JS::ConstUTF8CharsZ filename;
+--- a/js/src/vm/ErrorReporting.cpp
++++ b/js/src/vm/ErrorReporting.cpp
+@@ -107,8 +107,8 @@
+                          metadata.tokenOffset);
+   }
+ 
+-  if (!js::ExpandErrorArgumentsVA(fc, js::GetErrorMessage, nullptr, errorNumber,
+-                                  argumentsType, &err, *args)) {
++  if (!js::ExpandErrorArgumentsVA(fc, metadata.parserErrorFormat, nullptr,
++                                  errorNumber, argumentsType, &err, *args)) {
+     return;
+   }
+ 

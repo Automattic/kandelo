@@ -1,0 +1,82 @@
+# Let an embedding format rejected String.prototype.repeat counts.
+# SpiderMonkey owns conversion, string length checks and allocation.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -195,6 +195,16 @@
+   }
+ 
+   // Called only for a rejected element count. Conversion exceptions propagate.
++  using StringRepeatErrorReporter = void (*)(JSContext*, double);
++  StringRepeatErrorReporter getStringRepeatErrorReporter() const {
++    return stringRepeatErrorReporter_;
++  }
++  RealmCreationOptions& setStringRepeatErrorReporter(
++      StringRepeatErrorReporter reporter) {
++    stringRepeatErrorReporter_ = reporter;
++    return *this;
++  }
++
+   using TypedArrayLengthErrorReporter = void (*)(JSContext*, HandleValue);
+   TypedArrayLengthErrorReporter getTypedArrayLengthErrorReporter() const {
+     return typedArrayLengthErrorReporter_;
+@@ -274,6 +284,7 @@
+   bool defineSharedArrayBufferConstructor_ = true;
+   bool coopAndCoep_ = false;
+   bool immutableArrayBuffers_ = false;
++  StringRepeatErrorReporter stringRepeatErrorReporter_ = nullptr;
+   TypedArrayLengthErrorReporter typedArrayLengthErrorReporter_ = nullptr;
+   uint32_t maxLazyTypedArrayBytes_ = UINT32_MAX;
+   bool captureCallReceivers_ = false;
+--- a/js/src/builtin/String.js
++++ b/js/src/builtin/String.js
+@@ -714,13 +714,13 @@
+ 
+   // Step 4.
+   if (n < 0) {
+-    ThrowRangeError(JSMSG_NEGATIVE_REPETITION_COUNT);
++    ThrowStringRepeatError(JSMSG_NEGATIVE_REPETITION_COUNT, n);
+   }
+ 
+   // Step 5.
+   // Inverted condition to handle |Infinity * 0 = NaN| correctly.
+   if (!(n * S.length <= MAX_STRING_LENGTH)) {
+-    ThrowRangeError(JSMSG_RESULTING_STRING_TOO_LARGE);
++    ThrowStringRepeatError(JSMSG_RESULTING_STRING_TOO_LARGE, n);
+   }
+ 
+   // Communicate |n|'s possible range to the compiler. We actually use
+--- a/js/src/vm/SelfHosting.cpp
++++ b/js/src/vm/SelfHosting.cpp
+@@ -346,6 +346,24 @@
+   MOZ_ASSERT(args.length() >= 1);
+ 
+   ThrowErrorWithType(cx, JSEXN_RANGEERR, args);
++  return false;
++}
++
++static bool intrinsic_ThrowStringRepeatError(JSContext* cx, unsigned argc,
++                                              Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  MOZ_ASSERT(args.length() == 2);
++  MOZ_ASSERT(args[0].isInt32());
++  MOZ_ASSERT(args[1].isNumber());
++  const unsigned errorNumber = args[0].toInt32();
++  MOZ_ASSERT(errorNumber == JSMSG_NEGATIVE_REPETITION_COUNT ||
++             errorNumber == JSMSG_RESULTING_STRING_TOO_LARGE);
++  auto reporter = cx->realm()->creationOptions().getStringRepeatErrorReporter();
++  if (reporter) {
++    reporter(cx, args[1].toNumber());
++  } else {
++    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, errorNumber);
++  }
+   return false;
+ }
+ 
+@@ -1751,6 +1769,7 @@
+     JS_FN("ThrowAggregateError", intrinsic_ThrowAggregateError, 4, 0),
+     JS_FN("ThrowInternalError", intrinsic_ThrowInternalError, 4, 0),
+     JS_FN("ThrowRangeError", intrinsic_ThrowRangeError, 4, 0),
++    JS_FN("ThrowStringRepeatError", intrinsic_ThrowStringRepeatError, 2, 0),
+     JS_FN("ThrowTypeError", intrinsic_ThrowTypeError, 4, 0),
+     JS_INLINABLE_FN("ToInteger", intrinsic_ToInteger, 1, 0, IntrinsicToInteger),
+     JS_INLINABLE_FN("ToLength", intrinsic_ToLength, 1, 0, IntrinsicToLength),

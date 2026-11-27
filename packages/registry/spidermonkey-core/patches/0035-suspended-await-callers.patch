@@ -1,0 +1,280 @@
+# Let an embedding capture the unique suspended callers of an executing
+# promise job for its Error stack. Derive locations from the generator's
+# suspension bytecode. Keep ordinary SavedStacks and other embeddings on
+# the ESR capture path. Revisit when ESR exposes this chain to embeddings.
+--- a/js/public/Stack.h
++++ b/js/public/Stack.h
+@@ -72,7 +72,10 @@
+ struct MaxFrames {
+   uint32_t maxFrames;
+ 
+-  explicit MaxFrames(uint32_t max) : maxFrames(max) { MOZ_ASSERT(max > 0); }
++  bool includeAwaiters;
++
++  explicit MaxFrames(uint32_t max, bool includeAwaiters = false)
++      : maxFrames(max), includeAwaiters(includeAwaiters) { MOZ_ASSERT(max > 0); }
+ };
+ 
+ /**
+--- a/js/src/builtin/Promise.cpp
++++ b/js/src/builtin/Promise.cpp
+@@ -8753,6 +8753,67 @@
+   MOZ_CRASH("Somehow we lost the execution global");
+ }
+ 
++bool js::GetAwaitingGenerators(JSContext* cx, HandleObject job, uint32_t limit,
++                               MutableHandleObjectVector generators) {
++  auto visible = [cx](JSObject* obj) -> JSObject* {
++    if (!obj) return nullptr;
++    obj = CheckedUnwrapDynamic(obj, cx);
++    if (!obj || JS_IsDeadWrapper(obj)) return nullptr;
++    auto* from = cx->realm()->principals();
++    auto* to = obj->nonCCWRealm()->principals();
++    auto subsumes = cx->runtime()->securityCallbacks->subsumes;
++    return from == to || (subsumes && subsumes(from, to)) ? obj : nullptr;
++  };
++  auto generatorPromise = [cx](AbstractGeneratorObject* generator) -> JSObject* {
++    if (generator->is<AsyncFunctionGeneratorObject>()) {
++      return generator->as<AsyncFunctionGeneratorObject>().promise();
++    }
++    Rooted<AsyncGeneratorObject*> gen(cx, &generator->as<AsyncGeneratorObject>());
++    return gen->isQueueEmpty() ? nullptr : AsyncGeneratorObject::peekRequest(gen)->promise();
++  };
++
++  RootedObject current(cx, visible(job));
++  if (!current) return true;
++  if (current->is<PromiseReactionRecord>()) {
++    auto& reaction = current->as<PromiseReactionRecord>();
++    if (reaction.isAsyncFunction()) current = generatorPromise(reaction.asyncFunctionGenerator());
++    else if (reaction.isAsyncGenerator()) current = generatorPromise(reaction.asyncGenerator());
++    else current = reaction.promise();
++  } else if (current->is<ThenableJob>()) {
++    current = current->as<ThenableJob>().promise();
++  } else {
++    return true;
++  }
++
++  Rooted<GCHashSet<HeapPtr<JSObject*>, StableCellHasher<HeapPtr<JSObject*>>,
++                   SystemAllocPolicy>> visited(cx);
++  while (generators.length() < limit && (current = visible(current))) {
++    if (!current->is<PromiseObject>()) break;
++    auto& promise = current->as<PromiseObject>();
++    if (promise.state() != JS::PromiseState::Pending || !promise.reactions().isObject()) break;
++    if (visited.has(current)) break;
++    if (!visited.put(current)) { ReportOutOfMemory(cx); return false; }
++
++    RootedObject next(cx, visible(&promise.reactions().toObject()));
++    // Multiple reactions are stored as an array. There is no unique caller.
++    if (!next || !next->is<PromiseReactionRecord>()) break;
++    auto& reaction = next->as<PromiseReactionRecord>();
++    Rooted<AbstractGeneratorObject*> generator(cx);
++    if (reaction.isAsyncFunction()) generator = reaction.asyncFunctionGenerator();
++    else if (reaction.isAsyncGenerator()) generator = reaction.asyncGenerator();
++    if (generator) {
++      if (!visible(generator) || !generator->isSuspended()) break;
++      if (!generators.append(generator)) return false;
++      current = generatorPromise(generator);
++    } else if (reaction.isDefaultResolvingHandler()) {
++      current = reaction.defaultResolvingPromise();
++    } else {
++      current = reaction.promise();
++    }
++  }
++  return true;
++}
++
+ JS_PUBLIC_API JSObject* JS::MaybeGetPromiseFromJSMicroTask(
+     JS::JSMicroTask* entry) {
+   JSObject* unwrapped = UncheckedUnwrap(entry);
+--- a/js/src/builtin/Promise.h
++++ b/js/src/builtin/Promise.h
+@@ -19,6 +19,11 @@
+ }  // namespace JS
+ 
+ namespace js {
++
++// Collect suspended callers from the unique pending reactions of a running
++// promise job. No JavaScript getters or promise callbacks are invoked.
++[[nodiscard]] bool GetAwaitingGenerators(JSContext* cx, JS::HandleObject job,
++                                         uint32_t limit, JS::MutableHandleObjectVector generators);
+ 
+ class AsyncFunctionGeneratorObject;
+ class AsyncGeneratorObject;
+--- a/js/src/vm/ErrorObject.cpp
++++ b/js/src/vm/ErrorObject.cpp
+@@ -1123,7 +1123,7 @@
+     RootedObject stack(cx);
+     if (*limit > 0) {
+       if (!CaptureCurrentStack(
+-              cx, &stack, JS::StackCapture(JS::MaxFrames(*limit)), caller)) {
++              cx, &stack, JS::StackCapture(JS::MaxFrames(*limit, embeddingHandled)), caller)) {
+         return false;
+       }
+     }
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -1078,6 +1078,9 @@
+   //   JS::SetJobQueue, owned by the embedding, or
+   // - our internal JobQueue implementation, established by calling
+   //   js::UseInternalJobQueues, owned by JSContext::internalJobQueue below.
++  // An embedding may expose its executing promise job during error capture.
++  // The dispatcher's stack owns and traces the root, including nested drains.
++  js::ContextData<JS::RootedObject*> activeErrorStackJob{nullptr};
+   js::ContextData<JS::JobQueue*> jobQueue;
+ 
+   // If the embedding has called js::UseInternalJobQueues, this is the owning
+--- a/js/src/vm/SavedStacks.cpp
++++ b/js/src/vm/SavedStacks.cpp
+@@ -16,2 +16,3 @@
+ #include "builtin/Number.h"
++#include "builtin/Promise.h"
+ #include "gc/GCContext.h"
+@@ -28,9 +29,11 @@
+ #include "util/DifferentialTesting.h"
+ #include "util/RandomSeed.h"
+ #include "util/StringBuilder.h"
++#include "vm/BytecodeUtil.h"
+ #include "vm/Compartment.h"
+ #include "vm/FrameIter.h"
+ #include "vm/GeckoProfiler.h"
++#include "vm/GeneratorObject.h"
+ #include "vm/JSScript.h"
+ #include "vm/Realm.h"
+ #include "vm/SavedFrame.h"
+@@ -1104,7 +1107,7 @@
+     if (handled) stack.set(nullptr);
+     return true;
+   }
+-  return CaptureCurrentStack(cx, stack, StackCapture(MaxFrames(limit)), startAfter);
++  return CaptureCurrentStack(cx, stack, StackCapture(MaxFrames(limit, handled)), startAfter);
+ }
+ 
+ JS_PUBLIC_API bool InitEmbeddingErrorStack(
+@@ -1485,6 +1488,24 @@
+   return capture.match(m);
+ }
+ 
++static SavedFrame::KandeloSourceKind CaptureScriptKind(JSScript* script) {
++  auto sourceKind = SavedFrame::KandeloSourceKind::Script;
++  auto* source = script->scriptSource();
++  if (script->isForEval()) sourceKind = SavedFrame::KandeloSourceKind::Eval;
++  if (source->hasIntroductionType()) {
++    const char* type = source->introductionType();
++    if (strcmp(type, "eval") == 0) {
++      sourceKind = SavedFrame::KandeloSourceKind::Eval;
++    } else if (strcmp(type, "Function") == 0 ||
++               strcmp(type, "AsyncFunction") == 0 ||
++               strcmp(type, "GeneratorFunction") == 0 ||
++               strcmp(type, "AsyncGenerator") == 0) {
++      sourceKind = SavedFrame::KandeloSourceKind::Function;
++    }
++  }
++  return sourceKind;
++}
++
+ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
+                                JS::StackCapture&& capture,
+                                HandleObject startAtObj) {
+@@ -1635,25 +1656,8 @@
+     // chain.
+     if (seenStartAt) {
+       framePushed = true;
+-      auto sourceKind = SavedFrame::KandeloSourceKind::Script;
+-      if (iter.isWasm()) {
+-        sourceKind = SavedFrame::KandeloSourceKind::Wasm;
+-      } else {
+-        auto* script = iter.script();
+-        auto* source = script->scriptSource();
+-        if (script->isForEval()) sourceKind = SavedFrame::KandeloSourceKind::Eval;
+-        if (source->hasIntroductionType()) {
+-          const char* type = source->introductionType();
+-          if (strcmp(type, "eval") == 0) {
+-            sourceKind = SavedFrame::KandeloSourceKind::Eval;
+-          } else if (strcmp(type, "Function") == 0 ||
+-                     strcmp(type, "AsyncFunction") == 0 ||
+-                     strcmp(type, "GeneratorFunction") == 0 ||
+-                     strcmp(type, "AsyncGenerator") == 0) {
+-            sourceKind = SavedFrame::KandeloSourceKind::Function;
+-          }
+-        }
+-      }
++      auto sourceKind = iter.isWasm() ? SavedFrame::KandeloSourceKind::Wasm
++                                      : CaptureScriptKind(iter.script());
+       RefPtr<NativeFrameMetadata> metadata;
+       if (!iter.isWasm() && cx->embedderFrameMetadataCapture) {
+         NativeFrameMetadata* owned = nullptr;
+@@ -1770,6 +1774,42 @@
+     }
+   }
+ 
++  if (seenStartAt && iter.done() && capture.is<JS::MaxFrames>() &&
++      capture.as<JS::MaxFrames>().includeAwaiters && cx->activeErrorStackJob) {
++    RootedObject job(cx, cx->activeErrorStackJob.ref()->get());
++    RootedObjectVector generators(cx);
++    if (job && !GetAwaitingGenerators(cx, job, capture.as<JS::MaxFrames>().maxFrames,
++                                      &generators)) return false;
++    if (!generators.empty()) {
++      causeAtom = Atomize(cx, "await", 5);
++      if (!causeAtom) return false;
++    }
++    for (size_t i = 0; i < generators.length(); ++i) {
++      Rooted<AbstractGeneratorObject*> gen(cx, &generators[i]->as<AbstractGeneratorObject>());
++      RootedFunction callee(cx, &gen->callee());
++      RootedScript script(cx, callee->nonLazyScript());
++      // An await/yield records the byte just after its suspension instruction.
++      uint32_t offset = script->resumeOffsets()[gen->resumeIndex()];
++      static_assert(JSOpLength_Await == JSOpLength_Yield);
++      if (offset < JSOpLength_Await) break;
++      jsbytecode* pc = script->offsetToPC(offset - JSOpLength_Await);
++      if (JSOp(*pc) != JSOp::Await && JSOp(*pc) != JSOp::Yield) break;
++      AutoRealmUnchecked ar(cx, callee->realm());
++      if (!cx->realm()->savedStacks().getScriptLocation(cx, script, pc, &location)) return false;
++      RefPtr<NativeFrameMetadata> metadata;
++      if (cx->embedderFrameMetadataCapture) {
++        NativeFrameMetadata* owned = nullptr;
++        bool ok = cx->embedderFrameMetadataCapture(cx, script, &owned);
++        metadata = already_AddRefed<NativeFrameMetadata>(owned);
++        if (!ok) return false;
++      }
++      if (!stackChain.emplaceBack(location.source(), location.sourceId(),
++                                  location.line(), location.column(), callee->fullDisplayAtom(),
++                                  causeAtom, nullptr, callee->realm()->principals(), script->mutedErrors(),
++                                  Nothing(), nullptr, nullptr, CaptureScriptKind(script), metadata)) return false;
++    }
++  }
++
+   // Iterate through |stackChain| in reverse order and get or create the
+   // actual SavedFrame instances.
+   frame.set(cachedParentFrame);
+@@ -2015,13 +2055,17 @@
+   }
+ 
+   RootedScript script(cx, iter.script());
+-  jsbytecode* pc = iter.pc();
+-
++  return getScriptLocation(cx, script, iter.pc(), locationp);
++}
++
++bool SavedStacks::getScriptLocation(JSContext* cx, HandleScript script, jsbytecode* pc,
++                                    MutableHandle<LocationValue> locationp) {
+   PCLocationMap::AddPtr p = pcLocationMap.lookupForAdd(PCKey(script, pc));
+ 
+   if (!p) {
+     Rooted<JSAtom*> source(cx);
+-    if (const char16_t* displayURL = iter.displayURL()) {
++    if (script->scriptSource()->hasDisplayURL()) {
++      const char16_t* displayURL = script->scriptSource()->displayURL();
+       source = AtomizeChars(cx, displayURL, js_strlen(displayURL));
+     } else {
+       const char* filename = script->filename() ? script->filename() : "";
+--- a/js/src/vm/SavedStacks.h
++++ b/js/src/vm/SavedStacks.h
+@@ -299,6 +299,8 @@
+       GCHashMap<PCKey, LocationValue, PCLocationHasher, SystemAllocPolicy>;
+   PCLocationMap pcLocationMap;
+ 
++  [[nodiscard]] bool getScriptLocation(JSContext* cx, HandleScript script, jsbytecode* pc,
++                                       MutableHandle<LocationValue> locationp);
+   [[nodiscard]] bool getLocation(JSContext* cx, const FrameIter& iter,
+                                  MutableHandle<LocationValue> locationp);
+ };

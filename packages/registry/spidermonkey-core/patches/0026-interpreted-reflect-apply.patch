@@ -1,0 +1,37 @@
+# Kandelo patch rationale (Node async hooks)
+#
+# Upstream AsyncLocalStorage.run and exit use Reflect.apply with ordinary
+# argument arrays. The ESR interpreter normally enters Function.prototype.apply
+# in C++, which calls back into the interpreter for the target. Repeated scopes
+# can consume the host call stack even though their JS frames are bounded.
+# Use SpiderMonkey's existing self-hosted content calls for common packed
+# argument lists. The original apply path handles other arrays and array-like
+# objects, including observable property access. Keep the guest and host
+# stack limits in effect. Revisit when upstream dispatches these callbacks
+# without recursive native interpreter entry.
+#
+--- a/js/src/builtin/Reflect.js
++++ b/js/src/builtin/Reflect.js
+@@ -47,6 +47,22 @@
+       "Reflect.apply",
+       ToSource(argumentsList)
+     );
++  }
++
++  // A packed list has ordinary data elements and an own array length. Use
++  // the interpreter's content-call bytecode for common callback arities, so
++  // an interpreted target can run on the current interpreter activation.
++  if (IsPackedArray(argumentsList)) {
++    switch (argumentsList.length) {
++      case 0:
++        return callContentFunction(target, thisArgument);
++      case 1:
++        return callContentFunction(target, thisArgument, argumentsList[0]);
++      case 2:
++        return callContentFunction(
++          target, thisArgument, argumentsList[0], argumentsList[1]
++        );
++    }
+   }
+ 
+   // Steps 2-4.

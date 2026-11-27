@@ -1,0 +1,105 @@
+# Kandelo patch rationale (Node optional chains and computed calls)
+#
+# Keep the dot token of a required access inside an optional chain and
+# preserve computed-call syntax when the compiler folds a constant key.
+# The bytecode operation can then record the relevant load or call position.
+#
+--- a/js/src/frontend/BytecodeEmitter.cpp
++++ b/js/src/frontend/BytecodeEmitter.cpp
+@@ -8307,12 +8307,10 @@
+         // obj().aprop() // expression
+         //       ^       // column coord
+         //
+-        // Note: Because of the constant folding logic in FoldElement,
+-        // this case also applies for constant string properties.
+-        //
+-        // obj()['aprop']() // expression
+-        //       ^          // column coord
+-        coordNode = &calleeNode->as<PropertyAccess>().key();
++        // A folded element still uses the original computed-call position.
++        if (!calleeNode->as<PropertyAccess>().isFoldedElement()) {
++          coordNode = &calleeNode->as<PropertyAccess>().key();
++        }
+         break;
+       case ParseNodeKind::Name: {
+         // Use the start of callee name unless it is at a separator
+@@ -9150,7 +9148,8 @@
+     }
+   }
+ 
+-  if (!poe.emitGet(prop->key().atom())) {
++  if (!updateSourceCoordNotes(prop->readOffset()) ||
++      !poe.emitGet(prop->key().atom())) {
+     //              [stack] PROP
+     return false;
+   }
+--- a/js/src/frontend/FoldConstants.cpp
++++ b/js/src/frontend/FoldConstants.cpp
+@@ -1162,7 +1162,7 @@
+           nodePtr, info.handler->newPropertyAccess(expr, propertyNameExpr))) {
+     return false;
+   }
+-  (*nodePtr)->as<PropertyAccess>().setReadOffset(readOffset);
++  (*nodePtr)->as<PropertyAccess>().markFoldedElement(readOffset);
+ 
+   return true;
+ }
+--- a/js/src/frontend/FullParseHandler.h
++++ b/js/src/frontend/FullParseHandler.h
+@@ -872,6 +872,10 @@
+                                      key->pn_pos.end);
+   }
+ 
++  void setChainDotOffset(Node node, uint32_t offset) {
++    node->as<PropertyAccess>().setReadOffset(offset);
++  }
++
+   ArgumentsLengthResult newArgumentsLength(Node expr, NameNodeType key) {
+     return newResult<ArgumentsLength>(expr, key, expr->pn_pos.begin,
+                                       key->pn_pos.end);
+--- a/js/src/frontend/ParseNode.h
++++ b/js/src/frontend/ParseNode.h
+@@ -2052,7 +2052,15 @@
+ };
+ 
+ class PropertyAccess : public PropertyAccessBase {
+- public:
++  bool foldedElement_ = false;
++
++ public:
++  bool isFoldedElement() const { return foldedElement_; }
++  void markFoldedElement(uint32_t bracketOffset) {
++    foldedElement_ = true;
++    setReadOffset(bracketOffset);
++  }
++
+   PropertyAccess(ParseNode* lhs, NameNode* name, uint32_t begin, uint32_t end)
+       : PropertyAccessBase(ParseNodeKind::DotExpr, lhs, name, begin, end) {
+     MOZ_ASSERT(lhs);
+--- a/js/src/frontend/Parser.cpp
++++ b/js/src/frontend/Parser.cpp
+@@ -10664,11 +10664,13 @@
+         return errorResult();
+       }
+     } else if (tt == TokenKind::Dot) {
++      const uint32_t dotOffset = pos().begin;
+       if (!tokenStream.getToken(&tt)) {
+         return errorResult();
+       }
+       if (TokenKindIsPossibleIdentifierName(tt)) {
+         nextMember = MOZ_TRY(memberPropertyAccess(lhs));
++        handler_.setChainDotOffset(nextMember, dotOffset);
+       } else if (tt == TokenKind::PrivateName) {
+         nextMember = MOZ_TRY(memberPrivateAccess(lhs));
+       } else {
+--- a/js/src/frontend/SyntaxParseHandler.h
++++ b/js/src/frontend/SyntaxParseHandler.h
+@@ -591,6 +591,8 @@
+     return NodeDottedProperty;
+   }
+ 
++  void setChainDotOffset(Node node, uint32_t offset) {}
++
+   PropertyAccessResult newArgumentsLength(Node expr, NameNodeType key) {
+     return NodeArgumentsLength;
+   }

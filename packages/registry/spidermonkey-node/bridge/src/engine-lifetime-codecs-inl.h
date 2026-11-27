@@ -146,7 +146,11 @@ void FinalizeEngineWeakCallbacks(JS::GCContext*,JSFinalizeStatus status,void* ra
   for(size_t index=0;index<state->weakGlobals.size();++index){
     auto root=state->weakGlobals[index];auto callback=root->weakCallback;
     if(!root->weakMode||root->weak||!callback||callback->cancelled)continue;
-    callback->cancelled=true;callback->callback(&state->isolate);
+    callback->cancelled=true;
+    CHECK(!state->deliveringWeakCallback);
+    state->deliveringWeakCallback=true;
+    auto restore=mozilla::MakeScopeExit([&]{state->deliveringWeakCallback=false;});
+    callback->callback(&state->isolate);
     CHECK(!callback->registered);
   }
 }

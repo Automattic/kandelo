@@ -1,5 +1,6 @@
 #ifndef KANDELO_NODE_TRACE_CODECS_INL_H
 #define KANDELO_NODE_TRACE_CODECS_INL_H
+#include "vm/PlainObject.h"
 // Native engine primitives shared by the complete original tracing sources.
 // This file is included after the rooted codec marshalling implementation.
 
@@ -10,11 +11,28 @@ Local<Value> Factory::undefined_value() { return Undefined(isolate); }
 Local<Object> Receiver(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.receiver.isObject());return f.Own<Object>(f.receiver); }
 void ReturnRaw(Isolate* isolate,const JS::Value& value) {
   auto& f=Current(isolate);if(JS_IsExceptionPending(f.cx))return;
-  if(f.arguments)f.arguments->rval().set(value);
-  else {CHECK(f.propertyHolder);f.propertyReturn.set(value);}
+  CHECK(f.arguments || f.propertyHolder);
+  f.callbackReturn.set(value);
 }
 MaybeLocal<Value> Object::Get(Local<Context> context,Local<Value> property) {
-  auto& f=Current(context->isolate);NativeEntry nativeEntry(f,context);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
+  auto& f=Current(context->isolate);
+  if (f.state->deliveringWeakCallback) {
+    // AsyncWrap reads its destroy flag from a strongly held plain object.
+    // A same-realm own Boolean data slot needs no JS entry or GC allocation.
+    JS::AutoCheckCannotGC nogc;
+    auto& receiver=cell().value.toObject();
+    CHECK(receiver.is<js::PlainObject>());
+    CHECK(receiver.nonCCWRealm()==context->cell().value.toObject().nonCCWRealm());
+    const auto name=Input(property).get();
+    CHECK(name.isString()&&name.toString()->isAtom());
+    auto& plain=receiver.as<js::PlainObject>();
+    const auto field=plain.lookupPure(js::AtomToId(&name.toString()->asAtom()));
+    CHECK(field&&field->isDataProperty());
+    const auto value=plain.getSlot(field->slot());
+    CHECK(value.isBoolean());
+    return Local<Value>(Boolean::New(context->isolate,value.toBoolean()));
+  }
+  NativeEntry nativeEntry(f,context);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
   if(!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&name)||!JS_ValueToId(f.cx,name,&key)||!JS_GetPropertyById(f.cx,object,key,&result))return {};
   return f.OwnValue(result);
 }

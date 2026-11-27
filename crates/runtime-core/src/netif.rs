@@ -91,15 +91,19 @@ pub struct NetworkInterface {
     pub loopback: bool,
 }
 
+pub const LOOPBACK_INTERFACE: NetworkInterface = NetworkInterface {
+    name: "lo",
+    index: 1,
+    loopback: true,
+};
+
+pub const IPV6_LOOPBACK: [u8; 16] = core::net::Ipv6Addr::LOCALHOST.octets();
+
 /// The machine's fixed virtual interface table: loopback plus the one
 /// configured (virtual) network interface. Matches the table the host used
 /// to own (`VIRTUAL_INTERFACES` in `kernel-worker.ts`) byte for byte.
 pub const INTERFACES: &[NetworkInterface] = &[
-    NetworkInterface {
-        name: "lo",
-        index: 1,
-        loopback: true,
-    },
+    LOOPBACK_INTERFACE,
     NetworkInterface {
         name: "eth0",
         index: 2,

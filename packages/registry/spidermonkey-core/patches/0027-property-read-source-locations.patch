@@ -1,0 +1,203 @@
+# Kandelo patch rationale (Node VM source locations)
+#
+# An exception raised by an ordinary property load belongs to the member
+# being read. Evaluating its receiver or computed key can move the current
+# bytecode source position. Record the member position after that evaluation
+# and before emitting the load. Keep the original bracket through constant
+# folding so spacing and multi-line keys retain their source coordinates.
+#
+--- a/js/src/frontend/BytecodeEmitter.cpp
++++ b/js/src/frontend/BytecodeEmitter.cpp
+@@ -1671,7 +1671,8 @@
+ 
+   while (true) {
+     // Walk back up the list, emitting annotated name ops.
+-    if (!emitAtomOp(JSOp::GetProp, pndot->key().atom())) {
++    if (!updateSourceCoordNotes(pndot->readOffset()) ||
++        !emitAtomOp(JSOp::GetProp, pndot->key().atom())) {
+       return false;
+     }
+ 
+@@ -8197,7 +8198,8 @@
+           return false;
+         }
+       }
+-      if (!poe.emitGet(prop->key().atom())) {
++      if (!updateSourceCoordNotes(prop->readOffset()) ||
++          !poe.emitGet(prop->key().atom())) {
+         //          [stack] CALLEE THIS?
+         return false;
+       }
+@@ -8217,7 +8219,8 @@
+         //          [stack] OBJ? OBJ KEY
+         return false;
+       }
+-      if (!eoe.emitGet()) {
++      if (!updateSourceCoordNotes(elem->readOffset()) ||
++          !eoe.emitGet()) {
+         //          [stack] CALLEE THIS?
+         return false;
+       }
+@@ -9198,7 +9201,7 @@
+     return false;
+   }
+ 
+-  if (!eoe.emitGet()) {
++  if (!updateSourceCoordNotes(elem->readOffset()) || !eoe.emitGet()) {
+     //              [stack] ELEM
+     return false;
+   }
+@@ -12860,7 +12863,8 @@
+           return false;
+         }
+       }
+-      if (!poe.emitGet(prop->key().atom())) {
++      if (!updateSourceCoordNotes(prop->readOffset()) ||
++          !poe.emitGet(prop->key().atom())) {
+         //          [stack] PROP
+         return false;
+       }
+@@ -12888,7 +12892,8 @@
+         //          [stack] OBJ KEY
+         return false;
+       }
+-      if (!eoe.emitGet()) {
++      if (!updateSourceCoordNotes(elem->readOffset()) ||
++          !eoe.emitGet()) {
+         //          [stack] ELEM
+         return false;
+       }
+--- a/js/src/frontend/FoldConstants.cpp
++++ b/js/src/frontend/FoldConstants.cpp
+@@ -1157,10 +1157,12 @@
+   MOZ_TRY_VAR_OR_RETURN(propertyNameExpr,
+                         info.handler->newPropertyName(name, key->pn_pos),
+                         false);
++  const uint32_t readOffset = elem->readOffset();
+   if (!TryReplaceNode(
+           nodePtr, info.handler->newPropertyAccess(expr, propertyNameExpr))) {
+     return false;
+   }
++  (*nodePtr)->as<PropertyAccess>().setReadOffset(readOffset);
+ 
+   return true;
+ }
+--- a/js/src/frontend/FullParseHandler.h
++++ b/js/src/frontend/FullParseHandler.h
+@@ -881,6 +881,13 @@
+     return newResult<PropertyByValue>(lhs, index, lhs->pn_pos.begin, end);
+   }
+ 
++  PropertyByValueResult newPropertyByValue(Node lhs, Node index, uint32_t end,
++                                           uint32_t bracketOffset) {
++    auto* node = MOZ_TRY(newPropertyByValue(lhs, index, end));
++    node->setReadOffset(bracketOffset);
++    return node;
++  }
++
+   OptionalPropertyAccessResult newOptionalPropertyAccess(Node expr,
+                                                          NameNodeType key) {
+     return newResult<OptionalPropertyAccess>(expr, key, expr->pn_pos.begin,
+@@ -888,9 +895,12 @@
+   }
+ 
+   OptionalPropertyByValueResult newOptionalPropertyByValue(Node lhs, Node index,
+-                                                           uint32_t end) {
+-    return newResult<OptionalPropertyByValue>(lhs, index, lhs->pn_pos.begin,
+-                                              end);
++                                                           uint32_t end,
++                                                           uint32_t bracketOffset) {
++    auto* node = MOZ_TRY(newResult<OptionalPropertyByValue>(
++        lhs, index, lhs->pn_pos.begin, end));
++    node->setReadOffset(bracketOffset);
++    return node;
+   }
+ 
+   PrivateMemberAccessResult newPrivateMemberAccess(Node lhs,
+--- a/js/src/frontend/ParseNode.h
++++ b/js/src/frontend/ParseNode.h
+@@ -2009,14 +2009,20 @@
+ };
+ 
+ class PropertyAccessBase : public BinaryNode {
+- public:
++  uint32_t readOffset_;
++
++ public:
++  uint32_t readOffset() const { return readOffset_; }
++  void setReadOffset(uint32_t offset) { readOffset_ = offset; }
++
+   /*
+    * PropertyAccess nodes can have any expression/'super' as left-hand
+    * side, but the name must be a ParseNodeKind::PropertyName node.
+    */
+   PropertyAccessBase(ParseNodeKind kind, ParseNode* lhs, NameNode* name,
+                      uint32_t begin, uint32_t end)
+-      : BinaryNode(kind, TokenPos(begin, end), lhs, name) {
++      : BinaryNode(kind, TokenPos(begin, end), lhs, name),
++        readOffset_(name->pn_pos.begin) {
+     MOZ_ASSERT(lhs);
+     MOZ_ASSERT(name);
+   }
+@@ -2104,10 +2110,16 @@
+ };
+ 
+ class PropertyByValueBase : public BinaryNode {
+- public:
++  uint32_t readOffset_;
++
++ public:
++  uint32_t readOffset() const { return readOffset_; }
++  void setReadOffset(uint32_t offset) { readOffset_ = offset; }
++
+   PropertyByValueBase(ParseNodeKind kind, ParseNode* lhs, ParseNode* propExpr,
+                       uint32_t begin, uint32_t end)
+-      : BinaryNode(kind, TokenPos(begin, end), lhs, propExpr) {}
++      : BinaryNode(kind, TokenPos(begin, end), lhs, propExpr),
++        readOffset_(propExpr->pn_pos.begin) {}
+ 
+   static bool test(const ParseNode& node) {
+     bool match = node.isKind(ParseNodeKind::ElemExpr) ||
+--- a/js/src/frontend/Parser.cpp
++++ b/js/src/frontend/Parser.cpp
+@@ -11261,6 +11261,7 @@
+     Node lhs, YieldHandling yieldHandling,
+     OptionalKind optionalKind /* = OptionalKind::NonOptional */) {
+   MOZ_ASSERT(anyChars.currentToken().type == TokenKind::LeftBracket);
++  const uint32_t bracketOffset = pos().begin;
+   Node propExpr = MOZ_TRY(expr(InAllowed, yieldHandling, TripledotProhibited));
+ 
+   if (!mustMatchToken(TokenKind::RightBracket, JSMSG_BRACKET_IN_INDEX)) {
+@@ -11273,9 +11274,9 @@
+   }
+   if (optionalKind == OptionalKind::Optional) {
+     MOZ_ASSERT(!handler_.isSuperBase(lhs));
+-    return handler_.newOptionalPropertyByValue(lhs, propExpr, pos().end);
+-  }
+-  return handler_.newPropertyByValue(lhs, propExpr, pos().end);
++    return handler_.newOptionalPropertyByValue(lhs, propExpr, pos().end, bracketOffset);
++  }
++  return handler_.newPropertyByValue(lhs, propExpr, pos().end, bracketOffset);
+ }
+ 
+ template <class ParseHandler, typename Unit>
+--- a/js/src/frontend/SyntaxParseHandler.h
++++ b/js/src/frontend/SyntaxParseHandler.h
+@@ -599,13 +599,15 @@
+     return NodeOptionalDottedProperty;
+   }
+ 
+-  PropertyByValueResult newPropertyByValue(Node lhs, Node index, uint32_t end) {
++  PropertyByValueResult newPropertyByValue(Node lhs, Node index, uint32_t end,
++                                           uint32_t bracketOffset = 0) {
+     MOZ_ASSERT(!isPrivateName(index));
+     return NodeElement;
+   }
+ 
+   PropertyByValueResult newOptionalPropertyByValue(Node lhs, Node index,
+-                                                   uint32_t end) {
++                                                   uint32_t end,
++                                                   uint32_t bracketOffset) {
+     return NodeOptionalElement;
+   }
+ 

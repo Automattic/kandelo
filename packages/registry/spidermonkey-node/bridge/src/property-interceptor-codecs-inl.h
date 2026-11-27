@@ -65,7 +65,7 @@ bool InvokeTemplateInterceptor(JSContext* cx,JS::HandleObject holder,
   auto local=frame.OwnValue(value);
   const bool write=operation==NativeInterceptorOperation::Set||
       operation==NativeInterceptorOperation::Define||operation==NativeInterceptorOperation::Delete;
-  frame.propertyReturn=write?JS::TrueValue():operation==NativeInterceptorOperation::Query
+  frame.callbackReturn=write?JS::TrueValue():operation==NativeInterceptorOperation::Query
       ?JS::Int32Value(None):JS::UndefinedValue();
   Intercepted intercepted=Intercepted::kNo;
   auto* isolate=&state->isolate;
@@ -117,9 +117,9 @@ bool InvokeTemplateInterceptor(JSContext* cx,JS::HandleObject holder,
       break;
     }
   }
-  if(JS_IsExceptionPending(cx)||cx->isNativeExecutionTerminating())return false;
-  *handled=intercepted==Intercepted::kYes;output.set(frame.propertyReturn);
-  return JS_WrapValue(cx,output);
+  if (!frame.FinishCallback(output)) return false;
+  *handled = intercepted == Intercepted::kYes;
+  return true;
 }
 
 bool GetTemplateInterceptedProperty(JSContext* cx,JS::HandleObject holder,

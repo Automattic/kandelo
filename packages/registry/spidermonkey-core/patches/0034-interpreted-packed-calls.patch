@@ -1,0 +1,212 @@
+# In the JITless interpreter packed argument calls can otherwise recursively
+# enter Interpret through C++ once per JS call. Use the existing interpreter
+# activation for ordinary same-realm targets and retain the expanded arguments
+# in the GC-traced callee frame. Preserve generic dispatch for native code,
+# proxies, constructors, debugging, cross-realm calls and observable getters.
+# Revisit when ESR handles these invocations on its interpreter stack.
+--- a/js/src/vm/Interpreter.cpp
++++ b/js/src/vm/Interpreter.cpp
+@@ -1786,6 +1786,37 @@
+ }
+ #endif
+ 
++#ifdef JS_CODEGEN_NONE
++enum class PackedCallStatus { Fallback, Entered, Error };
++
++static PackedCallStatus TryInlinePackedCall(JSContext* cx, InterpreterRegs& regs,
++                                            HandleValue target, HandleValue receiver,
++                                            HandleValue list) {
++  JSFunction* fun;
++  if (!IsFunctionObject(target, &fun) || !fun->isInterpreted() ||
++      fun->isClassConstructor() || fun->realm() != cx->realm() ||
++      cx->realm()->isDebuggee() || cx->realm()->debuggerObservesNativeCall() ||
++      !list.isObject() ||
++      !IsPackedArray(&list.toObject())) {
++    return PackedCallStatus::Fallback;
++  }
++  Rooted<ArrayObject*> args(cx, &list.toObject().as<ArrayObject>());
++  if (args->length() > ARGS_LENGTH_MAX) {
++    return PackedCallStatus::Fallback;
++  }
++  RootedFunction callee(cx, fun);
++  if (!cx->checkEmbedderScriptExecution()) {
++    return PackedCallStatus::Error;
++  }
++  RootedScript script(cx, JSFunction::getOrCreateScript(cx, callee));
++  if (!script || !cx->interpreterStack().pushPackedCallFrame(
++                     cx, regs, callee, script, receiver, args)) {
++    return PackedCallStatus::Error;
++  }
++  return PackedCallStatus::Entered;
++}
++#endif
++
+ bool MOZ_NEVER_INLINE JS_HAZ_JSNATIVE_CALLER js::Interpret(JSContext* cx,
+                                                            RunState& state) {
+ /*
+@@ -2242,6 +2273,9 @@
+             ADVANCE_AND_DISPATCH(JSOpLength_Resume);
+           }
+ 
++          if (JSOp(*REGS.pc) == JSOp::SpreadCall) {
++            ADVANCE_AND_DISPATCH(JSOpLength_SpreadCall);
++          }
+           MOZ_ASSERT(GetBytecodeLength(REGS.pc) == JSOpLength_Call);
+           ADVANCE_AND_DISPATCH(JSOpLength_Call);
+         }
+@@ -3228,6 +3262,18 @@
+         newTarget = NullValue();
+       }
+ 
++#ifdef JS_CODEGEN_NONE
++      if (JSOp(*REGS.pc) == JSOp::SpreadCall) {
++        switch (TryInlinePackedCall(cx, REGS, callee, thisv, arr)) {
++          case PackedCallStatus::Entered:
++            goto enter_inline_call;
++          case PackedCallStatus::Error:
++            goto error;
++          case PackedCallStatus::Fallback:
++            break;
++        }
++      }
++#endif
+       if (!SpreadCallOperation(cx, script, REGS.pc, thisv, callee, arr,
+                                newTarget, ret)) {
+         goto error;
+@@ -3275,6 +3321,21 @@
+       JSFunction* maybeFun;
+       bool isFunction = IsFunctionObject(args.calleev(), &maybeFun);
+ 
++#ifdef JS_CODEGEN_NONE
++      if ((op == JSOp::Call || op == JSOp::CallContent ||
++           op == JSOp::CallIgnoresRv) &&
++          isFunction && maybeFun->maybeNative() == fun_apply &&
++          maybeFun->realm() == cx->realm() && args.length() == 2) {
++        switch (TryInlinePackedCall(cx, REGS, args.thisv(), args[0], args[1])) {
++          case PackedCallStatus::Entered:
++            goto enter_inline_call;
++          case PackedCallStatus::Error:
++            goto error;
++          case PackedCallStatus::Fallback:
++            break;
++        }
++      }
++#endif
+       // Use the slow path if the callee is not an interpreted function, if we
+       // have to throw an exception, or if we might have to invoke the
+       // OnNativeCall hook for a self-hosted builtin.
+@@ -3377,6 +3438,12 @@
+                                     // call popInlineFrame.
+       }
+ 
++    }
++
++#ifdef JS_CODEGEN_NONE
++    enter_inline_call:
++#endif
++    {
+       SET_SCRIPT(REGS.fp()->script());
+ 
+       if (!REGS.fp()->prologue(cx)) {
+--- a/js/src/vm/Stack.cpp
++++ b/js/src/vm/Stack.cpp
+@@ -16,6 +16,7 @@
+ #include "jit/JitRuntime.h"
+ #include "js/friend/ErrorMessages.h"  // JSMSG_*
+ #include "js/Value.h"                 // JS::Value
++#include "vm/BytecodeUtil.h"
+ #include "vm/FrameIter.h"             // js::FrameIter
+ #include "vm/JSContext.h"
+ #include "wasm/WasmProcess.h"
+@@ -392,6 +393,51 @@
+ 
+ // Unlike the other methods of this class, this method is defined here so that
+ // we don't have to #include jsautooplen.h in vm/Stack.h.
++unsigned InterpreterRegs::packedCallerArgSlots(const jsbytecode* pc) {
++  if (JSOp(*pc) == JSOp::SpreadCall) {
++    return 1;
++  }
++  MOZ_ASSERT(JSOp(*pc) == JSOp::Call || JSOp(*pc) == JSOp::CallContent ||
++             JSOp(*pc) == JSOp::CallIgnoresRv);
++  return GET_ARGC(pc);
++}
++
++bool InterpreterStack::pushPackedCallFrame(
++    JSContext* cx, InterpreterRegs& regs, HandleFunction callee,
++    HandleScript script, HandleValue receiver, Handle<ArrayObject*> args) {
++  MOZ_ASSERT(script->realm() == cx->realm());
++  MOZ_ASSERT(IsPackedArray(args));
++  size_t actual = args->length();
++  size_t padded = std::max<size_t>(callee->nargs(), actual);
++  // Keep the expanded arguments with the frame. Caller stack tracing and
++  // exception unwinding must still see the original call-site operands.
++  uint64_t values = 2 + uint64_t(padded) + script->nslots();
++  if (values > (SIZE_MAX - sizeof(InterpreterFrame)) / sizeof(Value)) {
++    ReportOutOfMemory(cx);
++    return false;
++  }
++  LifoAlloc::Mark mark = allocator_.mark();
++  uint8_t* buffer =
++      allocateFrame(cx, sizeof(InterpreterFrame) + size_t(values) * sizeof(Value));
++  if (!buffer) {
++    return false;
++  }
++  Value* argv = reinterpret_cast<Value*>(buffer) + 2;
++  argv[-2] = ObjectValue(*callee);
++  argv[-1] = receiver;
++  for (size_t i = 0; i < actual; i++) {
++    argv[i] = args->getDenseElement(i);
++  }
++  SetValueRangeToUndefined(argv + actual, padded - actual);
++  InterpreterFrame* fp = reinterpret_cast<InterpreterFrame*>(argv + padded);
++  fp->mark_ = mark;
++  fp->initCallFrame(regs.fp(), regs.pc, regs.sp, *callee, script, argv,
++                    args->length(), NO_CONSTRUCT);
++  fp->flags_ |= InterpreterFrame::HAS_PACKED_CALL_ARGS;
++  regs.prepareToRun(*fp, script);
++  return true;
++}
++
+ void InterpreterRegs::setToEndOfScript() { sp = fp()->base(); }
+ 
+ /*****************************************************************************/
+--- a/js/src/vm/Stack.h
++++ b/js/src/vm/Stack.h
+@@ -301,6 +301,9 @@
+      * |js::SavedFrame| object cached for this frame.
+      */
+     HAS_CACHED_SAVED_FRAME = 0x200,
++
++    // argv was expanded from an array. The caller retains its original operands.
++    HAS_PACKED_CALL_ARGS = 0x400,
+   };
+ 
+   mutable uint32_t flags_; /* bits described by Flags */
+@@ -759,6 +762,9 @@
+     // In the case of modules, we don't have arguments, so we can't use
+     // numActualArgs, which asserts 'hasArgs'.
+     unsigned nActualArgs = fp_->isModuleFrame() ? 0 : fp_->numActualArgs();
++    if (fp_->flags_ & InterpreterFrame::HAS_PACKED_CALL_ARGS) {
++      nActualArgs = packedCallerArgSlots(pc);
++    }
+     sp = fp_->prevsp() - nActualArgs - 1 - spForNewTarget;
+     fp_ = fp_->prev();
+     MOZ_ASSERT(fp_);
+@@ -769,6 +775,7 @@
+     fp_ = &fp;
+   }
+ 
++  static unsigned packedCallerArgSlots(const jsbytecode* pc);
+   void setToEndOfScript();
+ 
+   MutableHandleValue stackHandleAt(int i) {
+@@ -830,6 +837,9 @@
+                        const CallArgs& args, HandleScript script,
+                        MaybeConstruct constructing);
+ 
++  bool pushPackedCallFrame(JSContext* cx, InterpreterRegs& regs,
++                           HandleFunction callee, HandleScript script,
++                           HandleValue receiver, Handle<ArrayObject*> args);
+   void popInlineFrame(InterpreterRegs& regs);
+ 
+   bool resumeGeneratorCallFrame(JSContext* cx, InterpreterRegs& regs,

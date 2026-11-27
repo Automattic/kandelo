@@ -472,9 +472,15 @@ void MicrotaskQueue::PerformCheckpoint(Isolate* isolate){
   while(!data.Queues()->empty()&&!data.cx->isNativeExecutionTerminating()){
     task=data.Queues()->popFront();
     if(AllNativeMicrotaskQueuesEmpty(data))JS::JobQueueIsEmpty(data.cx);
+    // A nested drain may run an unrelated native callback. Only the current
+    // job contributes suspended callers to Error.captureStackTrace.
+    JS::RootedObject activeJob(data.cx, task.isObject() ? JS::ToMaybeWrappedJSMicroTask(task) : nullptr);
+    auto* previousJob = data.cx->activeErrorStackJob.ref();
+    data.cx->activeErrorStackJob = &activeJob;
+    auto restoreActiveJob = mozilla::MakeScopeExit([&]{ data.cx->activeErrorStackJob = previousJob; });
     bool success;
     if(task.isObject()){
-      job=JS::ToMaybeWrappedJSMicroTask(task);
+      job=activeJob;
       JS::RootedObject global(data.cx,JS::GetExecutionGlobalFromJSMicroTask(job));
       if(!global)continue;
       reportingGlobal=global;
@@ -593,6 +599,42 @@ bool ReportNativeException(Isolate* isolate,JS::HandleValue error,JS::HandleObje
 }
 }
 namespace {
+void ReportNodeStringRepeatError(JSContext* cx, double count) {
+  if (count < 0 || !std::isfinite(count)) {
+    JS::RootedValue value(cx, JS::DoubleValue(count));
+    JS::RootedString string(cx, JS::ToString(cx, value));
+    if (!string) return;
+    auto bytes = JS_EncodeStringToUTF8(cx, string);
+    if (!bytes) return;
+    auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+      static constexpr JSErrorFormatString error = {
+          "NodeInvalidRepeatCount", "Invalid count value: {0}", 1, JSEXN_RANGEERR};
+      return &error;
+    };
+    JS_ReportErrorNumberUTF8(cx, format, nullptr, 0, bytes.get());
+    return;
+  }
+  auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+    static constexpr JSErrorFormatString error = {
+        "NodeInvalidStringLength", "Invalid string length", 0, JSEXN_RANGEERR};
+    return &error;
+  };
+  JS_ReportErrorNumberUTF8(cx, format, nullptr, 0);
+}
+
+void ReportNodeTypedArrayLength(JSContext* cx, JS::HandleValue length) {
+  JS::RootedString string(cx, JS::ToString(cx, length));
+  if (!string) return;
+  auto bytes = JS_EncodeStringToUTF8(cx, string);
+  if (!bytes) return;
+  auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+    static constexpr JSErrorFormatString error = {
+        "JSMSG_BAD_ARRAY_LENGTH", "Invalid typed array length: {0}", 1, JSEXN_RANGEERR};
+    return &error;
+  };
+  JS_ReportErrorNumberUTF8(cx, format, nullptr, JSMSG_BAD_ARRAY_LENGTH, bytes.get());
+}
+
 const JSClass nativeNodeGlobalClass={"global",JSCLASS_GLOBAL_FLAGS,&JS::DefaultGlobalClassOps};
 const JSClassOps nativeInterceptedGlobalOps=[] {
   auto ops=JS::DefaultGlobalClassOps;ops.newEnumerate=EnumerateNativeTemplate;return ops;
@@ -628,6 +670,12 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
     intercepted=constructor&&NativeTemplateHasInterceptors(frame,constructor);
   }
   JS::RealmOptions options;options.creationOptions().setSharedMemoryAndAtomicsEnabled(true);
+  options.creationOptions().setImmutableArrayBuffersEnabled(bridge::ImmutableArrayBuffersEnabled());
+  // Node 26's V8 configuration uses JSTypedArray::kMaxSizeInHeap (64 bytes).
+  options.creationOptions().setMaxLazyTypedArrayBytes(64);
+  options.creationOptions().setTypedArrayLengthErrorReporter(ReportNodeTypedArrayLength);
+  options.creationOptions().setStringRepeatErrorReporter(ReportNodeStringRepeatError);
+  options.creationOptions().setCaptureCallReceivers(true);
   JS::RootedObject global(frame.cx,JS_NewGlobalObject(frame.cx,
     intercepted?&nativeInterceptedGlobalClass:&nativeNodeGlobalClass,
     nullptr,JS::DontFireOnNewGlobalHook,options));
@@ -644,6 +692,18 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
   entry.CaptureAutoQueue(context);
   JS_FireOnNewGlobalObject(frame.cx,global);
   if(!JS::InitRealmStandardClasses(frame.cx))return {};
+  if (objectTemplate.IsEmpty()) {
+    // A plain Node global has a per-realm prototype between it and
+    // Object.prototype. Worker bootstrap installs its scope on that object.
+    JS::RootedObject globalPrototype(frame.cx, JS_NewPlainObject(frame.cx));
+    JS::RootedObject objectConstructor(frame.cx);
+    if (!globalPrototype ||
+        !JS_GetClassObject(frame.cx, JSProto_Object, &objectConstructor) ||
+        !JS_DefineProperty(frame.cx, globalPrototype, "constructor", objectConstructor, 0) ||
+        !JS_SetPrototype(frame.cx, global, globalPrototype)) {
+      return {};
+    }
+  }
   if(!InitializeNativeExtras(frame,context))return {};
   JS::RootedObject errorStacks(frame.cx,kandelo::node::CreateErrorStackState(frame.cx));
   if(!errorStacks)return {};

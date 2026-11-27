@@ -179,8 +179,9 @@ bool InvokeNativeTemplate(JSContext* cx,unsigned argc,JS::Value* vp){
   if(info.callback){
     FunctionCallbackInfo<Value> call(&state->isolate);info.callback(call);
   }
-  if(JS_IsExceptionPending(cx)||cx->isNativeExecutionTerminating())return false;
-  if(args.isConstructing()&&!args.rval().isObject())args.rval().set(receiver);return true;
+  if (!frame.FinishCallback(args.rval())) return false;
+  if (args.isConstructing() && !args.rval().isObject()) args.rval().set(receiver);
+  return true;
 }
 bool MaterializeTemplateValue(Frame& frame,JS::HandleValue source,Local<Context> context,JS::MutableHandleValue result){
   JS::RootedObject record(frame.cx,UnwrapTemplateObject(frame.cx,source));

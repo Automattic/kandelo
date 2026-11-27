@@ -1,0 +1,75 @@
+# Node embeds SpiderMonkey with its own typed parser message formats.
+# Apply its script formatter to direct and indirect eval and to dynamic
+# function constructors, whose compile options originate inside the engine.
+# Other embeddings retain their default formatter.
+#
+--- a/js/public/ContextOptions.h
++++ b/js/public/ContextOptions.h
+@@ -10,6 +10,7 @@
+ #include "jstypes.h"  // JS_PUBLIC_API
+ 
+ #include "js/CompileOptions.h"  // PrefableCompileOptions
++#include "js/ErrorReport.h"     // JSErrorCallback
+ #include "js/WasmFeatures.h"
+ 
+ struct JS_PUBLIC_API JSContext;
+@@ -179,6 +180,15 @@
+     setWasmBaseline(false);
+   }
+ 
++  // Optional static formatter for errors compiling eval and Function bodies.
++  JSErrorCallback dynamicScriptErrorFormat() const {
++    return dynamicScriptErrorFormat_;
++  }
++  ContextOptions& setDynamicScriptErrorFormat(JSErrorCallback callback) {
++    dynamicScriptErrorFormat_ = callback;
++    return *this;
++  }
++
+   PrefableCompileOptions& compileOptions() { return compileOptions_; }
+   const PrefableCompileOptions& compileOptions() const {
+     return compileOptions_;
+@@ -207,6 +217,7 @@
+ 
+   // Compile options.
+   PrefableCompileOptions compileOptions_;
++  JSErrorCallback dynamicScriptErrorFormat_ = nullptr;
+ };
+ 
+ JS_PUBLIC_API ContextOptions& ContextOptionsRef(JSContext* cx);
+--- a/js/src/builtin/Eval.cpp
++++ b/js/src/builtin/Eval.cpp
+@@ -10,6 +10,7 @@
+ #include "frontend/BytecodeCompiler.h"  // frontend::CompileEvalScript
+ #include "gc/HashUtil.h"
+ #include "js/CompilationAndEvaluation.h"
++#include "js/ContextOptions.h"
+ #include "js/EnvironmentChain.h"       // JS::EnvironmentChain
+ #include "js/friend/ErrorMessages.h"   // js::GetErrorMessage, JSMSG_*
+ #include "js/friend/JSMEnvironment.h"  // JS::NewJSMEnvironment, JS::ExecuteInJSMEnvironment, JS::GetJSMEnvironmentOfScriptedCaller, JS::IsJSMEnvironment
+@@ -327,6 +328,7 @@
+     }
+ 
+     CompileOptions options(cx);
++    options.parserErrorFormat = JS::ContextOptionsRef(cx).dynamicScriptErrorFormat();
+     options.setIsRunOnce(true)
+         .setNoScriptRval(false)
+         .setMutedErrors(mutedErrors)
+--- a/js/src/vm/JSFunction.cpp
++++ b/js/src/vm/JSFunction.cpp
+@@ -25,6 +25,7 @@
+ #include "js/CallNonGenericMethod.h"
+ #include "js/CompilationAndEvaluation.h"
+ #include "js/CompileOptions.h"
++#include "js/ContextOptions.h"
+ #include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+ #include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
+ #include "js/Printer.h"               // js::GenericPrinter
+@@ -1367,6 +1368,7 @@
+   }
+ 
+   CompileOptions options(cx);
++  options.parserErrorFormat = JS::ContextOptionsRef(cx).dynamicScriptErrorFormat();
+   options.setMutedErrors(mutedErrors)
+       .setFileAndLine(filename, 1)
+       .setNoScriptRval(false)

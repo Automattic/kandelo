@@ -92,6 +92,11 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
   JS::RootedObject compilationOrigin(cx);
   if(!ReadNativeCompilationOrigin(frame,error,&compilationOrigin))return {};
   JS::RootedObject creation(cx,nativeError?JS::ExceptionStackOrNull(error):nullptr);
+  if(!atThrow&&error){
+    JS::RootedObject savedStack(cx);
+    if(!kandelo::node::ReadUnformattedErrorStack(cx,value,&savedStack))return {};
+    if(savedStack)creation=savedStack;
+  }
   JS::RootedObject location(cx,atThrow?captured:creation);
   // Only CreateMessage's documented fallback captures the current stack.
   // A caught exception without a throw stack must never acquire this caller's location.
@@ -156,6 +161,13 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
   column=mappedColumn-1;
   JS::SetReservedSlot(record,MessageLine,JS::Int32Value(NativeStackNumber(line)));
   JS::SetReservedSlot(record,MessageColumn,JS::Int32Value(NativeStackNumber(column)));
+  if (atThrow && sourceLine && sourceRecord && !compilationOrigin &&
+      !report->linebuf() && column < INT_MAX) {
+    // V8's Isolate::ComputeLocation spans one UTF-16 code unit for a runtime
+    // frame with a known source position. Use the captured throw position;
+    // an Error can have been constructed on a different line.
+    JS::SetReservedSlot(record, MessageEndColumn, JS::Int32Value(column + 1));
+  }
   JS::SetReservedSlot(record,MessageOriginKnown,JS::BooleanValue(true));
   JS::SetReservedSlot(record,MessageOriginLine,JS::Int32Value(0));
   JS::SetReservedSlot(record,MessageOriginColumn,JS::Int32Value(0));
@@ -334,8 +346,7 @@ int Message::GetEndColumn(){
   auto& frame=*Frame::current;
   auto end=JS::GetReservedSlot(MessageRecord(frame,*this),MessageEndColumn);
   if(end.isInt32())return end.toInt32();
-  // SavedFrame/JSErrorReport capture points, not end ranges. Expose the audited
-  // interface's no-column sentinel; never invent a source-expression extent.
+  // Preserve the no-column sentinel when the message has no known end.
   return kNoColumnInfo;
 }
 ScriptOrigin Message::GetScriptOrigin(){auto& f=*Frame::current;JS::RootedValue value(f.cx,cell().value);auto flags=JS::GetReservedSlot(MessageRecord(f,*this),MessageOriginFlags);return ScriptOrigin(f.Own<Message>(value),nullptr,ScriptOriginOptions(flags.isInt32()?flags.toInt32():0));}

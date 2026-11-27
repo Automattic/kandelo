@@ -6,6 +6,10 @@ import { ownedBrowserStorageRoot, removeBrowserStorageRoot, removeNewWritableStr
 
 export default function setup() {
   execFileSync("python3", [fileURLToPath(new URL("../../scripts/build-program-baseline.py", import.meta.url))], { stdio: "inherit" });
+  return prepareBrowserStorage();
+}
+
+export function prepareBrowserStorage() {
   if (process.platform !== "darwin") return;
   const root = ownedBrowserStorageRoot();
   const temporary = webkitTemporaryDirectory();

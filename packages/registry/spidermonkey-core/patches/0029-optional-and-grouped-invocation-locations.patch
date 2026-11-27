@@ -1,0 +1,46 @@
+# Kandelo patch rationale (Node call source locations)
+#
+# Use the property name for an ordinary call through an optional named
+# access. Optional invocation and grouped callees use the invocation token.
+#
+--- a/js/src/frontend/BytecodeEmitter.cpp
++++ b/js/src/frontend/BytecodeEmitter.cpp
+@@ -8298,8 +8298,15 @@
+     // obj[expr]() // expression
+     //          ^  // column coord
+     coordNode = argsList;
++    if (callNode->isKind(ParseNodeKind::OptionalCallExpr) ||
++        calleeNode->isInParens()) {
++      return coordNode;
++    }
+ 
+     switch (calleeNode->getKind()) {
++      case ParseNodeKind::OptionalDotExpr:
++        coordNode = &calleeNode->as<OptionalPropertyAccess>().key();
++        break;
+       case ParseNodeKind::ArgumentsLength:
+       case ParseNodeKind::DotExpr:
+         // Use the position of a property access identifier.
+@@ -8312,20 +8319,9 @@
+           coordNode = &calleeNode->as<PropertyAccess>().key();
+         }
+         break;
+-      case ParseNodeKind::Name: {
+-        // Use the start of callee name unless it is at a separator
+-        // or has no args.
+-        //
+-        // 2 + obj()   // expression
+-        //     ^       // column coord
+-        //
+-        if (argsList->empty() ||
+-            !bytecodeSection().atSeparator(calleeNode->pn_pos.begin)) {
+-          // Use the start of callee names.
+-          coordNode = calleeNode;
+-        }
++      case ParseNodeKind::Name:
++        coordNode = calleeNode;
+         break;
+-      }
+ 
+       default:
+         break;
