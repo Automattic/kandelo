@@ -95,11 +95,16 @@ The maintainer wants a first iteration soon. The effort is explicitly
   browser/audio realms never receive guest memory. The GPU worker is a
   disposable kernel-owned worker. WebKit/JSC charges declared memory ceilings
   at construction (`host/src/runtime-memory-profile.ts`).
-- **ABI** (`docs/agent-guidance/abi.md`): the guest library, ioctls and
-  kernel–host interface all change. Expect a program `ABI_VERSION` bump
-  (every GL program relinks), a `HOST_ADAPTER_VERSION` bump and new version
-  constants for the command-stream format and the kernel–executor protocol,
-  with a regenerated `abi/snapshot.json`. No compatibility shims.
+- **ABI** (`docs/agent-guidance/abi.md`): the ABI-56 base program surface
+  is frozen so that saved programs stay valid
+  (`docs/persistent-program-compatibility.md`). The guest reaches kgpu
+  through a versioned program extension, `kandelo.kgpu.v1`, following the
+  `kandelo.klog.v1` precedent (`docs/program-extensions.md`), not through
+  new ioctls. Only programs that import it, the GL programs, carry the new
+  requirement; every other program keeps its identity. The kernel–host
+  transport bumps `HOST_ADAPTER_VERSION`. The command-stream format and the
+  kernel–executor protocol carry their own version constants. No
+  compatibility shims.
 - **Graphics memory groups** are a preview (`docs/shared-memory-groups.md`):
   members trust each other; plugin-loading programs (dynamic side modules)
   and `vfork` are outside the preview. WebKit is experimental, and repeated

@@ -53,14 +53,29 @@ Each slice gets its own plan when it starts; the order is dependency order.
 - **Read once.** Each command byte is read once, into executor memory, before
   it is acted on. Executor state never lives in group pages. Guest virtual
   addresses are never used as backing offsets.
-- **Grouped programs only.** A `kgpu` ioctl from a process outside a memory
+- **Grouped programs only.** A `kgpu` request from a process outside a memory
   group fails with `EOPNOTSUPP`.
 - **No renderer means failure.** With no renderer (Node without an
   embedder-supplied WebGL 2), context creation fails with `ENODEV`.
-- **New ioctl numbers** are `'d'` `0xE8`–`0xEB`, the next free range after
-  `dri_owned::REQUEST` (`0xE7`).
-- **Host adapter version.** Bump `HOST_ADAPTER_VERSION` from 41 to 42 in the
-  change that adds the `kgpu` kernel exports and host import.
+- **The guest interface is a program extension, not ioctls** (Ruling R9).
+  The ABI-56 base program surface and `abi/supported-program-baseline.json`
+  are frozen (`docs/persistent-program-compatibility.md`,
+  `docs/program-extensions.md`). Programs reach kgpu through the required
+  import `kandelo.kgpu.v1.__kandelo_kgpu_v1(arg: pointer, size: i32, op: i32) -> i32`,
+  following `kandelo.klog.v1`. It returns a non-negative result or a
+  negative errno and never sets `errno`. Ops are `KGPU_OP_CONTEXT_CREATE = 1`,
+  `KGPU_OP_CONTEXT_DESTROY = 2`, `KGPU_OP_SUBMIT = 3` and `KGPU_OP_WAIT = 4`,
+  and `size` must equal the op's struct size or the result is `-22`. The
+  process worker serves the import by issuing kernel-host request
+  `extension_requests::KGPU_V1 = 602` on the calling thread's own channel.
+  The kernel stages `arg` through that request's InOut descriptor in
+  `host_abi::EXTENSION_REQUEST_DESCRIPTORS`, so no argument bytes pass
+  through host code. `ABI_VERSION`, the program digest and the base ioctl
+  contract table do not change.
+- **Host adapter version.** Bump `HOST_ADAPTER_VERSION` from 41 to 42 once
+  on this branch, in Task 2 (request 602 and its descriptor). Later kgpu
+  kernel exports and imports in this slice extend version 42 and add to its
+  history line.
   Regenerate `abi/snapshot.json` with
   `scripts/dev-shell.sh bash scripts/check-abi-version.sh update`.
 - **Versioning the new formats.** The new formats carry their own constants:
@@ -78,7 +93,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
    memory between submit and execution, or submit garbage. The executor must
    reject a malformed record with a context fault. It must never trap, never
    loop, and never touch another context's objects. (Task 6 fuzz test.)
-2. **Exit, exec, fatal signal or fd close with work in flight.** The pins
+2. **Exit, exec, fatal signal or context destroy with work in flight.** The pins
    stay until the executor retires the submission, then all are released with
    no leak. A parked wait returns `EINTR` on a caught signal. (Task 4 tests.)
 3. **Bad ranges.** Submit ranges that are unmapped, cross discontiguous
@@ -156,22 +171,24 @@ Each slice gets its own plan when it starts; the order is dependency order.
   Expected: tests PASS and the check is clean.
 - [ ] **Step 6: Commit.** Message: `GPU: Define the kgpu command-stream format`.
 
-### Task 2: Kernel–host and ioctl contracts in `crates/shared`
+### Task 2: kgpu program extension and kernel–host records
 
 **Files:**
 - Create: `crates/shared/src/kgpu.rs` (and add `pub mod kgpu;` in `crates/shared/src/lib.rs`)
-- Modify: `crates/shared/src/ioctl_contract.rs` (four entries, keeping the table sorted by request)
-- Modify (generated): `abi/snapshot.json`, `host/src/generated/abi.ts`, `libc/glue/abi_constants.h`, `libc/musl-overlay/include/bits/kandelo_syscall_marshal.h`
-- Modify: `tools/xtask/src/dump_abi.rs` (generate `libc/musl-overlay/include/kandelo/kgpu.h`: the four request numbers, the ioctl structs with `_Static_assert` sizes, access flags and limits; `--check` fails on drift)
+- Modify: `crates/program-abi/src/program_extensions.rs` (declare `kandelo.kgpu.v1` / `__kandelo_kgpu_v1`, as `kandelo.klog.v1` is declared at `:79`), then regenerate with `cargo xtask program-extensions` (`abi/program-extensions.json`, host constants, SDK linker allowance)
+- Modify: `crates/shared/src/lib.rs` (`extension_requests::KGPU_V1 = 602`; its descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`, sized per op; `HOST_ADAPTER_VERSION = 42` with history line "42 adds the kgpu.v1 extension request")
+- Revert from commit 6bc9063e91: the four `IOCTL_REQUEST_CONTRACTS` entries and anything else that moved the base program digest
+- Modify (generated): `abi/snapshot.json`, `host/src/generated/abi.ts`
+- Modify: `tools/xtask/src/dump_abi.rs` (generate `libc/musl-overlay/include/kandelo/kgpu.h`: op numbers, the argument structs with `_Static_assert` sizes, access flags, limits, and the import declaration `int __kandelo_kgpu_v1(void *arg, int size, int op)` with `import_module("kandelo.kgpu.v1")` / `import_name("__kandelo_kgpu_v1")` attributes; `--check` fails on drift)
 
 **Interfaces:**
 - Produces (in `wasm_posix_shared::kgpu`):
-  - Ioctls, all `_IOWR('d', nr, size)`:
-    - `DRM_IOCTL_KGPU_CONTEXT_CREATE` (nr `0xE8`): `KgpuContextCreate { flags: u32, context: u32 /*out*/ }`, 8 bytes.
-    - `DRM_IOCTL_KGPU_CONTEXT_DESTROY` (nr `0xE9`): `KgpuContextDestroy { context: u32, pad: u32 }`, 8 bytes.
-    - `DRM_IOCTL_KGPU_SUBMIT` (nr `0xEA`): `KgpuSubmit { context: u32, flags: u32, stream_addr: u64, stream_len: u32, buffer_count: u32, buffers_addr: u64, seqno: u64 /*out*/ }`, 40 bytes.
+  - Op argument structs (op numbers in Global Constraints):
+    - `KGPU_OP_CONTEXT_CREATE`: `KgpuContextCreate { flags: u32, context: u32 /*out*/ }`, 8 bytes.
+    - `KGPU_OP_CONTEXT_DESTROY`: `KgpuContextDestroy { context: u32, pad: u32 }`, 8 bytes.
+    - `KGPU_OP_SUBMIT`: `KgpuSubmit { context: u32, flags: u32, stream_addr: u64, stream_len: u32, buffer_count: u32, buffers_addr: u64, seqno: u64 /*out*/ }`, 40 bytes.
     - Buffer table entries: `KgpuBuffer { addr: u64, len: u32, access: u32 }`, 16 bytes. `access` is `KGPU_ACCESS_READ = 1`, `KGPU_ACCESS_WRITE = 2`. At most `KGPU_MAX_BUFFERS = 64` entries, and `stream_len` is at most `KGPU_MAX_STREAM = 1 << 20`.
-    - `DRM_IOCTL_KGPU_WAIT` (nr `0xEB`): `KgpuWait { context: u32, flags: u32, seqno: u64, timeout_ns: i64 }`, 24 bytes. A negative timeout means infinite; zero means poll and returns `ETIME` if pending.
+    - `KGPU_OP_WAIT`: `KgpuWait { context: u32, flags: u32, seqno: u64, timeout_ns: i64 }`, 24 bytes. A negative timeout means infinite; zero means poll and returns `ETIME` if pending.
   - `pub const KGPU_PROTOCOL_VERSION: u32 = 1;`
   - `pub struct Extent { offset: u64, len: u32, pad: u32 }`, 16 bytes: a byte range in the group backing.
   - Submission record (kernel to host), little-endian:
@@ -183,19 +200,21 @@ Each slice gets its own plan when it starts; the order is dependency order.
 
 - [ ] **Step 1: Write failing tests** in `crates/shared/src/kgpu.rs`:
   - `struct_sizes_match_contract`: `size_of` checks for every struct.
-  - `ioctl_numbers`: each request equals `_IOWR('d', nr, size)`.
+  - `op_numbers_and_descriptor`: op constants are 1–4, `extension_requests::KGPU_V1 == 602`, and its descriptor stages one InOut buffer of at most `size_of::<KgpuSubmit>()` bytes.
   - `submission_roundtrip_multi_extent`: two stream extents and one buffer
     with three extents round-trip exactly.
   - `completion_roundtrip`
   - `decode_rejects_truncated_and_oversized_counts`
 - [ ] **Step 2: Run the tests and confirm they fail.**
   `scripts/dev-shell.sh cargo test -p wasm-posix-shared --target aarch64-apple-darwin kgpu`
-- [ ] **Step 3: Implement, and add the four `IOCTL_REQUEST_CONTRACTS`
-  entries.** Each is `pointer!(…, InOut, size)`, inserted in sorted position.
+- [ ] **Step 3: Implement the extension declaration, request 602 and its descriptor.**
 - [ ] **Step 4: Regenerate the ABI artifacts**
-  (`scripts/dev-shell.sh bash scripts/check-abi-version.sh update`), then run
-  the tests and the check. Expected: PASS and clean.
-- [ ] **Step 5: Commit.** Message: `GPU: Define kgpu ioctls and kernel-host records`.
+  (`cargo xtask program-extensions`, then
+  `scripts/dev-shell.sh bash scripts/check-abi-version.sh update`), then run
+  the tests and `scripts/dev-shell.sh bash scripts/check-abi-version.sh`.
+  Expected: PASS and clean, including `check-program-baseline` with the
+  ABI-56 digest unchanged.
+- [ ] **Step 5: Commit.** Message: `GPU: Declare the kgpu.v1 program extension`.
 
 ### Task 3: Graphics-memory extents and GPU pins
 
@@ -246,10 +265,10 @@ Each slice gets its own plan when it starts; the order is dependency order.
 
 **Files:**
 - Create: `crates/runtime-core/src/dri/kgpu/mod.rs`, `context.rs`, `queue.rs`, `wait.rs`
-- Modify: `crates/runtime-core/src/syscalls.rs`: arms in `handle_dri_ioctl_target` (`:2050`) for the four requests, plus exit, exec and fd-close cleanup hooks next to the existing DRM cleanup
+- Modify: the kernel's extension-request dispatch (where `extension_requests::KLOG_V1` (600) is served) to route `KGPU_V1` (602) by op to `KgpuDevice`, plus exit and exec cleanup hooks next to the existing DRM cleanup
 - Modify: `crates/runtime-core/src/wait_queue.rs` (add `WakeSource::KgpuSeqno { device: u32, context: u32, seqno: u64 }`)
 - Modify: `crates/runtime-core/src/wait_park.rs` (add a `Resume` variant that publishes the wait result)
-- Test: `#[cfg(test)]` modules in `dri/kgpu/*.rs`, and the `sys_ioctl` helper tests in `syscalls.rs` (helper near `:25298`)
+- Test: `#[cfg(test)]` modules in `dri/kgpu/*.rs`, and tests through the same extension-request entry the klog tests use
 
 **Interfaces:**
 - Consumes: Task 2 types; Task 3 `gpu_extents` / `gpu_pin` / `gpu_unpin`; `Parks::park` (`wait_park.rs:303`) and `finish_with` (`:350`).
@@ -265,8 +284,8 @@ Each slice gets its own plan when it starts; the order is dependency order.
     - `Retired` unpins and advances `last_retired`;
     - `ContextLost` marks the context lost;
     - each wakes `KgpuSeqno` waiters through `note_source_ready`.
-  - Ioctl semantics:
-    - **Non-grouped caller:** every `kgpu` ioctl returns `EOPNOTSUPP`.
+  - Op semantics:
+    - **Non-grouped caller:** every `kgpu` op returns `EOPNOTSUPP`.
     - **CONTEXT_CREATE:** `ENODEV` when `!renderer_available`. Otherwise it
       allocates an id, queues a ContextCreate record and returns
       immediately.
@@ -285,7 +304,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
       - A caught signal gives `EINTR`, and a lost context gives `EIO`.
     - **CONTEXT_DESTROY:** valid only for the owner; queues a destroy record.
   - Cleanup:
-    - Closing the fd, exit or exec queues destroy for the owner's contexts.
+    - Exit or exec queues destroy for the owner's contexts (contexts belong to the process, not to an fd).
     - Pins stay until `Retired` arrives for every in-flight seqno.
 
 - [ ] **Step 1: Write failing tests** (with a fake grouped image from the
@@ -329,7 +348,8 @@ Each slice gets its own plan when it starts; the order is dependency order.
     `kernel_kgpu_set_renderer(available: u32)`, plus
     `kernel_kgpu_pinned_frames() -> u32` (the Task 3 count, used by
     inspection)
-- Modify: `crates/shared/src/lib.rs` (`HOST_ADAPTER_VERSION = 42`, with a history line: "42 adds kgpu submission drain, completion and kick")
+- Modify: `crates/shared/src/lib.rs` (extend the version-42 history line from Task 2: "…, kgpu submission drain, completion and kick")
+- Modify: the process-worker host code that serves `kandelo.klog.v1` (find it from `extension_requests::KLOG_V1` / `__kandelo_klogctl_v1` in `host/src`): serve `kandelo.kgpu.v1.__kandelo_kgpu_v1` the same way, issuing request 602 on the calling thread's channel, on both Node and browser process workers
 - Modify: `packages/registry/kernel/build-kernel.sh` (add the new exports to `wasm_require_exports`)
 - Modify (generated): `abi/snapshot.json`, `host/src/generated/abi.ts`
 
@@ -346,7 +366,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
 
 - [ ] **Step 1: Write the failing test** `host/test/kgpu-boundary.test.ts`.
   It loads the built kernel with a recorded `host_kgpu_kick` and a fake
-  grouped program fixture issuing CONTEXT_CREATE then SUBMIT (via
+  grouped program fixture calling `__kandelo_kgpu_v1` for CONTEXT_CREATE then SUBMIT (via
   `compileSdkFixture` + `runCentralizedProgram`, as in
   `host/test/egl-dmabuf-smoke.test.ts`), and asserts:
   - the kick fires once;
@@ -491,8 +511,8 @@ Each slice gets its own plan when it starts; the order is dependency order.
 ### Task 8: End-to-end guest program in browsers
 
 **Files:**
-- Create: `programs/kgpu-clear.c`. Using only `<kandelo/kgpu_stream.h>`, `<kandelo/kgpu.h>` and raw ioctls, it does the following:
-  - opens `/dev/dri/renderD128` and creates a context;
+- Create: `programs/kgpu-clear.c`. Using only `<kandelo/kgpu_stream.h>`, `<kandelo/kgpu.h>` and `__kandelo_kgpu_v1`, it does the following:
+  - creates a context;
   - encodes viewport, clear-color 0.2/0.4/0.6/1.0, clear COLOR, and a 4×4
     readback into a 64-byte heap buffer;
   - submits, waits with an infinite timeout, and prints the 16 RGBA pixels
@@ -535,7 +555,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
     in JavaScript).
   - It reports median time per call on each engine.
 - Create: `docs/measurements/2026-11-27-kgpu-crossing.md`: method, machine, engine versions, results, and the decision with its reason.
-- Modify: `docs/architecture.md`: a new section, "Kernel GPU execution (kgpu)", describing slice 1 as implemented. It covers the ownership split, ioctls, extents and pins, rings, the GPU worker and the Node boundary.
+- Modify: `docs/architecture.md`: a new section, "Kernel GPU execution (kgpu)", describing slice 1 as implemented. It covers the ownership split, the `kandelo.kgpu.v1` extension, extents and pins, rings, the GPU worker and the Node boundary.
 - Modify: `docs/plans/2026-11-27-rust-gpu-driver-design.md`: record the crossing decision under Backends.
 
 - [ ] **Step 1: Write the bench spec** and run it on Firefox, WebKit and
