@@ -91,6 +91,7 @@ patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0009-kmsdrm-restore-disabled-crtc
 # Kandelo does not build; its dlopen call linked the dynamic loader into
 # every SDL program (patch header).
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0010-kandelo-disable-dynamic-api.patch"
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0011-match-test-timeout-timer-callback.patch"
 
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe

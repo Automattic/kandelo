@@ -53,9 +53,8 @@ while IFS= read -r flag; do AMARO_LINK_FLAGS+=" $flag"; done < "$AMARO_CONFIGURA
 export CC="wasm32posix-cc -D__kandelo__=1" CXX="wasm32posix-c++ -D__kandelo__=1"
 export AR=wasm32posix-ar RANLIB=wasm32posix-ranlib
 export CC_host="${HOST_CC:-cc}" CXX_host="${HOST_CXX:-c++}"
-# The target lacks guard pages. Match standalone OpenSSL's no-secure-memory build.
-export CFLAGS="${CFLAGS:-} -DUV_PLATFORM_KANDELO=1 -DOPENSSL_NO_SECURE_MEMORY"
-export CXXFLAGS="${CXXFLAGS:-} -DUV_PLATFORM_KANDELO=1 -DOPENSSL_NO_SECURE_MEMORY -DV8_PLATFORM_KANDELO=1 -DKANDELO_SPIDERMONKEY_ENGINE=1 -DXP_UNIX=1 -ferror-limit=0 -nostdinc++ -isystem $WASM_POSIX_DEP_LIBCXX_DIR/include/c++/v1 -isystem $WASM_POSIX_SYSROOT/include/kandelo-node-engine -isystem $WASM_POSIX_SYSROOT/include/mozjs-153 -isystem $WASM_POSIX_SYSROOT/include"
+export CFLAGS="${CFLAGS:-} -DUV_PLATFORM_KANDELO=1"
+export CXXFLAGS="${CXXFLAGS:-} -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1 -DKANDELO_SPIDERMONKEY_ENGINE=1 -DXP_UNIX=1 -ferror-limit=0 -nostdinc++ -isystem $WASM_POSIX_DEP_LIBCXX_DIR/include/c++/v1 -isystem $WASM_POSIX_SYSROOT/include/kandelo-node-engine -isystem $WASM_POSIX_SYSROOT/include/mozjs-153 -isystem $WASM_POSIX_SYSROOT/include"
 export LDFLAGS="${LDFLAGS:-} -Wl,--error-limit=0$AMARO_LINK_FLAGS$UNDICI_LINK_FLAGS"
 # Search declared target inputs, never ambient host libraries. Other providers
 # retain their original isolated targets inside Node's private build tree.

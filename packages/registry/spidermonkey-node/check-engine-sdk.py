@@ -79,8 +79,8 @@ def prepare(args):
     # Node's original configure_v8 reads only -I/-L/-l from pkg-config. The
     # private sysroot contains byte-verified real archives, so one library path
     # suffices and system-header/define flags are supplied separately by CXXFLAGS.
-    # Like the standalone engine, ArrayBuffer commits use the SDK's read/write
-    # mprotect implementation. Restrictive requests still fail with ENOTSUP.
+    # Use the same mprotect opt-in as standalone SpiderMonkey for its buffer
+    # commit path. The SDK library returns ENOTSUP for access restrictions.
     pc = args.output / 'v8.pc'
     pc.write_text(f'''prefix={args.sysroot}
 libdir=${{prefix}}/lib
@@ -88,7 +88,7 @@ includedir=${{prefix}}/include
 Name: Kandelo SpiderMonkey source bridge for Node
 Description: Actual incomplete engine integration inputs; no SDK/runtime certification
 Version: 153.7.0
-Libs: -L${{libdir}} -lkandelo-node-bridge -lmozjs-153 -ljsrust -lkandelo-mprotect -lv8-tracing -luv -lc++ -lc++abi -lpthread -lm
+Libs: -L${{libdir}} -lkandelo-node-bridge -lmozjs-153 -ljsrust -lv8-tracing -luv -lc++ -lc++abi -lpthread -lm -lkandelo-mprotect
 Cflags: -I${{includedir}}/kandelo-node-engine -I${{includedir}}/mozjs-153 -I${{includedir}}
 ''')
     # The declared libuv package installs the static pkg-config name; Node's
