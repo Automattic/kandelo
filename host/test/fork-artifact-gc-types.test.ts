@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   detectPtrWidth,
   describeWasmArtifactPolicyFailures,
+  inspectWasmArtifactPolicy,
+  readWasmFunctionImports,
   readWasmImportDescriptors,
   readWasmImportNames,
   wasmImportsKernelFork,
@@ -86,6 +88,9 @@ describe("fork artifact parsing with recursive GC types", () => {
     expect(detectPtrWidth(wasm)).toBe(8);
 
     const failures = describeWasmArtifactPolicyFailures(wasm);
+    const inspection = inspectWasmArtifactPolicy(wasm);
+    expect(inspection.failures).toEqual(failures);
+    expect(inspection.functionImports).toEqual(readWasmFunctionImports(wasm));
     expect(failures.join("\n")).not.toContain("cannot validate");
     expect(failures.join("\n")).not.toContain("non-function type");
     expect(failures).toContain(

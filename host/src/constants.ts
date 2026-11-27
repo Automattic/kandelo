@@ -2509,7 +2509,10 @@ export function wasmHasCompleteForkInstrumentation(programBytes: ArrayBuffer): b
 }
 
 export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
-  const customSections = readWasmCustomSectionNames(programBytes);
+  return hasRelocatableObjectSections(readWasmCustomSectionNames(programBytes));
+}
+
+function hasRelocatableObjectSections(customSections: readonly string[]): boolean {
   return customSections.includes("linking") ||
     customSections.some((name) => name.startsWith("reloc."));
 }
@@ -2520,23 +2523,39 @@ export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
  */
 let abiContractMissingWarned = false;
 
+interface WasmArtifactPolicyOptions {
+  expectedAbi?: number | null;
+  expectedAbiContractDigest?: Uint8Array | null;
+  requiredExports?: readonly string[];
+  forbiddenExports?: readonly string[];
+  requireForkInstrumentation?: boolean;
+  forbidForkInstrumentation?: boolean;
+  /** Only the admitted group Worker path supplies this set. Ordinary
+   * launch keeps rejecting every unsupported required namespace. */
+  supportedProgramExtensions?: ReadonlySet<string>;
+}
+
 export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
-  options: {
-    expectedAbi?: number | null;
-    expectedAbiContractDigest?: Uint8Array | null;
-    requiredExports?: readonly string[];
-    forbiddenExports?: readonly string[];
-    requireForkInstrumentation?: boolean;
-    forbidForkInstrumentation?: boolean;
-    /** Only the admitted group Worker path supplies this set. Ordinary
-     * launch keeps rejecting every unsupported required namespace. */
-    supportedProgramExtensions?: ReadonlySet<string>;
-  } = {},
+  options?: WasmArtifactPolicyOptions,
 ): string[] {
+  return inspectWasmArtifactPolicy(programBytes, options).failures;
+}
+
+/** Return facts from the policy check so the Worker can use them for the
+ * same bytes it inspected during admission. */
+export function inspectWasmArtifactPolicy(
+  programBytes: ArrayBuffer,
+  options: WasmArtifactPolicyOptions = {},
+): {
+  failures: string[];
+  functionImports?: readonly WasmFunctionImportType[];
+  abiMarkerMissing: boolean;
+} {
   const failures: string[] = [];
   let declaredAbi: number | null = null;
-  if (wasmContainsLegacyAsyncify(programBytes)) {
+  const exportNames = readWasmExportNames(programBytes);
+  if (exportNames.some((name) => name.startsWith("asyncify_"))) {
     failures.push("contains asyncify_");
   }
 
@@ -2576,7 +2595,7 @@ export function describeWasmArtifactPolicyFailures(
     }
   }
 
-  const exports = new Set(readWasmExportNames(programBytes));
+  const exports = new Set(exportNames);
   if (options.requiredExports) {
     const missing = options.requiredExports.filter((name) => !exports.has(name));
     if (missing.length > 0) {
@@ -2591,13 +2610,14 @@ export function describeWasmArtifactPolicyFailures(
   }
 
   const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
-  const importNames = readWasmImportNames(programBytes);
+  const imports = readWasmImportDescriptors(programBytes);
+  const importNames = imports.map(({ module, name }) => `${module}.${name}`);
+  let forkFacts: WasmForkArtifactFacts | undefined;
   if (importNames.some(name => name.startsWith(RESERVED_MODULE_PREFIX) || isProgramExtensionImportName(name.slice(name.lastIndexOf(".") + 1)))) {
     try {
-      const facts = readWasmForkArtifactFacts(programBytes);
+      forkFacts = readWasmForkArtifactFacts(programBytes);
       failures.push(...describeProgramExtensionFailures(
-        readWasmImportDescriptors(programBytes), facts.functionImportEntries,
-        facts.memoryPointerWidths,
+        imports, forkFacts.functionImportEntries, forkFacts.memoryPointerWidths,
         options.supportedProgramExtensions,
       ));
     } catch (error) {
@@ -2639,12 +2659,8 @@ export function describeWasmArtifactPolicyFailures(
     importedGlobalsDescriptorCount > 0 || importedTablesDescriptorCount > 0 ||
     unwindTransportCount > 0 ||
     hasUnwindTagImport;
-  if (
-    options.expectedAbi !== undefined &&
-    options.expectedAbi !== null &&
-    hasForkArtifactSurface &&
-    declaredAbi === null
-  ) {
+  const abiMarkerMissing = options.expectedAbi != null && declaredAbi === null;
+  if (hasForkArtifactSurface && abiMarkerMissing) {
     // WHY: the safety bit names an ABI-epoch contract. Without the program's
     // ABI marker, copied capability metadata could make an ABI 42 transform
     // look safe to an ABI 43 host.
@@ -2662,15 +2678,16 @@ export function describeWasmArtifactPolicyFailures(
   }
 
   const requireForkInstrumentation =
-    options.requireForkInstrumentation ?? !wasmIsRelocatableObject(programBytes);
+    options.requireForkInstrumentation ?? !hasRelocatableObjectSections(customSections);
   if (
     requireForkInstrumentation &&
     (hasForkArtifactSurface || importNames.includes("kernel.kernel_fork"))
   ) {
     const failureCount = failures.length;
     try {
+      forkFacts ??= readWasmForkArtifactFacts(programBytes);
       failures.push(
-        ...describeForkArtifactContractFailures(readWasmForkArtifactFacts(programBytes)),
+        ...describeForkArtifactContractFailures(forkFacts),
       );
     } catch (error) {
       failures.push(
@@ -2688,7 +2705,7 @@ export function describeWasmArtifactPolicyFailures(
     }
   }
 
-  return failures;
+  return { failures, functionImports: forkFacts?.functionImportEntries, abiMarkerMissing };
 }
 
 /**
