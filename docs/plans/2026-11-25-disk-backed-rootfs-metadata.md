@@ -1,9 +1,11 @@
 # KIFS v3
 
-Kandelo offers KIFS v3 as an opt-in upgrade for checked, resizable
-computers. The checked source image supplies first boot. Subsequent boots
-open the activated volume directly. Development shells get at least
-1 GiB on upgrade. Other resizable computers keep their logical capacity.
+Kandelo can open KIFS v3 saved computers and displays the mounted format
+in Internals → Config. The checked source image supplies first boot.
+Subsequent boots open the activated volume directly. The shared host
+protocol can explicitly upgrade a checked resizable computer.
+Development shells get at least 1 GiB on upgrade. Other resizable
+computers keep their logical capacity.
 
 ## Mounted filesystem interface
 
@@ -107,8 +109,8 @@ is required for custom and fixed images.
 
 Two independent saved-shell runs exercised both filesystem orders on
 Node, Chromium, Firefox and WebKit. KIFS v3 took less elapsed time in
-all 80 comparisons. The packaged app opened both formats and exercised
-an explicit upgrade on all three browsers. The qualification report
+all 80 comparisons. The packaged app opened both formats and displayed
+the active version on all three browsers. The qualification report
 includes artifact hashes, memory use and the exact stretch-target misses.
 [Mounted filesystem qualification](../measurements/2026-11-27-kifs-mounted-interface-qualification.md)
 

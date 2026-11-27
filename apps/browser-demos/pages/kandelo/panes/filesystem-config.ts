@@ -5,7 +5,13 @@ export function filesystemConfigRows(
   configuration: FilesystemConfiguration,
   library: ComputerLibrarySnapshot | null,
 ): Array<{ label: string; value: string }> {
-  const rows = [{ label: "Storage", value: configuration.storage === "opfs" ? "OPFS-backed journaled image" : "Runtime memory" }];
+  const standalone = configuration.version === 3;
+  const storage = configuration.storage !== "opfs" ? "Runtime memory"
+    : standalone ? "OPFS-backed volume" : "OPFS-backed journaled image";
+  const rows = [{ label: "Storage", value: storage }];
+  if (configuration.version !== undefined) {
+    rows.push({ label: "Filesystem version", value: `KIFS v${configuration.version}` });
+  }
   const computer = library?.current;
   if (computer && computer.id === configuration.computerId) {
     rows.push({ label: "Retention", value: computer.retention === "saved" ? "Saved computer" : "Temporary — eligible for cleanup after 24 hours idle" });
@@ -13,15 +19,16 @@ export function filesystemConfigRows(
   }
   if (configuration.format) rows.push({ label: "Storage format", value: configuration.format });
   if (configuration.directory) rows.push({ label: "OPFS directory", value: configuration.directory });
-  if (configuration.baseFile) rows.push({ label: "Mounted base file", value: configuration.baseFile });
+  if (configuration.baseFile) rows.push({ label: standalone ? "Source image file" : "Mounted base file", value: configuration.baseFile });
   if (configuration.baseGeneration !== undefined) rows.push({ label: "Base generation", value: String(configuration.baseGeneration) });
   if (configuration.baseBytes !== undefined) rows.push({ label: "Base file size", value: `${configuration.baseBytes.toLocaleString()} bytes` });
   if (configuration.verification) rows.push({ label: "Base checking", value: configuration.verification === "sha256" ? "SHA-256 content binding, on demand" : "CRC32C accidental-corruption checks, on demand" });
-  if (configuration.mode) rows.push({ label: "Journal mode", value: configuration.mode === "resizable" ? "Resizable filesystem" : "Fixed overwrite" });
+  if (configuration.mode && !standalone) rows.push({ label: "Journal mode", value: configuration.mode === "resizable" ? "Resizable filesystem" : "Fixed overwrite" });
   if (configuration.journalNamespace) rows.push({ label: "Journal namespace", value: configuration.journalNamespace });
   if (configuration.storage === "opfs") {
     rows.push({ label: "Data access", value: "On-demand blocks with bounded Rust read/writeback caches" });
-    rows.push({ label: "Write durability", value: "Journaled writeback; fsync/sync commits pending writes" });
+    rows.push({ label: "Write durability", value: standalone ? "Grouped writeback with fsync/sync"
+      : "Journaled writeback; fsync/sync commits pending writes" });
   }
   return rows;
 }

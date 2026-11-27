@@ -2591,6 +2591,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_rootfs_activate_kifs_handoff"),
         HostAdapterKernelExport::optional("kernel_rootfs_cancel_kifs_handoff"),
         HostAdapterKernelExport::optional("kernel_rootfs_compact_kifs_v3"),
+        HostAdapterKernelExport::optional("kernel_rootfs_format_version"),
         HostAdapterKernelExport::optional("kernel_rootfs_kifs_compaction_needed"),
         HostAdapterKernelExport::optional("kernel_rootfs_mount_kifs_v3"),
         HostAdapterKernelExport::optional("kernel_rootfs_prepare_kifs_handoff"),

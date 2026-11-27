@@ -3044,6 +3044,7 @@ export class CentralizedKernelWorker {
    * reader remains available after load for image-backed file content.
    */
   #rootfsImageLength = 0;
+  #rootfsFormatVersion: number | undefined;
   #rootfsPersistentImageBinding: PersistentImageReadBinding | null = null;
   #rootfsWritebackTimer?: ReturnType<typeof setInterval>;
   #positionedRootfs: {
@@ -5402,6 +5403,10 @@ export class CentralizedKernelWorker {
     return this.#rootfsImageLength !== 0 || this.#positionedRootfs !== null;
   }
 
+  getRootfsFormatVersion(): number | undefined {
+    return this.#rootfsFormatVersion;
+  }
+
   startRootfsWriteback(): void {
     const interval = this.#positionedRootfs?.writebackIntervalMs;
     if (interval === undefined || this.#rootfsWritebackTimer !== undefined) return;
@@ -5859,6 +5864,7 @@ export class CentralizedKernelWorker {
    */
   #maybeLoadKernelRootfs(instance: WebAssembly.Instance): Error | undefined {
     this.#statLeaseSupported = false;
+    this.#rootfsFormatVersion = undefined;
     const imageLength = this.#rootfsImageLength;
     const imageRead = this.#rootfsImageRead;
     const provider = this.#rootfsDeferredProvider;
@@ -6015,6 +6021,10 @@ export class CentralizedKernelWorker {
       setNosuid(this.#rootfsNosuid ? 1 : 0);
     }
     enable(1);
+    const rootfsFormatVersion = instance.exports.kernel_rootfs_format_version;
+    if (typeof rootfsFormatVersion === "function") {
+      this.#rootfsFormatVersion = rootfsFormatVersion() >>> 0 || undefined;
+    }
     const supportsStatLease = instance.exports.kernel_rootfs_supports_stat_lease;
     this.#statLeaseSupported = typeof supportsStatLease === "function"
       && typeof instance.exports.kernel_kifs_stat_lease === "function"

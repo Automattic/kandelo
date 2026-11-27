@@ -5695,33 +5695,37 @@
     },
     "abiSnapshotAndProgramBaseline": true,
     "browserAppTypecheck": true,
-    "browserAppOptInUpgrade": {
-      "chromium": {
-        "passed": 1,
-        "elapsed": "29.0s"
-      },
-      "firefox": {
-        "passed": 1,
-        "elapsed": "39.6s"
-      },
-      "webkit": {
-        "passed": 1,
-        "elapsed": "38.4s"
-      }
-    },
     "hostBoundary": {
       "flagged": [
         "env.host_fetch_deferred"
       ],
       "reason": "The widened import carries the declared resource size and needs an ownership review."
+    },
+    "browserAppMountedVersion": {
+      "kernelSha256": "56073154acc0880b5eab9943b7b3cdbe36bdd72a774f94e76e63a781ef7cd750",
+      "browsers": {
+        "chromium": {
+          "passed": 1,
+          "elapsed": "24.6s"
+        },
+        "firefox": {
+          "passed": 1,
+          "elapsed": "39.4s"
+        },
+        "webkit": {
+          "passed": 1,
+          "elapsed": "29.3s"
+        }
+      }
     }
   },
   "rollout": {
-    "appConversion": "explicit opt-in",
-    "activatedFormatPreserved": true
+    "appConversion": "no app upgrade path",
+    "activatedFormatPreserved": true,
+    "mountedFormatDisplayed": true
   },
   "appSource": {
-    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "40a9cc38727a0381447156877a11dbe6c0f5eb8dac5368cb88de355c9768b247",
-    "apps/browser-demos/test/partial-image.spec.ts": "7786f79858da7b61f6f80c79249fe8703953eff6feb377a93b809b46cb8b8fa5"
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "4067a4d74d317bda7ab05753a568d5ebebf15acd3def367bf378727b34d5b3de",
+    "apps/browser-demos/test/partial-image.spec.ts": "ceb100373e7e7898a7462f761950f295f5a3727896d5f58aff4d6aa6fc89d595"
   }
 }

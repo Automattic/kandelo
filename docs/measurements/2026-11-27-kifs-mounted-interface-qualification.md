@@ -50,19 +50,21 @@ snapshot check and the existing guest program baseline.
 
 ## Rollout
 
-The Kandelo app asks the shared boot protocol to convert a checked
-resizable computer only with `experimentalKifsV3=1`. The normal app test
-installed a fresh v2 shell, opened a used legacy computer as v2, requested
-an upgrade, and reopened the activated volume without the option. It checked file
-contents, unchanged inode numbers and hard-link metadata, the 1 GiB
-geometry, and confirmed journal retirement. The test passed on Chromium,
-Firefox and WebKit with the pinned kernel bytes.
+The Kandelo app opens the saved filesystem and displays the mounted
+version in Internals → Config. The app test opened a saved legacy
+computer with the retired query parameter present and verified that the
+format stayed legacy. It prepared v3 through the shared host API, then
+reopened the computer through the app and checked the displayed version,
+contents, inode identities, hard links, 1 GiB geometry and journal
+retirement. The test passed on Chromium, Firefox and WebKit using the
+packaged kernel that adds the version query. The raw evidence identifies
+that package separately from the timed package.
 
 The saved generation selects the format at every ordinary boot.
 
 ## Build inputs and scope
 
-The kernel came from the package recipe in
+The timed kernel came from the package recipe in
 `packages/registry/kernel/build-kernel.sh`. Its SHA-256 was
 `5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da`.
 Node used the freshly built host worker. The browser tests used the Vite

@@ -1485,7 +1485,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   pcmConnection.onmessage = event => {
     if (event.data?.type === "attach") pcmConnection?.postMessage(pcmMirror?.transport);
   };
-  post({ type: "ready", pcmPort: connection.port2 }, [connection.port2]);
+  post({ type: "ready", pcmPort: connection.port2, rootfsFormatVersion: kernelWorker.getRootfsFormatVersion() }, [connection.port2]);
 }
 
 // ── Spawn ──

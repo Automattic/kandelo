@@ -36,7 +36,7 @@ const MAX_STORAGE_BYTES: u64 = (1 << 53) - 1;
 const SUPERBLOCK_BYTES: usize = 168;
 const CHECKSUM_START: usize = 136;
 const MAGIC: &[u8; 4] = b"KIFS";
-const VERSION: u32 = 3;
+pub(crate) const VERSION: u32 = 3;
 
 fn metadata_cache_budget() -> usize {
     (crate::io_buffer::IO_MEMORY.usage().1 / 64).min(crate::positioned_storage::READ_CACHE_MAX_BYTES)

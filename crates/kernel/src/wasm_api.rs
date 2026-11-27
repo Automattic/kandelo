@@ -18720,6 +18720,12 @@ pub extern "C" fn kernel_drain_fs_changes(out_ptr: *mut u8, out_len: u32) -> i32
     }
 }
 
+/// The mounted KIFS format version, or zero when no KIFS image or volume is mounted.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_format_version() -> u32 {
+    crate::rootfs::mounted_format_version().unwrap_or(0)
+}
+
 /// Whether the active root filesystem can certify cached stat results.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_supports_stat_lease() -> i32 {

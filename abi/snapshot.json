@@ -2560,6 +2560,7 @@
       "kernel_rootfs_activate_kifs_handoff",
       "kernel_rootfs_cancel_kifs_handoff",
       "kernel_rootfs_compact_kifs_v3",
+      "kernel_rootfs_format_version",
       "kernel_rootfs_kifs_compaction_needed",
       "kernel_rootfs_mount_kifs_v3",
       "kernel_rootfs_prepare_kifs_handoff",
@@ -4953,6 +4954,11 @@
       "kind": "func",
       "name": "kernel_rootfs_export_tree",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_format_version",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",

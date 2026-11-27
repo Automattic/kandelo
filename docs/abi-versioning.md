@@ -1884,6 +1884,10 @@ validates the format and identity before mounting it. An adapter requesting
 this explicit boot mode refuses an older kernel that lacks the entry. Existing
 adapters and program binaries keep their existing interfaces.
 
+The optional scalar `kernel_rootfs_format_version()` reports the mounted
+KIFS format version. It returns zero when the root has no mounted KIFS
+image or volume. Hosts can omit the display when the export is absent.
+
 The optional `kernel_rootfs_stage_saved_kifs_v3(slot, profile, id0 … id7)`
 entry stages the effective legacy mount into a distinct positioned target
 and trial-reads it before returning zero. Profile 0 preserves capacity and

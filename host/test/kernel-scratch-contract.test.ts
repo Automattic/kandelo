@@ -784,6 +784,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::supportsStatLease()",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::rootfsFormatVersion()",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.rootfsJournalStateMemory::kernel-export-direct-use::used()",
   ),
   reviewedScalarKernelExportCall(

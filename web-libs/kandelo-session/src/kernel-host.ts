@@ -894,6 +894,8 @@ export interface MountInfo {
 
 export interface FilesystemConfiguration {
   storage: "memory" | "opfs";
+  /** On-disk KIFS version reported by the mounted root. */
+  version?: number;
   computerId?: string;
   format?: string;
   directory?: string;

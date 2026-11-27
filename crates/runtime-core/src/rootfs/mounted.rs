@@ -25,6 +25,13 @@ impl RootfsState {
 }
 
 impl MountedFilesystem<'_> {
+    pub(super) fn format_version(&self) -> Option<u32> {
+        match self {
+            Self::Legacy(state) => state.image.map(|image| image.image.version),
+            Self::Standalone(..) => Some(crate::kifs_v3::VERSION),
+        }
+    }
+
     pub(super) fn supports_stat_certification(&self) -> bool {
         matches!(self, Self::Standalone(..))
     }

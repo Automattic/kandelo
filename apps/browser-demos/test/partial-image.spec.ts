@@ -4,6 +4,7 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
 import { runTerminalCommand } from "./support/terminal-command";
+import { setInternalsOpen } from "./support/dock";
 
 // The worktree's partial image (`./run.sh partial <image> <pkg>...`), served by
 // the dev server as its own gallery machine (vite/dev-partial-image.ts). These
@@ -17,6 +18,16 @@ test.skip(manifest === null, "no partial image is built in this worktree");
 test.use({ actionTimeout: 30_000 });
 
 const PARTIAL_URL = "/@kandelo-partial/image.vfs.zst";
+
+async function expectFilesystemVersion(page: Page, version: RegExp | string) {
+  await setInternalsOpen(page, true);
+  const internals = page.getByRole("dialog", { name: "Internals", exact: true });
+  await internals.getByRole("tab", { name: "Config", exact: true }).click();
+  const configuration = internals.getByRole("table", { name: "Filesystem configuration", exact: true });
+  const row = configuration.getByRole("rowheader", { name: "Filesystem version", exact: true }).locator("..");
+  await expect(row.getByRole("cell")).toHaveText(version);
+  await setInternalsOpen(page, false);
+}
 
 async function ready(page: Page) {
   await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
@@ -85,7 +96,7 @@ test("the partial image boots as its own machine with only its activities", asyn
   expect(errors).toEqual([]);
 });
 
-test("the installed partial shell preserves its files through a shared OPFS upgrade and app restart", async ({ page }) => {
+test("the app displays the mounted filesystem version and opens both saved formats", async ({ page }) => {
   test.skip(manifest?.image !== "shell", "checks the built shell's filesystem capacity");
   test.setTimeout(240_000);
   const selectedKernel = process.env.KANDELO_KIFS_BENCH_KERNEL;
@@ -131,6 +142,7 @@ df -Pk / | tail -n 1
 printf 'LOGIN %s %s %s\n' "$(id -u)" "$(id -g)" "$HOME"`);
   expect(stats.exitCode, stats.output).toBe(0);
   expect(stats.output).toMatch(/\s524288\s/);
+  await expectFilesystemVersion(page, /^KIFS v[12]$/);
   const login = /LOGIN (\d+) (\d+) (\/[^\s]+)/.exec(stats.output);
   expect(login).toBeTruthy();
 
@@ -139,6 +151,7 @@ printf 'LOGIN %s %s %s\n' "$(id -u)" "$(id -g)" "$HOME"`);
   // format, then request conversion of the same computer.
   const legacyName = `partial-saved-${crypto.randomUUID()}`;
   search.set("experimentalPersistence", legacyName);
+  search.set("experimentalKifsV3", "1");
   const appUrl = new URL("/?" + search, page.url()).href;
   await page.goto("/trap-signal-test.html");
   const identity = await page.evaluate(async ({ name, legacyName, uid, gid, home, hostUrl, imageUrl, lazyUrl, kernelBytes }) => {
@@ -200,8 +213,33 @@ df -Pk / | tail -n 1`;
   expect(legacy.exitCode, legacy.output).toBe(0);
   expect(legacy.output.split(identity!).length - 1).toBe(2);
   expect(legacy.output).toMatch(/\s524288\s/);
+  await expectFilesystemVersion(page, /^KIFS v[12]$/);
 
-  search.set("experimentalKifsV3", "1");
+  // Prepare the v3 generation through the shared host API. The app itself
+  // only opens the saved format, including when given the old query parameter.
+  await page.goto("/trap-signal-test.html");
+  await page.evaluate(async ({ legacyName, hostUrl, imageUrl, lazyUrl, kernelBytes }) => {
+    const { BrowserKernel } = await import(hostUrl);
+    const { loadFixedPersistenceImageHandle } = await import(imageUrl);
+    const { imageOwnedLazyAssetDirectory } = await import(lazyUrl);
+    const parent = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+    const manifest = JSON.parse(await (await (await parent.getFileHandle(legacyName + ".base.json")).getFile()).text());
+    const installed = await loadFixedPersistenceImageHandle(legacyName, manifest.identity);
+    if (!installed?.journalInitialized) throw new Error("legacy computer is missing");
+    const kernelWasm = Uint8Array.from(atob(kernelBytes), char => char.charCodeAt(0)).buffer;
+    const host = new BrowserKernel({ kernelOwnedFs: true });
+    try {
+      await host.initFromOpfsImage({ kernelWasm, vfsImageFile: installed.file, persistentImageBinding: installed.persistentImageBinding,
+        lazyAssetDirectory: imageOwnedLazyAssetDirectory(installed.lazyAssets), persistentComputerName: legacyName,
+        experimentalResizablePersistenceName: installed.journalName, requireExistingRootfsPersistence: true,
+        kifsUpgradeProfile: "development" });
+      if (host.getRootfsFormatVersion() !== 3) throw new Error("test upgrade did not mount KIFS v3");
+    } finally { await host.destroy(); }
+    if (host.getPersistenceShutdownFailure()) throw new Error(host.getPersistenceShutdownFailure());
+  }, { legacyName, kernelBytes, hostUrl: "/@fs/" + resolve(import.meta.dirname, "../../../host/src/browser-kernel-host.ts"),
+    lazyUrl: "/@fs/" + resolve(import.meta.dirname, "../lib/init/image-owned-runtime-urls.ts"),
+    imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
+  search.delete("experimentalKifsV3");
   await page.goto("/?" + search);
   const status = page.locator(".kdock-status-text");
   await expect(status).toHaveAttribute("data-status", /^(running|error)$/, { timeout: 120_000 });
@@ -213,6 +251,7 @@ df -Pk / | tail -n 1`;
   expect(restored.exitCode, restored.output).toBe(0);
   expect(restored.output.split(identity!).length - 1).toBe(2);
   expect(restored.output).toMatch(/\s1048576\s/);
+  await expectFilesystemVersion(page, "KIFS v3");
 
   await page.goto("/trap-signal-test.html");
   await page.evaluate(async ({ legacyName, imageUrl }) => {
@@ -246,12 +285,12 @@ df -Pk / | tail -n 1`;
     }
     if (!retired) throw new Error("confirmed migration retained its owned legacy journal");
   }, { legacyName, imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
-  search.delete("experimentalKifsV3");
   await page.goto("/?" + search);
   await ready(page);
   const reopened = await runTerminalCommand(page, 'stat -c "SAVED_INODE %i %h %a %u %g" "$HOME/kifs-saved-alias"');
   expect(reopened.exitCode, reopened.output).toBe(0);
   expect(reopened.output).toContain(identity);
+  await expectFilesystemVersion(page, "KIFS v3");
   if (selectedKernel !== undefined) {
     const loads = await page.evaluate(() => Number(sessionStorage.getItem("kifs-qualification-kernel-loads")));
     expect(loads).toBeGreaterThanOrEqual(4);

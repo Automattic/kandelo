@@ -3217,13 +3217,11 @@ Machine-booting Playwright specs treat a missing image the same way.
 declares, and any Vite error overlay fails the spec with its message. Only a
 product outside the supported set is skipped as optional content.
 
-Resizable checked-image OPFS computers can request KIFS v3 conversion
-with `experimentalKifsV3=1`. Ordinary app boots use the saved format.
-An activated v3 computer reopens on v3 without the option.
+Kandelo opens saved OPFS computers in their activated filesystem format.
+Internals → Config shows the KIFS version reported by the mounted root.
 The upgraded development shell gets at least 1 GiB of sparse logical space.
-Custom volumes retain their declared capacity. The app reports
-progress while boot stages and verifies an upgrade under the computer
-lease. Subsequent boots inspect the checked-image header and the small
+Custom volumes retain their declared capacity when an explicit host
+upgrade is requested. Subsequent boots inspect the checked-image header and the small
 activation records, then open the selected volume directly. Staging requires
 origin storage for the live data and metadata while the old generation
 is still present. See [saved-computer upgrades](persistence-durability.md#upgrading-a-saved-computer).

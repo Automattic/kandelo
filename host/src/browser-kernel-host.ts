@@ -31,6 +31,7 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  ReadyMessage,
   VfsFileSnapshot,
   DestroyProgressEvent,
 } from "./browser-kernel-protocol";
@@ -397,6 +398,7 @@ export class BrowserKernel {
   private releasePersistentJournalLease: BrowserPersistenceJournalLease | null = null;
   private releasePersistentComputerLease: (() => Promise<void>) | null = null;
   private initialized = false;
+  private rootfsFormatVersion: number | undefined;
   private maxPages: number;
   private readonly memoryProfile: RuntimeMemoryProfile;
   /** Set when a caller asked for more per-process pages than the budget allows. */
@@ -855,6 +857,7 @@ export class BrowserKernel {
             return;
           }
           if (e.data?.type === "ready") {
+            this.rootfsFormatVersion = (e.data as ReadyMessage).rootfsFormatVersion;
             settleResolve();
           } else if (e.data?.type === "init_error") {
             if (this.releasePersistentJournalLease !== null) {
@@ -1143,6 +1146,11 @@ export class BrowserKernel {
       pid,
     });
     return typeof result === "bigint" ? result : BigInt(result as number);
+  }
+
+  /** The on-disk KIFS version reported at successful rootfs boot. */
+  getRootfsFormatVersion(): number | undefined {
+    return this.rootfsFormatVersion;
   }
 
   /**
@@ -2064,6 +2072,7 @@ export class BrowserKernel {
       }
     }
     this.initialized = false;
+    this.rootfsFormatVersion = undefined;
     await this.pcmDriver?.close().catch(error => {
       const audioFailure = `PCM output shutdown failed: ${formatHostErrorDiagnostic(error)}`;
       gracefulDetachFailure = gracefulDetachFailure === undefined

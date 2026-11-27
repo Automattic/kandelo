@@ -295,11 +295,11 @@ Both export APIs leave the original generation active.
 
 ### Upgrading a saved computer
 
-The shared Node and browser boot protocol accepts an upgrade profile for
-checked resizable computers. The Kandelo app requests an upgrade only
-with `experimentalKifsV3=1`. Its development profile selects at least
-1 GiB. The custom profile keeps a computer's declared capacity. Ordinary
-app boots use the saved format. An activated KIFS volume takes
+The shared Node and browser boot protocol accepts an explicit upgrade
+profile for checked resizable computers. The development profile selects
+at least 1 GiB. The custom profile keeps a computer's declared capacity.
+The Kandelo app opens the saved format and shows the mounted version in
+Internals → Config. An activated KIFS volume takes
 precedence over every profile. Raw images without a checked binding retain
 their existing default. Fixed computers keep their declared geometry. On v3,
 live metadata and allocated data draw from the same capacity. The volume

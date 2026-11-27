@@ -2008,12 +2008,6 @@ async function bootProfile(
     // not accept (the lazy-asset directory above) is a type error, never a field the
     // host silently drops.
     if (opfsImage !== undefined && opfsImage !== null && persistence !== null) {
-      const kifsPreference = new URLSearchParams(location.search).get("experimentalKifsV3");
-      const developmentShell = (isPartialImageUrl(profile.vfsUrl) ? PARTIAL_IMAGE!.manifest.productId : profile.productId)
-        === "browser-main-shell";
-      const kifsUpgradeProfile = kifsPreference === "1"
-        ? (developmentShell ? "development" : "custom")
-        : undefined;
       try {
         try {
           await kernel.initFromOpfsImage({
@@ -2022,8 +2016,7 @@ async function bootProfile(
             persistentImageBinding: opfsImage.persistentImageBinding,
             lazyAssetDirectory,
             ...(experimentalPersistenceMode === "resizable"
-              ? { experimentalResizablePersistenceName: opfsImage.journalName,
-                kifsUpgradeProfile }
+              ? { experimentalResizablePersistenceName: opfsImage.journalName }
               : { experimentalFixedPersistenceName: opfsImage.journalName }),
             persistentComputerName: experimentalPersistenceName,
             persistenceComputerLease: experimentalPersistenceLease,
@@ -2142,8 +2135,10 @@ async function bootProfile(
     };
     host.services = createServiceControls(host, agentIdentity(), assertCurrent);
     const storageId = persistence === null ? null : browserComputerIdForStorageName(persistence.name);
+    const version = kernel.getRootfsFormatVersion();
     host.setFilesystemConfiguration(opfsImage && persistence ? {
       storage: "opfs",
+      version,
       computerId: storageId ?? undefined,
       format: JOURNALED_OPFS_IMAGE_STORAGE_FORMAT,
       directory: storageId === null ? "kandelo-persistent-overlay" : `kandelo/computers/${storageId}/filesystem`,
@@ -2153,7 +2148,7 @@ async function bootProfile(
       baseBytes: opfsImage.length,
       verification: opfsImage.integrityPolicy,
       journalNamespace: opfsImage.journalName,
-    } : { storage: "memory" });
+    } : { storage: "memory", version });
     host.imageActivities = {
       list: async () => {
         assertCurrent();

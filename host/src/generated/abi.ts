@@ -954,6 +954,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_rootfs_activate_kifs_handoff",
   "kernel_rootfs_cancel_kifs_handoff",
   "kernel_rootfs_compact_kifs_v3",
+  "kernel_rootfs_format_version",
   "kernel_rootfs_kifs_compaction_needed",
   "kernel_rootfs_mount_kifs_v3",
   "kernel_rootfs_prepare_kifs_handoff",

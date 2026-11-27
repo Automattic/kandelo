@@ -527,6 +527,7 @@ export type MainToKernelMessage =
 
 export interface ReadyMessage {
   type: "ready";
+  rootfsFormatVersion?: number;
   /** Forward directly to the AudioWorklet; never decode kernel memory here. */
   pcmPort?: MessagePort;
 }

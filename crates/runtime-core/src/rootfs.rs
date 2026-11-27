@@ -8177,6 +8177,10 @@ pub fn loaded_image_capacity_bytes() -> Option<u64> {
     ROOTFS.with(|state| state.image.map(|image| image.capacity_bytes))
 }
 
+pub fn mounted_format_version() -> Option<u32> {
+    ROOTFS.with(|state| state.mounted_filesystem().format_version())
+}
+
 /// Set the image-metadata section the next exported container will carry, as
 /// opaque bytes.
 ///
@@ -11746,6 +11750,7 @@ mod tests {
         let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         KifsNamespace::format(storage.clone(), DEFAULT_VOLUME_BLOCKS, [6; 32], kifs_mount::now_timestamp()).unwrap();
         mount_kifs_v3(Box::new(storage), [6; 32]).unwrap();
+        assert_eq!(mounted_format_version(), Some(3));
         let baseline = ROOTFS.with(|state| state.kifs.as_ref().unwrap().namespace.usage());
         mkdir(b"/outer", 0o755, 0, 0).unwrap();
         mkdir(b"/outer/held", 0o755, 0, 0).unwrap();
@@ -13428,8 +13433,10 @@ mod tests {
         let image = empty_capacity_image(CAPACITY, 35);
         let mut source = image_host(&image);
         assert_eq!(loaded_image_capacity_bytes(), None);
+        assert_eq!(mounted_format_version(), None);
         load_image(image.len() as u64, &mut source).unwrap();
         assert_eq!(loaded_image_capacity_bytes(), Some(CAPACITY));
+        assert_eq!(mounted_format_version(), Some(1));
         assert!(export_capacity_bytes(&mut source).unwrap() > CAPACITY);
         set_image_capacity(8 * 1024 * 1024).unwrap();
         assert_eq!(loaded_image_capacity_bytes(), Some(CAPACITY));
@@ -13441,6 +13448,7 @@ mod tests {
         assert_eq!(statfs(b"/").unwrap().f_blocks, CAPACITY / 4096);
         reset();
         assert_eq!(loaded_image_capacity_bytes(), None);
+        assert_eq!(mounted_format_version(), None);
     }
 
     #[test]
@@ -16209,6 +16217,7 @@ mod tests {
         reset();
         let mut exported_bytes = image_host(&exported);
         load_image(exported.len() as u64, &mut exported_bytes).unwrap();
+        assert_eq!(mounted_format_version(), Some(2));
         let handle = open(b"/large", O_RDONLY, 0, 0, 0).unwrap();
         assert_eq!(fstat(handle).unwrap().st_size, offset as u64 + 4);
         let mut bytes = [1u8; 6];
