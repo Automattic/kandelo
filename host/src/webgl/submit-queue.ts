@@ -25,6 +25,8 @@ export interface SubmitExecutionOwner {
 }
 
 const Bytes = Uint8Array;
+const OwnedBuffer = ArrayBuffer;
+const adoptSnapshot = Symbol();
 const apply = Reflect.apply;
 const typedArray = Object.getPrototypeOf(Uint8Array.prototype);
 const bufferOf = Object.getOwnPropertyDescriptor(typedArray,"buffer")!.get!;
@@ -41,15 +43,29 @@ export class SubmitFrame {
   #execution: SubmitExecutionOwner | null = null;
   #operation: GlOperationTicket | null = null;
   readonly byteLength: number;
-  constructor(source: Uint8Array, offset: number, length: number) {
-    const size = apply(lengthOf,source,[]) as number;
+  /** Consume the new independent array returned by the address-space reader. */
+  static fromOwnedSnapshot(source: Uint8Array, length: number): SubmitFrame {
+    return new SubmitFrame(source, 0, length, adoptSnapshot);
+  }
+  constructor(source: Uint8Array, offset: number, length: number, ownership?: typeof adoptSnapshot) {
+    const size = apply(lengthOf, source, []) as number;
     if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0
-        || offset > size || length > size-offset) throw new RangeError("invalid GL submission span");
-    const bytes = new Bytes(length);
-    const input = new Bytes(apply(bufferOf,source,[]) as ArrayBufferLike,
-      (apply(offsetOf,source,[]) as number)+offset,length);
-    apply(setBytes,bytes,[input]);
-    this.#bytes = bytes;
+        || offset > size || length > size - offset) throw new RangeError("invalid GL submission span");
+    const buffer = apply(bufferOf, source, []) as ArrayBufferLike;
+    const start = apply(offsetOf, source, []) as number;
+    if (ownership === adoptSnapshot) {
+      // A grouped read already copied the exact virtual span. The queue
+      // may retain only that bounded, unshared allocation.
+      if (!(buffer instanceof OwnedBuffer) || start !== 0 || size !== length || buffer.byteLength !== length) {
+        throw new RangeError("GL submission snapshot is not an independent full buffer");
+      }
+      this.#bytes = source;
+    } else {
+      const bytes = new Bytes(length);
+      const input = new Bytes(buffer, start + offset, length);
+      apply(setBytes, bytes, [input]);
+      this.#bytes = bytes;
+    }
     this.byteLength = length;
   }
   validate(check: (bytes: Uint8Array, offset: number, length: number) => number): number {

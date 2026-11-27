@@ -3817,7 +3817,11 @@ export class WasmPosixKernel {
             }
           }
           let frame: SubmitFrame;
-          try { frame = new SubmitFrame(groupedCommands ?? b.cmdbufView!,groupedCommands ? 0 : submission.offset,submission.length); }
+          try {
+            frame = groupedCommands && source instanceof GroupProcessAddressSpace
+              ? SubmitFrame.fromOwnedSnapshot(groupedCommands, submission.length)
+              : new SubmitFrame(groupedCommands ?? b.cmdbufView!, groupedCommands ? 0 : submission.offset, submission.length);
+          }
           catch (caught) { rethrowNativeGlFault(caught); return -12; } // ENOMEM: no submission has been admitted.
           const validation = frame.validate(validateCommandBuffer);
           if (validation < 0) { frame.discard(); return validation; }

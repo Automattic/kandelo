@@ -8414,7 +8414,9 @@ peers continue owning their shared objects. These are source ownership
 models; normal submits still drain synchronously.
 
 GL submission now captures only the requested command span into an owned
-SubmitFrame before validation. Kernel-worker dispatch validates and decodes
+SubmitFrame before validation. A grouped process already produces an owned
+copy when reading the virtual span, so the queue takes that array directly.
+Kernel-worker dispatch validates and decodes
 that same snapshot, so guest rewrites or renderer
 callbacks cannot change later accepted records. Captured typed-array
 accessors avoid overridable source properties. A frame is admitted once,
