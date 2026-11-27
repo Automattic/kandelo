@@ -1,3 +1,4 @@
+import { observeScanoutSource, scanoutAttachments } from "./context-writes.js";
 import { checkedGlGroups, clearGlErrors } from "./program-objects.js";
 import { applyNativeChanges, batchedNativeInverse, type NativeCall } from "./native-recovery.js";
 
@@ -32,7 +33,7 @@ export function scanoutNeedsReduction(storage: GpuScanoutStorage): boolean {
  * synchronous renderer round trip each (in Chromium, a GPU-process IPC). */
 /** Present the `width` x `height` region at (`x`, `y`) of the KMS BO (the
  * CRTC's panned viewport). BO row zero is the top row, hence the Y inversion. */
-export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height: number, x = 0, y = 0): boolean {
+export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height: number, x = 0, y = 0, trackSource = false): boolean {
   if (![x, y, width, height].every(Number.isSafeInteger) || x < 0 || y < 0
       || x + width > storage.w || y + height > storage.h) return false;
   const gl = storage.gl, owner = { gl, errors: [] as number[] };
@@ -64,15 +65,21 @@ export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height
   if (scissor) selectors.push(() => gl.disable(0x0c11));
   if (readChanged) selectors.push(() => gl.bindFramebuffer(0x8ca8, storage.fbo));
   if (drawChanged) selectors.push(() => gl.bindFramebuffer(0x8ca9, null));
-  const blit: (() => void)[] = [() => gl.blitFramebuffer(x, y, x + width, y + height, 0, height, width, 0, 0x4000, 0x2600)];
+  let sources: WeakSet<object> | undefined;
+  const blit: (() => void)[] = [() => {
+    gl.blitFramebuffer(x, y, x + width, y + height, 0, height, width, 0, 0x4000, 0x2600);
+    if (trackSource) sources = scanoutAttachments(gl);
+  }];
   // The primary KMS plane is opaque. Preserve alpha in the BO for image
   // siblings, but do not expose the page background through scanout. RGB is
   // masked off for this clear, so its captured clear values need no change.
   if (maskChanged) blit.push(() => gl.colorMask(false, false, false, true));
   if (clearChanged) blit.push(() => gl.clearColor(clear[0], clear[1], clear[2], 1));
-  return applyNativeChanges({ ...owner, shadow: {} }, [{ restore,
+  const accepted = applyNativeChanges({ ...owner, shadow: {} }, [{ restore,
     apply: () => checkedGlGroups(owner, [selectors, blit, [() => gl.clear(0x4000)]], true),
   }], { shared: true, finalizer: restore });
+  if (accepted && trackSource) observeScanoutSource(gl, sources);
+  return accepted;
 }
 
 /** A different display context (including an explicitly 2D display) needs an

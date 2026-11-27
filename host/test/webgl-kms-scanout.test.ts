@@ -1149,6 +1149,112 @@ function directKernel() {
   return { ...r, canvas, fb, blits, present };
 }
 
+function directAttachments() {
+  const r = directKernel();
+  const gl = r.gl;
+  const color = {} as WebGLTexture, auxiliary = {} as WebGLTexture;
+  const foreign = {} as WebGLTexture, offscreen = {} as WebGLFramebuffer;
+  const slots = new Map<WebGLFramebuffer, Map<number, WebGLTexture>>([
+    [r.storage.fbo, new Map([[0x8ce1, color], [0x8d00, auxiliary]])],
+    [offscreen, new Map([[0x8ce0, foreign]])],
+  ]);
+  r.state.set(0x8cdf, 4);
+  r.state.set(0x0c02, 0x8ce1);
+  gl.getFramebufferAttachmentParameter = (target, attachment, pname) => {
+    const fbo = r.state.get(target === 0x8ca8 ? 0x8caa : 0x8ca6) as WebGLFramebuffer;
+    const image = slots.get(fbo)?.get(attachment);
+    if (pname === 0x8cd0) return image ? 0x1702 : 0;
+    if (pname === 0x8cd1 && image) return image;
+    throw new Error("Invalid attachment query");
+  };
+  gl.framebufferTexture2D = (target, attachment, _type, texture) => {
+    const fbo = r.state.get(target === 0x8ca8 ? 0x8caa : 0x8ca6) as WebGLFramebuffer;
+    if (texture) slots.get(fbo)!.set(attachment, texture);
+    else slots.get(fbo)!.delete(attachment);
+  };
+  const upload = () => gl.texSubImage2D(0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1401, null);
+  return { ...r, color, auxiliary, foreign, offscreen, upload };
+}
+
+it("uses the actual native attachments when an upload or deletion could affect scanout", () => {
+  const r = directAttachments();
+  const bind = r.gl.bindTexture.bind(r.gl);
+  r.gl.bindTexture = (target, texture) => { if (target === 0x0de1) bind(target, texture); };
+  r.present();
+  bind(0x0de1, r.foreign);
+  r.upload();
+  r.gl.deleteTexture(r.foreign);
+  r.present();
+  expect(r.blits()).toBe(1);
+  bind(0x0de1, r.color);
+  r.gl.bindTexture(0, r.foreign); // refused: the native source remains bound
+  r.upload();
+  r.present();
+  expect(r.blits()).toBe(2);
+  r.gl.deleteTexture(r.auxiliary); // could affect read framebuffer completeness
+  r.present();
+  expect(r.blits()).toBe(3);
+});
+
+it("checks every draw attachment and the visible default framebuffer", () => {
+  const r = directAttachments();
+  r.present();
+  r.gl.bindFramebuffer(0x8ca9, r.offscreen);
+  r.gl.drawArrays(4, 0, 3);
+  r.present();
+  expect(r.blits()).toBe(1);
+  r.gl.framebufferTexture2D(0x8ca9, 0x8ce2, 0x0de1, r.color, 0);
+  r.present();
+  expect(r.blits()).toBe(2);
+  r.gl.drawArrays(4, 0, 3);
+  r.present();
+  expect(r.blits()).toBe(3);
+  r.gl.bindFramebuffer(0x8ca9, null);
+  r.gl.drawArrays(4, 0, 3);
+  r.present();
+  expect(r.blits()).toBe(4);
+});
+
+it("counts coercible arguments that can change the native draw target during a call", () => {
+  const r = directAttachments();
+  const draw = r.gl.drawArrays;
+  r.gl.drawArrays = (mode, first, count) => draw.call(r.gl, Number(mode), first, count);
+  r.present();
+  r.gl.bindFramebuffer(0x8ca9, r.offscreen);
+  const mode = { valueOf() { r.gl.bindFramebuffer(0x8ca9, null); return 4; } };
+  r.gl.drawArrays(mode as unknown as number, 0, 3);
+  r.present();
+  expect(r.blits()).toBe(2);
+});
+
+it("does not adopt a consumer's synchronous write as part of a completed blit", () => {
+  const r = directAttachments();
+  r.kernel.mergeCallbacks({ onKmsCanvasUpdated() {
+    r.gl.bindFramebuffer(0x8ca9, null);
+    r.gl.drawArrays(4, 0, 3);
+  } });
+  r.present();
+  r.present();
+  expect(r.blits()).toBe(2);
+});
+
+it("forgets a former read attachment on reconfiguration", () => {
+  const r = directAttachments();
+  r.present();
+  r.gl.bindFramebuffer(0x8ca8, r.storage.fbo);
+  r.gl.framebufferTexture2D(0x8ca8, 0x8ce1, 0x0de1, r.foreign, 0);
+  r.present();
+  expect(r.blits()).toBe(2);
+  r.gl.bindTexture(0x0de1, r.color);
+  r.upload();
+  r.present();
+  expect(r.blits()).toBe(2);
+  r.gl.bindTexture(0x0de1, r.foreign);
+  r.upload();
+  r.present();
+  expect(r.blits()).toBe(3);
+});
+
 it("does not redraw an unchanged direct GPU scanout", () => {
   const r = directKernel();
   expect(r.present()?.direct).toBe(true);
