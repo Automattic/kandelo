@@ -4,6 +4,7 @@ This port builds pinned Node.js 26.13.0 with SpiderMonkey 153.7 ESR through Node
 original configure/GYP build, startup, Environment, loaders and native policy.
 The default runtime is installed as `/usr/bin/spidermonkey-node`;
 `/usr/bin/node` is a relative symlink. Bundled npm remains upstream.
+See the [package security notes](SECURITY.md) for the OpenSSL secure-heap limitation.
 
 ## Source and package ownership
 

@@ -258,6 +258,8 @@ install only into `WASM_POSIX_DEP_OUT_DIR`, honor the resolver contract and
 produce declared outputs. SDK/sysroot-free recipes may declare
 `[build].toolchain = "none"` only after reviewing the script and helpers.
 Fork-using packages must use `scripts/run-wasm-fork-instrument.sh`.
+Document any security protection weakened by a port in its package-local
+`SECURITY.md`, as described in the package and build guidance.
 
 Port against `./run.sh partial <image> <pkg>...` by default. Before building,
 announce the image and packages and that the user can ask for a full build;
