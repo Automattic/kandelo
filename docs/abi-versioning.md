@@ -1671,11 +1671,14 @@ imports 77 host functions, down from 82.
   atime_nsec, mtime_sec, mtime_nsec, flags)`.
 - Added, the byte pipe for the kernel-owned `/`: `host_image_read(buf, len,
   off_lo, off_hi)`, a positioned read of the boot image, and
-  `host_fetch_deferred(uri_ptr, uri_len, buf, len, off_lo, off_hi)`, a
+  `host_fetch_deferred(uri_ptr, uri_len, buf, len, off_lo, off_hi, size_lo, size_hi)`, a
   positioned read of a resource the image names by URI but does not carry
   (a URL-backed lazy file or a lazy archive). The kernel relays the image's
   URI unread; the host fetches it and answers `EAGAIN` while the fetch is in
-  flight.
+  flight. The size words carry the filesystem's declared resource size so
+  the host can bound transport storage without a resident manifest.
+  A host without a deferred provider returns `ENOSYS`. Rust verifies
+  the resource contents.
 - Added `host_discard_deferred(uri_ptr, uri_len)`: native length or digest
   rejection evicts the completed transport cache entry. The failed read
   returns `EIO`; a later explicit read may fetch fresh bytes. Transport

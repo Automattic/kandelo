@@ -2011,9 +2011,8 @@ async function bootProfile(
       const kifsPreference = new URLSearchParams(location.search).get("experimentalKifsV3");
       const developmentShell = (isPartialImageUrl(profile.vfsUrl) ? PARTIAL_IMAGE!.manifest.productId : profile.productId)
         === "browser-main-shell";
-      const kifsUpgradeProfile = kifsPreference === "0" ? "legacy"
-        : developmentShell ? "development"
-        : kifsPreference === "1" ? "custom"
+      const kifsUpgradeProfile = kifsPreference === "1"
+        ? (developmentShell ? "development" : "custom")
         : undefined;
       try {
         try {

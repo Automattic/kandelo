@@ -1,10 +1,9 @@
 # KIFS v3
 
-Kandelo uses KIFS v3 by default for checked, resizable development
-shells. The checked source image supplies first boot. Subsequent boots
-open the activated volume directly. Existing v2 systems can request the
-legacy profile. Other resizable computers can request an explicit upgrade
-that preserves their logical capacity.
+Kandelo offers KIFS v3 as an opt-in upgrade for checked, resizable
+computers. The checked source image supplies first boot. Subsequent boots
+open the activated volume directly. Development shells get at least
+1 GiB on upgrade. Other resizable computers keep their logical capacity.
 
 ## Mounted filesystem interface
 
@@ -29,7 +28,8 @@ pins just the inodes held by open descriptions and mappings and caches
 other metadata within its existing memory admission budget. Normal boot
 authenticates the root and verifies further pages as they are read.
 
-A standard computer has a sparse 1 GiB logical volume. Live leaf records
+An upgraded development shell has a sparse logical volume of at least
+1 GiB. Live leaf records
 and allocated data blocks share the budget. File identity comes from a
 monotonic watermark rather than a fixed inode table. Deleting a file
 releases its blocks and metadata after its last link, open description and
@@ -107,8 +107,8 @@ is required for custom and fixed images.
 
 Two independent saved-shell runs exercised both filesystem orders on
 Node, Chromium, Firefox and WebKit. KIFS v3 took less elapsed time in
-all 80 comparisons. The packaged app installed, upgraded and reopened
-the development shell on all three browsers. The qualification report
+all 80 comparisons. The packaged app opened both formats and exercised
+an explicit upgrade on all three browsers. The qualification report
 includes artifact hashes, memory use and the exact stretch-target misses.
 [Mounted filesystem qualification](../measurements/2026-11-27-kifs-mounted-interface-qualification.md)
 

@@ -50,18 +50,15 @@ snapshot check and the existing guest program baseline.
 
 ## Rollout
 
-The Kandelo app now asks the shared boot protocol for KIFS v3 by default
-when it opens a checked resizable development shell. The normal app test
-installed a fresh shell, upgraded a used legacy computer, and reopened the
-activated volume after requesting the legacy profile. It checked file
+The Kandelo app asks the shared boot protocol to convert a checked
+resizable computer only with `experimentalKifsV3=1`. The normal app test
+installed a fresh v2 shell, opened a used legacy computer as v2, requested
+an upgrade, and reopened the activated volume without the option. It checked file
 contents, unchanged inode numbers and hard-link metadata, the 1 GiB
 geometry, and confirmed journal retirement. The test passed on Chromium,
 Firefox and WebKit with the pinned kernel bytes.
 
-Other app computers can request an upgrade explicitly. The development
-shell can stay on its existing legacy filesystem with
-`experimentalKifsV3=0` until it upgrades. Once activation succeeds, the
-saved generation selects the format at every boot.
+The saved generation selects the format at every ordinary boot.
 
 ## Build inputs and scope
 

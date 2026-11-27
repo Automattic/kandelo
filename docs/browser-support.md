@@ -3217,12 +3217,10 @@ Machine-booting Playwright specs treat a missing image the same way.
 declares, and any Vite error overlay fails the spec with its message. Only a
 product outside the supported set is skipped as optional content.
 
-Kandelo's development shell requests KIFS v3 by default for resizable
-checked-image OPFS computers. `experimentalKifsV3=0` keeps a legacy
-computer on its current filesystem. Other resizable checked-image
-computers can request conversion with `experimentalKifsV3=1`.
-An activated v3 computer reopens on v3 regardless of either setting.
-The development shell gets at least 1 GiB of sparse logical space.
+Resizable checked-image OPFS computers can request KIFS v3 conversion
+with `experimentalKifsV3=1`. Ordinary app boots use the saved format.
+An activated v3 computer reopens on v3 without the option.
+The upgraded development shell gets at least 1 GiB of sparse logical space.
 Custom volumes retain their declared capacity. The app reports
 progress while boot stages and verifies an upgrade under the computer
 lease. Subsequent boots inspect the checked-image header and the small

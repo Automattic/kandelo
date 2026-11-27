@@ -130,13 +130,13 @@ test("the installed partial shell preserves its files through a shared OPFS upgr
 df -Pk / | tail -n 1
 printf 'LOGIN %s %s %s\n' "$(id -u)" "$(id -g)" "$HOME"`);
   expect(stats.exitCode, stats.output).toBe(0);
-  expect(stats.output).toMatch(/\s1048576\s/);
+  expect(stats.output).toMatch(/\s524288\s/);
   const login = /LOGIN (\d+) (\d+) (\/[^\s]+)/.exec(stats.output);
   expect(login).toBeTruthy();
 
   // Use the same composed package base and manifest metadata to install a
-  // separate legacy computer. The first normal app visit above covered a new
-  // computer. The next visit must migrate an already initialized, used one.
+  // separate legacy computer. First verify an ordinary boot keeps the saved
+  // format, then request conversion of the same computer.
   const legacyName = `partial-saved-${crypto.randomUUID()}`;
   search.set("experimentalPersistence", legacyName);
   const appUrl = new URL("/?" + search, page.url()).href;
@@ -190,17 +190,26 @@ df -Pk / | tail -n 1`, "bash", home], { uid, gid });
     lazyUrl: "/@fs/" + resolve(import.meta.dirname, "../lib/init/image-owned-runtime-urls.ts"),
     imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
   await page.goto(appUrl);
+  await ready(page);
+  const checkSavedFiles = `set -eu
+cd "$HOME"
+test "$(cat kifs-saved-alias)" = "persisted through upgrade"
+stat -c 'SAVED_INODE %i %h %a %u %g' kifs-saved-marker kifs-saved-alias
+df -Pk / | tail -n 1`;
+  const legacy = await runTerminalCommand(page, checkSavedFiles);
+  expect(legacy.exitCode, legacy.output).toBe(0);
+  expect(legacy.output.split(identity!).length - 1).toBe(2);
+  expect(legacy.output).toMatch(/\s524288\s/);
+
+  search.set("experimentalKifsV3", "1");
+  await page.goto("/?" + search);
   const status = page.locator(".kdock-status-text");
   await expect(status).toHaveAttribute("data-status", /^(running|error)$/, { timeout: 120_000 });
   if (await status.getAttribute("data-status") === "error") {
     throw new Error("Activated shell boot failed: " + await page.locator("body").innerText());
   }
   await ready(page);
-  const restored = await runTerminalCommand(page, `set -eu
-cd "$HOME"
-test "$(cat kifs-saved-alias)" = "persisted through upgrade"
-stat -c 'SAVED_INODE %i %h %a %u %g' kifs-saved-marker kifs-saved-alias
-df -Pk / | tail -n 1`);
+  const restored = await runTerminalCommand(page, checkSavedFiles);
   expect(restored.exitCode, restored.output).toBe(0);
   expect(restored.output.split(identity!).length - 1).toBe(2);
   expect(restored.output).toMatch(/\s1048576\s/);
@@ -237,7 +246,7 @@ df -Pk / | tail -n 1`);
     }
     if (!retired) throw new Error("confirmed migration retained its owned legacy journal");
   }, { legacyName, imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
-  search.set("experimentalKifsV3", "0");
+  search.delete("experimentalKifsV3");
   await page.goto("/?" + search);
   await ready(page);
   const reopened = await runTerminalCommand(page, 'stat -c "SAVED_INODE %i %h %a %u %g" "$HOME/kifs-saved-alias"');
@@ -245,7 +254,7 @@ df -Pk / | tail -n 1`);
   expect(reopened.output).toContain(identity);
   if (selectedKernel !== undefined) {
     const loads = await page.evaluate(() => Number(sessionStorage.getItem("kifs-qualification-kernel-loads")));
-    expect(loads).toBeGreaterThanOrEqual(3);
+    expect(loads).toBeGreaterThanOrEqual(4);
   }
 });
 

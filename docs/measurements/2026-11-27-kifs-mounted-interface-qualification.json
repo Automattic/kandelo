@@ -5694,29 +5694,34 @@
       "webkit": 3
     },
     "abiSnapshotAndProgramBaseline": true,
-    "browserAppDefaultUpgrade": {
+    "browserAppTypecheck": true,
+    "browserAppOptInUpgrade": {
       "chromium": {
         "passed": 1,
-        "elapsed": "12.2s"
+        "elapsed": "29.0s"
       },
       "firefox": {
         "passed": 1,
-        "elapsed": "23.4s"
+        "elapsed": "39.6s"
       },
       "webkit": {
         "passed": 1,
-        "elapsed": "18.2s"
+        "elapsed": "38.4s"
       }
     },
-    "browserAppTypecheck": true
+    "hostBoundary": {
+      "flagged": [
+        "env.host_fetch_deferred"
+      ],
+      "reason": "The widened import carries the declared resource size and needs an ownership review."
+    }
   },
   "rollout": {
-    "developmentShellDefault": "v3",
-    "otherComputers": "explicit upgrade",
+    "appConversion": "explicit opt-in",
     "activatedFormatPreserved": true
   },
   "appSource": {
-    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "803ad677517a6ffd807a0643e86c558d4885a4ebcd3b760b763a18fca26479ca",
-    "apps/browser-demos/test/partial-image.spec.ts": "2e582ec643c4dc8a6c0d2d93cd480af489ec18fedd174f15d5ab88b4f948cdb3"
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "40a9cc38727a0381447156877a11dbe6c0f5eb8dac5368cb88de355c9768b247",
+    "apps/browser-demos/test/partial-image.spec.ts": "7786f79858da7b61f6f80c79249fe8703953eff6feb377a93b809b46cb8b8fa5"
   }
 }
