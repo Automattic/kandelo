@@ -37,7 +37,7 @@ import {
   type DylinkForkArchiveSnapshot,
 } from "./dylink-fork-archive";
 import {
-  describeWasmArtifactPolicyFailures,
+  inspectWasmArtifactPolicy,
   extractAbiVersion,
   readWasmFunctionArity,
   readWasmImportDescriptors,
@@ -2993,15 +2993,15 @@ export async function centralizedWorkerMain(
       if (!retainProgramBytes) programBytes.transfer(0);
     };
     const ptrWidth = initData.ptrWidth ?? 4;
-    const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
+    const artifactPolicy = inspectWasmArtifactPolicy(programBytes, {
       expectedAbi: initData.kernelAbiVersion,
       expectedAbiContractDigest: initData.kernelAbiContractDigest,
       supportedProgramExtensions: grouped ? GROUPED_WORKER_EXTENSIONS : undefined,
     });
-    if (artifactFailures.length > 0) {
+    if (artifactPolicy.failures.length > 0) {
       throw new Error(
         `pid=${pid}: refusing unsafe program artifact before execution: ` +
-          artifactFailures.join("; "),
+          artifactPolicy.failures.join("; "),
       );
     }
     // Use pre-compiled module if provided (avoids recompilation in workers)
@@ -3942,6 +3942,7 @@ export async function centralizedWorkerMain(
       const routedImportObject = processHostImportRuntime.routeImportObject(
         programBytes,
         importObject,
+        artifactPolicy.functionImports,
       );
       const guardedMainImports = grouped ? grouped.imports(routedImportObject, channelOffset) : routedImportObject;
       const reconstructedMainImports = importedStatePlanner

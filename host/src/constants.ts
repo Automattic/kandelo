@@ -2523,20 +2523,31 @@ function hasRelocatableObjectSections(customSections: readonly string[]): boolea
  */
 let abiContractMissingWarned = false;
 
+interface WasmArtifactPolicyOptions {
+  expectedAbi?: number | null;
+  expectedAbiContractDigest?: Uint8Array | null;
+  requiredExports?: readonly string[];
+  forbiddenExports?: readonly string[];
+  requireForkInstrumentation?: boolean;
+  forbidForkInstrumentation?: boolean;
+  /** Only the admitted group Worker path supplies this set. Ordinary
+   * launch keeps rejecting every unsupported required namespace. */
+  supportedProgramExtensions?: ReadonlySet<string>;
+}
+
 export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
-  options: {
-    expectedAbi?: number | null;
-    expectedAbiContractDigest?: Uint8Array | null;
-    requiredExports?: readonly string[];
-    forbiddenExports?: readonly string[];
-    requireForkInstrumentation?: boolean;
-    forbidForkInstrumentation?: boolean;
-    /** Only the admitted group Worker path supplies this set. Ordinary
-     * launch keeps rejecting every unsupported required namespace. */
-    supportedProgramExtensions?: ReadonlySet<string>;
-  } = {},
+  options?: WasmArtifactPolicyOptions,
 ): string[] {
+  return inspectWasmArtifactPolicy(programBytes, options).failures;
+}
+
+/** Include function imports already decoded during the policy check. A
+ * Worker can reuse them to route imports for the same bytes it inspected. */
+export function inspectWasmArtifactPolicy(
+  programBytes: ArrayBuffer,
+  options: WasmArtifactPolicyOptions = {},
+): { failures: string[]; functionImports?: readonly WasmFunctionImportType[] } {
   const failures: string[] = [];
   let declaredAbi: number | null = null;
   const exportNames = readWasmExportNames(programBytes);
@@ -2674,8 +2685,9 @@ export function describeWasmArtifactPolicyFailures(
   ) {
     const failureCount = failures.length;
     try {
+      forkFacts ??= readWasmForkArtifactFacts(programBytes);
       failures.push(
-        ...describeForkArtifactContractFailures(forkFacts ?? readWasmForkArtifactFacts(programBytes)),
+        ...describeForkArtifactContractFailures(forkFacts),
       );
     } catch (error) {
       failures.push(
@@ -2693,7 +2705,7 @@ export function describeWasmArtifactPolicyFailures(
     }
   }
 
-  return failures;
+  return { failures, functionImports: forkFacts?.functionImportEntries };
 }
 
 /**

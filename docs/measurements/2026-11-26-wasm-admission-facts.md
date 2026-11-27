@@ -51,3 +51,25 @@ because the SpiderMonkey product and compatible cached Dash objdump inputs
 were unavailable. The desktop tests exercised real SDK artifacts and fork
 replay on installed Firefox and Playwright WebKit. This comparison did
 not run native Safari or measure steady-state allocation.
+
+## Reuse during Worker import routing
+
+The follow-up uses the original change as its control. The main process
+Worker can build the qualified import object directly from the function
+identities, ordinals and signatures that policy already decoded for its
+exact owned bytes. Separate entry paths can still use the ordinary
+function-import reader. The required descriptors and duplicate-signature
+checks for owner imports still run.
+
+| Median of eight child observations per arm | Control | Reuse during routing |
+| --- | ---: | ---: |
+| Installed Firefox import routing | 4.99 ms | 0.22 ms |
+| Playwright WebKit import routing | 3.88 ms | 0.19 ms |
+
+The shell and kernel artifacts above were unchanged. Each arm issued four
+trusted shortcuts and verified the fitted prompts. Candidate Firefox
+endpoints still took 2021–2462 ms. Machine load fell between the Firefox
+arms, so the total endpoint timings cannot isolate the impact of reusing
+these signatures. The code removes a parse in the timed import-routing
+stage. The normal host build and 51 focused policy, import-routing and
+grouped Worker tests passed with this follow-up.
