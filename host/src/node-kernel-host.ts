@@ -54,6 +54,7 @@ import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { nodeCompiledWorkerExecArgv } from "./worker-adapter";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
@@ -1759,10 +1760,14 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
 
   // Check for compiled .js version first (much faster startup)
   if (compiledWorkerEntryIsCurrent(entryTs, distJs)) {
-    return new NodeThreadWorker(distJs);
+    return new NodeThreadWorker(distJs, {
+      execArgv: nodeCompiledWorkerExecArgv(),
+    });
   }
   if (compiledWorkerEntryIsCurrent(entryTs, entryJs)) {
-    return new NodeThreadWorker(entryJs);
+    return new NodeThreadWorker(entryJs, {
+      execArgv: nodeCompiledWorkerExecArgv(),
+    });
   }
 
   // Fallback: tsx eval bootstrap
