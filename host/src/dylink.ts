@@ -45,6 +45,7 @@ import {
 import {
   registerWasmModuleReflection,
   wasmModuleExports,
+  wasmModuleGlobalExportMutability,
   wasmModuleImports,
 } from "./wasm-module-reflection";
 import { noteProcessMemoryInstance } from "./wasm-instance-retention";
@@ -1207,6 +1208,15 @@ function requireNativeDylinkMemory(options: LoadSharedLibraryOptions, name: stri
   return options.memory instanceof ForkShareAddressSpace ? options.memory.memory : options.memory;
 }
 
+function acceptsWrite(global: WebAssembly.Global): boolean {
+  try {
+    global.value = global.value;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Make the module a process instantiates for `form`, and publish it. */
 function compileSideModule(
   name: string,
@@ -2206,12 +2216,15 @@ function* instantiateSharedLibrarySteps(
 
     // Relocate exports: data address globals need memoryBase added
     const relocatedExports: Record<string, WebAssembly.ExportValue> = {};
+    const globalExportMutability = wasmModuleGlobalExportMutability(module);
     for (const [exportName, exportValue] of Object.entries(instance.exports)) {
       if (exportValue instanceof WebAssembly.Global) {
-        try {
-          (exportValue as any).value = (exportValue as any).value;
+        if (
+          globalExportMutability.get(exportName)
+          ?? acceptsWrite(exportValue)
+        ) {
           relocatedExports[exportName] = exportValue;
-        } catch {
+        } else {
           // These are scalar ABI facts, not data addresses.
           if (exportName === "__tls_size" || exportName === "__tls_align") {
             relocatedExports[exportName] = exportValue;

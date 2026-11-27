@@ -2394,6 +2394,77 @@ export function readWasmExportDescriptors(
   return exports;
 }
 
+/**
+ * Read the mutability of each exported global that the module defines, by
+ * export name.
+ *
+ * An exported global that the module imports is absent. The exports of the
+ * globals after an initializer that this parser cannot skip are absent too.
+ */
+export function readWasmGlobalExportMutability(
+  programBytes: ArrayBuffer,
+): ReadonlyMap<string, boolean> {
+  const src = new Uint8Array(programBytes);
+  const mutability = new Map<string, boolean>();
+  if (!hasWasmMagic(src)) return mutability;
+
+  let globalImports = 0;
+  let globalSectionOffset: number | undefined;
+  const exportNames = new Map<number, string[]>();
+  let offset = 8;
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+
+    if (sectionId === 2) {
+      const counts = { funcImports: 0, globalImports: 0 };
+      let pos = contentOffset;
+      const [importCount, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < importCount; i++) {
+        pos = skipImportEntry(src, pos, counts);
+      }
+      globalImports = counts.globalImports;
+    } else if (sectionId === 6) {
+      globalSectionOffset = contentOffset;
+    } else if (sectionId === 7) {
+      let pos = contentOffset;
+      const [exportCount, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < exportCount; i++) {
+        const [name, afterName] = readName(src, pos);
+        pos = afterName;
+        const kind = src[pos++];
+        const [index, indexBytes] = readULEB128(src, pos);
+        pos += indexBytes;
+        if (kind !== 3 || index < globalImports) continue;
+        const names = exportNames.get(index - globalImports);
+        if (names) names.push(name);
+        else exportNames.set(index - globalImports, [name]);
+      }
+      break;
+    }
+
+    offset = contentOffset + sectionSize;
+  }
+  if (globalSectionOffset === undefined) return mutability;
+
+  let pos = globalSectionOffset;
+  const [globalCount, countBytes] = readULEB128(src, pos);
+  pos += countBytes;
+  for (let i = 0; i < globalCount; i++) {
+    const mutable = src[readWasmValueType(src, pos, "global type").next] === 1;
+    for (const name of exportNames.get(i) ?? []) mutability.set(name, mutable);
+    try {
+      pos = skipGlobalEntry(src, pos);
+    } catch {
+      break;
+    }
+  }
+  return mutability;
+}
+
 /** Return all export names from a wasm module. */
 export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
   return readWasmExportDescriptors(programBytes).map(({ name }) => name);
