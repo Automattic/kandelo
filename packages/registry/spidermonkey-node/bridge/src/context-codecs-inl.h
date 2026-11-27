@@ -599,27 +599,35 @@ bool ReportNativeException(Isolate* isolate,JS::HandleValue error,JS::HandleObje
 }
 }
 namespace {
-void ReportNodePrivateFieldReadError(JSContext* cx, JS::HandleString name,
-                                     JS::HandleValue receiver) {
+void ReportNodePrivateReadError(JSContext* cx, JS::HandleString name,
+                                JS::HandleValue receiver, JS::PrivateReadKind kind) {
   auto bytes = JS_EncodeStringToUTF8(cx, name);
   if (!bytes) return;
-  auto format = [](void*, unsigned kind) -> const JSErrorFormatString* {
-    static constexpr JSErrorFormatString errors[] = {
-        {"NodeCannotReadPrivateMember",
-         "Cannot read private member {0} from an object whose class did not declare it",
-         1, JSEXN_TYPEERR},
-        {"NodeCannotReadNullishProperty", "Cannot read properties of {0} (reading '{1}')",
-         2, JSEXN_TYPEERR},
-    };
-    return &errors[kind];
+  const char* label = JS_GetStringLength(name) == 0 ? "." : bytes.get();
+  static constexpr JSErrorFormatString errors[] = {
+      {"NodeCannotReadPrivateMember",
+       "Cannot read private member {0} from an object whose class did not declare it",
+       1, JSEXN_TYPEERR},
+      {"NodeCannotReadNullishProperty", "Cannot read properties of {0} (reading '{1}')",
+       2, JSEXN_TYPEERR},
+      {"NodeWrongPrivateInstance", "Receiver must be an instance of class {0}",
+       1, JSEXN_TYPEERR},
+      {"NodeWrongPrivateClass", "Receiver must be class {0}", 1, JSEXN_TYPEERR},
   };
-  if (receiver.isNullOrUndefined()) {
+  auto format = [](void*, unsigned index) -> const JSErrorFormatString* {
+    return &errors[index];
+  };
+  if (kind == JS::PrivateReadKind::StaticMember) {
+    JS_ReportErrorNumberUTF8(cx, format, nullptr, 3, label);
+  } else if (receiver.isNullOrUndefined()) {
     JS_ReportErrorNumberUTF8(cx, format, nullptr, 1,
-                            receiver.isNull() ? "null" : "undefined",
-                            bytes.get());
-    return;
+                            receiver.isNull() ? "null" : "undefined", label);
+  } else {
+    CHECK(kind == JS::PrivateReadKind::Field ||
+          kind == JS::PrivateReadKind::InstanceMember);
+    JS_ReportErrorNumberUTF8(cx, format, nullptr,
+                            kind == JS::PrivateReadKind::Field ? 0 : 2, label);
   }
-  JS_ReportErrorNumberUTF8(cx, format, nullptr, 0, bytes.get());
 }
 
 void ReportNodeStringRepeatError(JSContext* cx, double count) {
@@ -698,8 +706,7 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
   options.creationOptions().setMaxLazyTypedArrayBytes(64);
   options.creationOptions().setTypedArrayLengthErrorReporter(ReportNodeTypedArrayLength);
   options.creationOptions().setStringRepeatErrorReporter(ReportNodeStringRepeatError);
-  options.creationOptions().setPrivateFieldReadErrorReporter(
-      ReportNodePrivateFieldReadError);
+  options.creationOptions().setPrivateReadErrorReporter(ReportNodePrivateReadError);
   options.creationOptions().setCaptureCallReceivers(true);
   JS::RootedObject global(frame.cx,JS_NewGlobalObject(frame.cx,
     intercepted?&nativeInterceptedGlobalClass:&nativeNodeGlobalClass,
