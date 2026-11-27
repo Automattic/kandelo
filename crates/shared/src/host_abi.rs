@@ -284,8 +284,9 @@ pub const EXTENSION_REQUEST_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         // kgpu op argument: one InOut struct whose length is the import's
-        // `size`. The kernel requires `size` to equal the op's struct size
-        // before touching it, so staging never exceeds `KgpuSubmit`.
+        // `size`. The kernel handler requires `size` to equal the op's struct
+        // size, but the host stages before the handler runs and this size
+        // rule has no ceiling, so staging itself is not yet bounded.
         crate::extension_requests::KGPU_V1,
         [desc!(0, InOut, arg!(1), required)]
     ),

@@ -134,6 +134,52 @@ and descriptor are kernel-host surface (`extension_requests` in
 program digest. They are reachable only through this import: no
 program's libc marshals 600.
 
+## GPU command submission version 1
+
+Module `kandelo.kgpu.v1` supplies `__kandelo_kgpu_v1`:
+
+```text
+(arg: pointer, size: i32, op: i32) -> i32
+```
+
+`op` selects one of four operations, each with its own argument struct
+(`crates/shared/src/kgpu.rs`, generated into `<kandelo/kgpu.h>`):
+
+| op | name | struct | bytes |
+|---|---|---|---|
+| 1 | `KGPU_OP_CONTEXT_CREATE` | `kgpu_context_create` | 8 |
+| 2 | `KGPU_OP_CONTEXT_DESTROY` | `kgpu_context_destroy` | 8 |
+| 3 | `KGPU_OP_SUBMIT` | `kgpu_submit` | 40 |
+| 4 | `KGPU_OP_WAIT` | `kgpu_wait` | 24 |
+
+`size` must equal the op's struct size, or the result is `-22`. A
+non-negative return is the op's result. An error is a negative errno and
+never sets the caller's `errno`: `-22` invalid size, op or argument, `-14`
+an unusable address, `-19` no renderer, `-95` unsupported (for example a
+program outside a memory group) and `-62` a wait that timed out.
+
+**Why an extension.** The ABI-56 base program surface is frozen, and
+adding GPU ioctls to it changes the digest every supported program
+carries. A program that links the GL driver imports this instead, so it is
+refused on a host that cannot serve it, and every other program keeps its
+base identity.
+
+**How the call reaches the kernel.** The process worker will serve the
+import by issuing kernel-host request `extension_requests::KGPU_V1` (602)
+on the calling thread's own channel. The kernel stages the argument
+through that request's descriptor in
+`host_abi::EXTENSION_REQUEST_DESCRIPTORS`, so no argument bytes pass
+through host code. The request number and descriptor are kernel-host
+surface, versioned by `HOST_ADAPTER_VERSION` (42), not by the program
+digest.
+
+**Status.** The interface is declared but not yet served. Neither the
+kernel nor the host implements request 602 or the import, so it is not in
+any implemented-extension list and admission refuses a program that
+requires it. A later slice-1 task adds the kernel handler and the worker
+import together with admission. The 602 descriptor sizes its buffer from
+the `size` argument without a ceiling; bounding host staging is open.
+
 See [optional source-line maps](fork-instrumentation.md#optional-source-line-maps)
 and the [Rust debugging workflow](rust-target.md#source-diagnostics-and-backtraces).
 
