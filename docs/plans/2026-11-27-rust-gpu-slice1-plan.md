@@ -482,6 +482,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - wakes parked waits so they answer `-EIO`;
   - clears `renderer_available` until the host sets it again with `kernel_kgpu_set_renderer(1)` after starting a new worker.
 
+  In the same files, a `ContextLost` completion for context C must unpin every drained in-flight submission of C, answer later waits on C with `-EIO`, and ignore any later completion for C (Ruling R16). The executor guarantees it never touches memory for a lost context.
   Extend the version-42 history line, and add the export to `build-kernel.sh` and `run.sh`. Before this ring code relies on record field offsets, `dump_abi` `render_ts_kgpu` must generate them; do not copy them by hand.
 - Modify: `host/src/kernel.ts` `#buildImportObject` (`:2603`): add `host_kgpu_kick`.
 - Modify: `host/src/kernel-worker.ts`: construct `KgpuHost`, call `kernel_kgpu_set_renderer(1)` at init where a renderer exists, and call `terminate()` at kernel teardown.
@@ -511,6 +512,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
       order;
     - `exit_while_pinned_publishes_after_retired`: a grouped process exits with work in flight. Its exit publishes only after `Retired` arrives, and the group then shows zero images.
     - `worker_crash_resets_device_and_releases_exits`: kill the worker while a grouped process has drained work in flight and then exits. After the reset, the process's exit publishes, `kernel_device_pinned_frames()` is 0, a later CONTEXT_CREATE answers `ENODEV` until the renderer is set again, and the
+    - `faulted_context_releases_its_pins`: a malformed stream faults its context. The context's pinned frames return to 0 without a reset, and a grouped exit then publishes.
     - `worker_crash_loses_contexts`: terminate the worker mid-run, and the
       parked wait returns `EIO`;
     - `node_null_renderer_create_is_enodev`.
