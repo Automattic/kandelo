@@ -330,8 +330,8 @@ How the SDK makes that work:
   ([runtime workaround entry](../tests/runtime-workarounds/WASM-LD-LAZY-SIGNATURE-MISMATCH/entry.md)).
   A program that calls `dlopen`, `dlsym`, `dlclose` or `dlerror` gets it
   instead of musl's static stubs ("Dynamic loading not supported"); a
-  program that never calls them gets none of it, and `-ldl` changes
-  nothing. Configure probes therefore see working functions in libc:
+  program that never calls them gets none of it, and `-ldl` does not
+  change that. Configure probes therefore see working functions in libc:
   Meson's `dependency('dl')` is built in, and Autoconf's
   `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
   The loader's imports are among the host imports every program may use
@@ -379,6 +379,12 @@ How the SDK makes that work:
   `dlopen` too. `-Wl,--export-all` is different: it exports and keeps
   every symbol of every linked object, the glue's `fork` included, so the
   program must then be fork-instrumented.
+- **`-ldl` makes the program fork-capable.** An executable linked with
+  `-ldl` keeps and exports `fork`, and with it the kernel's fork import,
+  even when it never calls `fork`: a fork-instrumented side module needs a
+  process that owns fork activation. The host refuses such a program until
+  `scripts/run-wasm-fork-instrument.sh` has instrumented it, and the
+  program then loads only fork-instrumented side modules.
 
 What `-rdynamic` exports is what the program links. A plugin that calls a
 libc function the program never uses fails to load, because a static

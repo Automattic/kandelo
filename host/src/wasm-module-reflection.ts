@@ -2,12 +2,14 @@ import {
   type DecodedWasmExportDescriptor,
   type DecodedWasmImportDescriptor,
   readWasmExportDescriptors,
+  readWasmGlobalExportMutability,
   readWasmImportDescriptors,
 } from "./constants";
 
 interface RegisteredModuleReflection {
   readonly imports: readonly DecodedWasmImportDescriptor[];
   readonly exports: readonly DecodedWasmExportDescriptor[];
+  readonly globalExportMutability: ReadonlyMap<string, boolean>;
 }
 
 const registeredReflection = new WeakMap<
@@ -46,6 +48,7 @@ export function registerWasmModuleReflection(
         Object.freeze({ ...descriptor })
       ),
     ),
+    globalExportMutability: readWasmGlobalExportMutability(exactBytes),
   });
 }
 
@@ -63,4 +66,18 @@ export function wasmModuleExports(
   return registeredReflection.get(module)?.exports
     ?? (WebAssembly.Module.exports(module) as
       readonly DecodedWasmExportDescriptor[]);
+}
+
+/**
+ * Mutability of the exported globals of a registered module, by export name.
+ *
+ * WHY: the JavaScript API does not report the mutability of a Global. A
+ * write to an immutable Global throws, which is a slow test for a module
+ * with thousands of exported data addresses.
+ */
+export function wasmModuleGlobalExportMutability(
+  module: WebAssembly.Module,
+): ReadonlyMap<string, boolean> {
+  return registeredReflection.get(module)?.globalExportMutability
+    ?? new Map();
 }

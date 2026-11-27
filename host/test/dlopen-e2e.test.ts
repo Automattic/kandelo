@@ -20,6 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = join(REPO_ROOT, "sysroot");
 const SYSROOT64 = join(REPO_ROOT, "sysroot64");
+const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasSysroot64 = existsSync(join(SYSROOT64, "lib", "libc.a"));
@@ -54,6 +55,8 @@ function buildSharedLib(
   execFileSync(compiler,
     ["-shared", "-fPIC", "-O2", srcPath, "-o", soPath],
     { stdio: "pipe" });
+  // WHY: a fork-capable program loads only fork-instrumented side modules.
+  execFileSync(FORK_INSTRUMENT, [soPath, "-o", soPath], { stdio: "pipe" });
   return soPath;
 }
 
@@ -70,6 +73,9 @@ function buildMainProgram(
   execFileSync(compiler,
     ["-O2", "-ldl", ...extraArgs, srcPath, "-o", wasmPath],
     { stdio: "pipe" });
+  // WHY: the SDK driver keeps `fork` in every `-ldl` program, so the host
+  // refuses the program until it is fork-instrumented.
+  execFileSync(FORK_INSTRUMENT, [wasmPath, "-o", wasmPath], { stdio: "pipe" });
   return wasmPath;
 }
 

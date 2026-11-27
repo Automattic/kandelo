@@ -261,8 +261,9 @@ function activationTableCatalog(
   label: string,
 ): ForkActivationTableCatalogEntry[] {
   const entries: ForkActivationTableCatalogEntry[] = [];
-  for (const [name, value] of Object.entries(registration.instance.exports)) {
+  for (const name of Object.keys(registration.instance.exports)) {
     if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
+    const value = registration.instance.exports[name];
     const suffix = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
     const ownerId = Number(suffix);
     if (

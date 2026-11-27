@@ -8,6 +8,7 @@ import type {
 } from "./fork-externref-import-mailbox";
 import { MEMORY_GROUP_PROTOCOL, type ProcessForkMode } from "./generated/abi";
 import type { PageTableLocation } from "./fork-share-address-space";
+import type { SharedSideModule } from "./shared-side-module";
 
 export type ForkMemoryOwnership = "copied" | "borrowed";
 
@@ -60,6 +61,8 @@ export interface CentralizedWorkerInitMessage {
    * rewrites every side module it loads with `dlopen` through it.
    */
   memoryInstrumenter?: WebAssembly.Module;
+  /** Compiled side modules that the fork parent of this process loaded. */
+  sideModules?: readonly SharedSideModule[];
   /** Kernel-owned sticky secure-execution state for this exact image. */
   secureExec: boolean;
   /**
@@ -205,7 +208,15 @@ export type WorkerToHostMessage =
   | ExecRequestMessage
   | ExecCompleteMessage
   | VmInterruptTimerMessage
-  | ForkHostImportWakeMessage;
+  | ForkHostImportWakeMessage
+  | SideModuleMessage;
+
+/** A process compiled a side module that its fork children can reuse. */
+export interface SideModuleMessage {
+  type: "side_module";
+  pid: number;
+  module: SharedSideModule;
+}
 
 export interface WorkerReadyMessage {
   type: "ready";

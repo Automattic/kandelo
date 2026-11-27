@@ -2540,29 +2540,39 @@ export function decodeForkGlobalSnapshot(
   return snapshot;
 }
 
-export function findForkGlobalSnapshot(
+/**
+ * Index the mutable-global records by activation and owner.
+ *
+ * WHY: a fork captures and replays one snapshot for each imported global of
+ * each loaded module, so a scan of all records for each lookup costs time
+ * that grows with the square of the loaded state.
+ */
+export function forkGlobalSnapshotFinder(
   records: readonly ForkModuleStateRecord[],
-  activationId: number,
-  ownerId: number,
-): ForkGlobalSnapshot {
-  checkedU32(activationId, "global snapshot activation");
-  checkedU32(ownerId, "global snapshot owner", false);
-  const matches = records.filter(
-    (record) =>
-      record.kind === ForkModuleStateRecordKind.MutableGlobal
-      && record.activationId === activationId
-      && record.ownerId === ownerId,
-  );
-  if (matches.length !== 1) {
-    throw new Error(
-      `module-state has ${matches.length} global snapshots for `
-      + `${activationId}:${ownerId}; expected one`,
-    );
+): (activationId: number, ownerId: number) => ForkGlobalSnapshot {
+  const payloads = new Map<string, Uint8Array[]>();
+  for (const record of records) {
+    if (record.kind !== ForkModuleStateRecordKind.MutableGlobal) continue;
+    const key = `${record.activationId}:${record.ownerId}`;
+    const matches = payloads.get(key);
+    if (matches) matches.push(record.payload);
+    else payloads.set(key, [record.payload]);
   }
-  return decodeForkGlobalSnapshot(
-    matches[0]!.payload,
-    `module-state global ${activationId}:${ownerId}`,
-  );
+  return (activationId, ownerId) => {
+    checkedU32(activationId, "global snapshot activation");
+    checkedU32(ownerId, "global snapshot owner", false);
+    const matches = payloads.get(`${activationId}:${ownerId}`) ?? [];
+    if (matches.length !== 1) {
+      throw new Error(
+        `module-state has ${matches.length} global snapshots for `
+        + `${activationId}:${ownerId}; expected one`,
+      );
+    }
+    return decodeForkGlobalSnapshot(
+      matches[0]!,
+      `module-state global ${activationId}:${ownerId}`,
+    );
+  };
 }
 
 function validateRecordOwnership(

@@ -8,6 +8,12 @@
  * In "copy" mode the mark has no effect. In "share" mode the host makes the
  * rewritten form. With a share threshold above every address space, each
  * fork child gets a private Memory and runs the plain form.
+ *
+ * `sideModuleCompiles` is the count of side module compiles in the `dlopen`
+ * program, which has a fork child and a fork grandchild. A fork child takes
+ * the compiled module of its parent, so only the first process compiles. A
+ * plain fork child of a rewritten parent instantiates another form, so it
+ * compiles one time more.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
@@ -32,15 +38,21 @@ const fixtureSource = (name: string): URL =>
   new URL(`./fixtures/fork-share-${name}.c`, import.meta.url);
 
 const modes = [
-  { name: "forkMemory copy", form: "rewritten", forkMemory: "copy" },
-  { name: "forkMemory share", form: "rewritten", forkMemory: "share" },
-  { name: "the mark and forkMemory copy", form: "marked", forkMemory: "copy" },
-  { name: "a rewrite at exec and shared fork children", form: "marked", forkMemory: "share" },
+  { name: "forkMemory copy", form: "rewritten", forkMemory: "copy", sideModuleCompiles: 1 },
+  { name: "forkMemory share", form: "rewritten", forkMemory: "share", sideModuleCompiles: 1 },
+  { name: "the mark and forkMemory copy", form: "marked", forkMemory: "copy", sideModuleCompiles: 1 },
+  {
+    name: "a rewrite at exec and shared fork children",
+    form: "marked",
+    forkMemory: "share",
+    sideModuleCompiles: 1,
+  },
   {
     name: "a rewrite at exec and plain fork children",
     form: "marked",
     forkMemory: "share",
     forkShareMinimumBytes: 2 ** 32,
+    sideModuleCompiles: 2,
   },
 ] as const;
 
@@ -182,10 +194,13 @@ describe.each(programs)("fork-share-$name", (program) => {
       forkMemory,
       forkShareMinimumBytes: "forkShareMinimumBytes" in mode ? mode.forkShareMinimumBytes : undefined,
       execPrograms,
+      captureWasmModuleStats: true,
       timeout: 60_000,
     });
 
     expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
     expect(result.stdout.trim().split("\n")).toEqual(program.stdout);
+    expect(result.wasmModuleStats?.sideModuleCompiles)
+      .toBe(program.libraryPath ? mode.sideModuleCompiles : 0);
   }, 70_000);
 });

@@ -49,6 +49,15 @@ describe("WasmModuleCache", () => {
     expect(cache.stats()).toMatchObject({ compiles: 1, hits: 2, digests: 3 });
   });
 
+  it("counts each recorded side module compile", () => {
+    const cache = new WasmModuleCache();
+
+    cache.recordSideModuleCompile();
+    cache.recordSideModuleCompile();
+
+    expect(cache.stats().sideModuleCompiles).toBe(2);
+  });
+
   it("never reuses a module for different bytes", async () => {
     const cache = new WasmModuleCache();
     const a = await cache.programModule(moduleBytes("a"));

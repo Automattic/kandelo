@@ -48,6 +48,7 @@ import type { HostDiagnostic } from "../src/host-diagnostic";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage, WorkerToHostMessage } from "../src/worker-protocol";
 import type { PlatformIO } from "../src/types";
 import type { ForkMemory } from "../src/fork-share-address-space";
+import type { WasmModuleCacheStats } from "../src/wasm-module-cache";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -216,6 +217,9 @@ export interface RunProgramOptions {
   /** Capture kernel-owned large-spawn retention and memory pages immediately
    * after program exit, before the dedicated kernel worker is destroyed. */
   captureSpawnScratchStats?: boolean;
+  /** Capture the kernel worker's compiled-module counters after program
+   * exit. Worker-thread mode only. */
+  captureWasmModuleStats?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
   /** Exact VFS image for tests that stage package runtime files. Overrides
@@ -261,6 +265,7 @@ export interface RunProgramResult {
    *  test fixtures do not use the production host-owned reaping path. */
   forkCount?: bigint;
   kernelMemoryPages?: number;
+  wasmModuleStats?: WasmModuleCacheStats;
 }
 
 /**
@@ -404,6 +409,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   let exitCode: number;
   let forkCountSamples: bigint[] | undefined;
   let kernelMemoryPages: number | undefined;
+  let wasmModuleStats: WasmModuleCacheStats | undefined;
   try {
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
     if (options.captureForkCount) {
@@ -414,6 +420,9 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     }
     if (options.captureSpawnScratchStats) {
       kernelMemoryPages = await host.getKernelMemoryPages();
+    }
+    if (options.captureWasmModuleStats) {
+      wasmModuleStats = await host.getWasmModuleCacheStats();
     }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -436,6 +445,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     stdoutBytes,
     forkCountSamples,
     kernelMemoryPages,
+    wasmModuleStats,
   };
 }
 

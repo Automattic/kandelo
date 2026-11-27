@@ -1,6 +1,7 @@
 import { GroupProcessAddressSpace, ProcessAddressFault } from '../src/process-address-space';
 import { describe, expect, it } from "vitest";
 import type { DylinkForkState } from "../src/dylink";
+import { computeForkModuleTemplateIdSync } from "../src/fork-module-state";
 import {
   DylinkForkArchive,
   DylinkForkTableReplica,
@@ -474,6 +475,86 @@ describe("compact dylink fork archive", () => {
         valid.libraries[1]!,
       ],
     })).toThrow(/changed immutable archive identity/);
+    expect(() => archive.sync({
+      ...valid,
+      libraries: [
+        {
+          ...valid.libraries[0]!,
+          moduleBytes: new Uint8Array([0, 97, 115, 109, 3]),
+        },
+        valid.libraries[1]!,
+      ],
+    })).toThrow(/changed immutable archive identity/);
+    expect(() => archive.sync({
+      ...valid,
+      libraries: [
+        {
+          ...valid.libraries[0]!,
+          moduleBytes: new Uint8Array([0, 97, 115, 109]),
+        },
+        valid.libraries[1]!,
+      ],
+    })).toThrow(/changed immutable archive identity/);
+  });
+
+  it("returns a module template id only for the exact indexed bytes", () => {
+    const f = fixture();
+    const valid = state();
+    const library = valid.libraries[0]!;
+    const expected = computeForkModuleTemplateIdSync(library.moduleBytes);
+    const writer = f.archive();
+    expect(writer.moduleTemplateId(library.name, library.moduleBytes))
+      .toBeUndefined();
+    writer.sync(valid);
+    const reader = f.archive();
+    reader.read();
+
+    for (const archive of [writer, reader]) {
+      expect(archive.moduleTemplateId(library.name, library.moduleBytes))
+        .toEqual(expected);
+      expect(archive.moduleTemplateId(
+        library.name,
+        new Uint8Array([0, 97, 115, 109, 3]),
+      )).toBeUndefined();
+      expect(archive.moduleTemplateId("libabsent.so", library.moduleBytes))
+        .toBeUndefined();
+    }
+  });
+
+  it("rejects a staged transaction whose module bytes drift", () => {
+    const archive = fixture().archive();
+    const valid = state();
+    const staged: DylinkForkState = {
+      ...valid,
+      libraries: [
+        valid.libraries[0]!,
+        {
+          ...valid.libraries[1]!,
+          handle: undefined,
+          refCount: undefined,
+          committedGlobalRoot: undefined,
+          initialization: {
+            transactionToken: 9,
+            stage: "bootstrap",
+            tableIndex: 19,
+          },
+        },
+      ],
+      transactions: [{
+        token: 9,
+        name: valid.libraries[1]!.name,
+        moduleBytes: valid.libraries[1]!.moduleBytes,
+        globalVisibility: true,
+      }],
+    };
+    archive.sync(staged);
+    expect(() => archive.sync({
+      ...staged,
+      transactions: [{
+        ...staged.transactions![0]!,
+        moduleBytes: new Uint8Array([0, 97, 115, 109, 3]),
+      }],
+    })).toThrow(/staged transaction 9 changed identity/);
   });
 
   it("binds the copied archive to its pointer-width contract", () => {
