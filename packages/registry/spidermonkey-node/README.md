@@ -67,6 +67,9 @@ them would require host callbacks that Node's native parser does not use.
 using the same pinned private `DateObject` interface as serialization; it never
 calls an overridable JavaScript method. Check that interface on engine upgrades.
 
+Private field reads keep SpiderMonkey's receiver checks. The Node realm error
+reporter uses the declared field name to format invalid receiver errors.
+
 [Maintained npm regressions](../node-browser-bundle/test/README.md) run offline
 and controlled-registry installation, lifecycle execution, CJS/ESM package use,
 lockfiles, cache-only installation, executable links and process/thread/session

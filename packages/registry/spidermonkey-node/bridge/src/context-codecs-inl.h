@@ -599,6 +599,29 @@ bool ReportNativeException(Isolate* isolate,JS::HandleValue error,JS::HandleObje
 }
 }
 namespace {
+void ReportNodePrivateFieldReadError(JSContext* cx, JS::HandleString name,
+                                     JS::HandleValue receiver) {
+  auto bytes = JS_EncodeStringToUTF8(cx, name);
+  if (!bytes) return;
+  auto format = [](void*, unsigned kind) -> const JSErrorFormatString* {
+    static constexpr JSErrorFormatString errors[] = {
+        {"NodeCannotReadPrivateMember",
+         "Cannot read private member {0} from an object whose class did not declare it",
+         1, JSEXN_TYPEERR},
+        {"NodeCannotReadNullishProperty", "Cannot read properties of {0} (reading '{1}')",
+         2, JSEXN_TYPEERR},
+    };
+    return &errors[kind];
+  };
+  if (receiver.isNullOrUndefined()) {
+    JS_ReportErrorNumberUTF8(cx, format, nullptr, 1,
+                            receiver.isNull() ? "null" : "undefined",
+                            bytes.get());
+    return;
+  }
+  JS_ReportErrorNumberUTF8(cx, format, nullptr, 0, bytes.get());
+}
+
 void ReportNodeStringRepeatError(JSContext* cx, double count) {
   if (count < 0 || !std::isfinite(count)) {
     JS::RootedValue value(cx, JS::DoubleValue(count));
@@ -675,6 +698,8 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
   options.creationOptions().setMaxLazyTypedArrayBytes(64);
   options.creationOptions().setTypedArrayLengthErrorReporter(ReportNodeTypedArrayLength);
   options.creationOptions().setStringRepeatErrorReporter(ReportNodeStringRepeatError);
+  options.creationOptions().setPrivateFieldReadErrorReporter(
+      ReportNodePrivateFieldReadError);
   options.creationOptions().setCaptureCallReceivers(true);
   JS::RootedObject global(frame.cx,JS_NewGlobalObject(frame.cx,
     intercepted?&nativeInterceptedGlobalClass:&nativeNodeGlobalClass,
