@@ -478,6 +478,14 @@ WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
 return pointer_width == 4u ? 8u :
 pointer_width == 8u ? 8u :
 WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
+             case 0xc00864e8u:
+return pointer_width == 4u ? 8u :
+pointer_width == 8u ? 8u :
+WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
+             case 0xc00864e9u:
+return pointer_width == 4u ? 8u :
+pointer_width == 8u ? 8u :
+WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
              case 0xc00c642du:
 return pointer_width == 4u ? 12u :
 pointer_width == 8u ? 12u :
@@ -590,6 +598,10 @@ WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
 return pointer_width == 4u ? 24u :
 pointer_width == 8u ? 24u :
 WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
+             case 0xc01864ebu:
+return pointer_width == 4u ? 24u :
+pointer_width == 8u ? 24u :
+WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
              case 0xc01c64a3u:
 return pointer_width == 4u ? 28u :
 pointer_width == 8u ? 28u :
@@ -647,6 +659,10 @@ return pointer_width == 4u ? 40u :
 pointer_width == 8u ? 40u :
 WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
              case 0xc02864cau:
+return pointer_width == 4u ? 40u :
+pointer_width == 8u ? 40u :
+WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
+             case 0xc02864eau:
 return pointer_width == 4u ? 40u :
 pointer_width == 8u ? 40u :
 WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;

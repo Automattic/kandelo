@@ -4,6 +4,7 @@ pub mod channel_record;
 pub mod channel_scalar;
 pub mod dri_sync;
 pub mod dri_owned;
+pub mod kgpu;
 pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
