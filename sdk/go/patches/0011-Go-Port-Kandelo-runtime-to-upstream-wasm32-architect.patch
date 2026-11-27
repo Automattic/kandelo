@@ -1210,7 +1210,7 @@ index 3f9b2a3366d86c74c3c1a1e5ebbd990aa23e080d..3df855cc358928c335dce3464fda4d86
 +	extld := ctxt.extld()
 +	glue := []string{"channel_syscall", "compiler_rt", "cxxrt"}
 +	if kandeloLinksDlopen() {
-+		glue = append(glue, "dlopen")
++		Exitf("GOOS=kandelo: dynamic loading requires -linkmode=external with the Kandelo SDK")
 +	}
 +	for _, name := range glue {
 +		source := ctxt.findLibPath(name + ".c")

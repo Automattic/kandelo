@@ -28,6 +28,7 @@ const FIXTURE = join(__dirname, "fixtures/guest-build/plugins");
 const CC = join(REPO_ROOT, "sdk/bin/wasm32posix-cc");
 const CXX = join(REPO_ROOT, "sdk/bin/wasm32posix-c++");
 const BUILD_DIR = makeHostScratchTempRoot("sdk-plugin-modules-");
+const loaderImport = "kandelo.loader.v1.__kandelo_map_module_v1";
 const pluginOutput = "plugin: host_scale=3\nplugin_run(7) = 22\n";
 
 const hasSysroot = existsSync(join(REPO_ROOT, "sysroot", "lib", "libc.a"));
@@ -94,7 +95,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !existsSync(CC))("SDK plugin module
   // still get the loader, not musl's "Dynamic loading not supported" stubs.
   it("a program linked with its own -lc still gets the loader", { timeout: 60_000 }, async () => {
     const withLibc = link("host-lc", hostSource, ["-rdynamic", "-lc"]);
-    expect(imports(withLibc)).toContain("env.__wasm_dlopen_prepare");
+    expect(imports(withLibc)).toContain(loaderImport);
     const result = await run(withLibc, plugin);
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe(pluginOutput);
@@ -124,7 +125,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !existsSync(CC))("SDK plugin module
       expect(names, name).not.toContain(name);
     }
     expect(imports(host)).not.toContain("kernel.kernel_fork");
-    expect(imports(host)).toContain("env.__wasm_dlopen_prepare");
+    expect(imports(host)).toContain(loaderImport);
   });
 
   it("a program that never calls dlopen gets none of the loader, with or without -ldl", { timeout: 120_000 }, () => {
@@ -134,7 +135,7 @@ describe.skipIf(!hasSysroot || !hasKernel || !existsSync(CC))("SDK plugin module
     // hint that the program may load modules, so the bytes can differ.)
     for (const flags of [[], ["-ldl"]]) {
       const program = link(`hello${flags.join("")}`, source, flags);
-      expect(imports(program).some((i) => i.startsWith("env.__wasm_dlopen")), `${flags}`).toBe(false);
+      expect(imports(program), `${flags}`).not.toContain(loaderImport);
       expect(exports(program), `${flags}`).not.toContain("dlopen");
     }
   });

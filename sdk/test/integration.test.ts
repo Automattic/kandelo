@@ -614,12 +614,7 @@ describe('integration: compile C program', () => {
   }, 60_000);
 
   it.each([[['-ldl']], [[]]])('links working dlopen into C++ programs (extra flags %j)', (extra: string[]) => {
-    // wasm32posix-c++ hands the SDK's C glue to clang++, which compiles a .c
-    // input as C++. dlopen.c once lacked C linkage there, so its dlopen was
-    // mangled and a C++ program silently bound to musl's weak stub, which
-    // only reports "Dynamic loading not supported". The functional glue is
-    // recognizable by its host imports. A program that calls dlopen gets it
-    // with or without -ldl.
+    // The SDK links the loader with C linkage even when the main uses C++.
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'dlopen-cxx.cpp');
@@ -642,15 +637,112 @@ describe('integration: compile C program', () => {
       expect(result.exitCode).toBe(0);
 
       const module = new WebAssembly.Module(readFileSync(outFile));
-      const envImports = WebAssembly.Module.imports(module)
-        .filter((entry) => entry.module === 'env')
-        .map((entry) => entry.name);
-      expect(envImports).toContain('__wasm_dlopen_main');
-      expect(envImports).toContain('__wasm_dlopen_prepare');
-      expect(envImports.some((name) => name.startsWith('_Z'))).toBe(false);
+      const imports = WebAssembly.Module.imports(module);
+      expect(imports).toContainEqual({
+        module: 'kandelo.loader.v1',
+        name: '__kandelo_map_module_v1',
+        kind: 'function',
+      });
+      expect(imports.some(({ name }) => /^(__wasm_dl|_Z)/.test(name))).toBe(false);
     } finally {
       try { unlinkSync(srcFile); } catch {}
       try { unlinkSync(outFile); } catch {}
+    }
+  }, 60_000);
+
+  it('selects named loading from a live reference in an LTO archive', () => {
+    mkdirSync(TMP_DIR, { recursive: true });
+    const member = join(TMP_DIR, 'loader-member.c');
+    const object = join(TMP_DIR, 'loader-member.o');
+    const archive = join(TMP_DIR, 'loader-member.a');
+    const main = join(TMP_DIR, 'loader-main.c');
+    const output = join(TMP_DIR, 'loader-main.wasm');
+    try {
+      writeFileSync(member, `
+        #include <dlfcn.h>
+        void *open_plugin(const char *path) { return dlopen(path, RTLD_NOW); }
+      `);
+      const compile = sdk(CC, ['-flto', '-O2', '-c', member, '-o', object]);
+      expect(compile.exitCode, compile.stderr).toBe(0);
+      const pack = sdk(AR, ['rcs', archive, object]);
+      expect(pack.exitCode, pack.stderr).toBe(0);
+      const cases = [
+        { used: false, threaded: false, flags: [] },
+        { used: true, threaded: false, flags: [] },
+        { used: false, threaded: true, flags: [] },
+        { used: true, threaded: true, flags: [] },
+        { used: false, threaded: false, flags: ['-ldl'] },
+        { used: true, threaded: false, flags: ['-ldl'] },
+      ];
+      for (const { used, threaded, flags } of cases) {
+        writeFileSync(main, `
+          #include <pthread.h>
+          void *open_plugin(const char *);
+          static void *worker(void *arg) { return arg; }
+
+          int main(int argc, char **argv) {
+            ${threaded ? 'pthread_t t; if (pthread_create(&t, 0, worker, 0)) return 2;' : ''}
+            return ${used ? 'open_plugin(argv[argc - 1]) == 0' : '0'};
+          }
+        `);
+        const link = sdk(CC, ['-flto', '-O2', main, archive, ...flags, '-o', output]);
+        expect(link.exitCode, link.stderr).toBe(0);
+        const module = new WebAssembly.Module(readFileSync(output));
+        const imports = WebAssembly.Module.imports(module);
+        expect(imports.some(({ module }) => module === 'kandelo.loader.v1')).toBe(used);
+        expect(imports.some(({ name }) => name === 'kernel_clone')).toBe(threaded);
+        const needsFork = used && (threaded || flags.includes('-ldl'));
+        expect(imports.some(({ name }) => name === 'kernel_fork')).toBe(needsFork);
+        expect(WebAssembly.Module.exports(module).some(({ name }) => name === 'fork')).toBe(needsFork);
+      }
+    } finally {
+      for (const file of [member, object, archive, main, output]) {
+        if (existsSync(file)) unlinkSync(file);
+      }
+    }
+  }, 60_000);
+
+  it('keeps lookup-only -ldl executables free of the mapping and fork imports', () => {
+    mkdirSync(TMP_DIR, { recursive: true });
+    const main = join(TMP_DIR, 'loader-lookup-main.c');
+    const output = join(TMP_DIR, 'loader-lookup-main.wasm');
+    try {
+      writeFileSync(main, `
+        #include <dlfcn.h>
+        int main(void) { return dlsym(RTLD_DEFAULT, "main") == 0; }
+      `);
+      const result = sdk(CC, ['-O2', '-rdynamic', main, '-ldl', '-o', output]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const module = new WebAssembly.Module(readFileSync(output));
+      const imports = WebAssembly.Module.imports(module);
+      expect(imports.some(({ module }) => module === 'kandelo.loader.v1')).toBe(false);
+      expect(imports.some(({ name }) => name === 'kernel_fork')).toBe(false);
+      expect(WebAssembly.Module.exports(module).some(({ name }) => name === 'fork')).toBe(false);
+    } finally {
+      for (const file of [main, output]) {
+        if (existsSync(file)) unlinkSync(file);
+      }
+    }
+  }, 60_000);
+
+  it('refuses a new link that requests an ABI-56 host loader import', () => {
+    mkdirSync(TMP_DIR, { recursive: true });
+    const main = join(TMP_DIR, 'old-loader-main.c');
+    const output = join(TMP_DIR, 'old-loader-main.wasm');
+    try {
+      writeFileSync(main, `
+        #include <stddef.h>
+        __attribute__((import_module("env"), import_name("__wasm_dlerror")))
+        extern int __wasm_dlerror(char *, size_t);
+        int main(void) { char error[192]; return __wasm_dlerror(error, sizeof(error)); }
+      `);
+      const result = sdk(CC, [main, '-o', output]);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain('link inputs request the old ABI-56 loader');
+    } finally {
+      for (const file of [main, output]) {
+        if (existsSync(file)) unlinkSync(file);
+      }
     }
   }, 60_000);
 

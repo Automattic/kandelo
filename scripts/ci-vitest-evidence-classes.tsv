@@ -441,6 +441,7 @@ host/test/prepared-memory-group-execution.test.ts	prepared-product
 host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
 host/test/process-address-space.test.ts	source-only
+host/test/process-dynsym.prototype.test.ts	prepared-product
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-generation-observation.test.ts	source-only

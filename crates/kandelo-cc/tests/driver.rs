@@ -103,12 +103,19 @@ fn compile_and_link_adds_compile_and_link_flags_plus_glue() {
 }
 
 #[test]
-fn ldl_selects_the_functional_dynamic_loading_glue() {
+fn ldl_requests_fork_support_for_named_loading() {
     let args = build(&["foo.c", "-ldl", "-o", "foo.wasm"]);
     assert!(!has(&args, "-ldl"));
     assert!(has(&args, "/tmp/glue/dlopen.c"));
-    assert!(has(&args, "-Wl,--export=fork"));
-    assert!(!has(&build(&["foo.c", "-o", "foo.wasm"]), "-Wl,--export=fork"));
+    assert!(has(&args, "/tmp/glue/dynsym.c"));
+    assert!(has(&args, "-Wl,--kandelo-fork-for-plugins"));
+    assert!(!has(&args, "-Wl,--export=fork"));
+
+    let automatic = build(&["foo.c", "-o", "foo.wasm"]);
+    assert!(!has(&automatic, "-Wl,--kandelo-fork-for-plugins"));
+
+    let side = build(&["-shared", "plugin.c", "-ldl", "-o", "plugin.so"]);
+    assert!(!has(&side, "-Wl,--kandelo-fork-for-plugins"));
 }
 
 #[test]
@@ -125,6 +132,7 @@ fn shared_library_can_limit_exports_to_its_explicit_abi() {
         ).unwrap();
         assert!(has(&args, "-nostdlib"));
         assert!(has(&args, "-Wl,--export=entry"));
+        assert!(has(&args, "-Wl,--kandelo-side-dynsym"));
         assert!(!has(&args, "-Wl,--export-all"));
         assert!(!joined_contains(&args, "crt1.o"));
         assert!(!joined_contains(&args, "channel_syscall.c"));
@@ -185,9 +193,10 @@ fn the_dlopen_loader_precedes_a_libc_the_caller_names() {
         let args = build(user_args);
         let loader = index_of(&args, "/tmp/glue/dlopen.c").unwrap();
         assert_eq!(
-            args[loader - 1..=loader + 2],
+            args[loader - 2..=loader + 2],
             strings(&[
                 "-Wl,--start-lib",
+                "/tmp/glue/dynsym.c",
                 "/tmp/glue/dlopen.c",
                 "-Wl,--end-lib",
                 libc
@@ -395,7 +404,7 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
         glue_sources(&toolchain, false),
         Glue {
             leading: strings(&["/tmp/glue/channel_syscall.c", "/tmp/glue/compiler_rt.c"]),
-            loader: strings(&["/tmp/glue/dlopen.c"]),
+            loader: strings(&["/tmp/glue/dynsym.c", "/tmp/glue/dlopen.c"]),
             fallback: strings(&["/tmp/glue/cxxrt.c"]),
             ..Glue::default()
         }
@@ -493,8 +502,9 @@ fn the_minimal_cxx_runtime_is_a_lazy_member_after_the_cxx_library() {
     let cxxrt = position(&args, "/tmp/glue/cxxrt.c");
     assert_eq!(args[cxxrt - 1], "-Wl,--start-lib");
     // The dlopen loader shares the lazy group.
-    assert_eq!(args[cxxrt + 1], "/tmp/glue/dlopen.c");
-    assert_eq!(args[cxxrt + 2], "-Wl,--end-lib");
+    assert_eq!(args[cxxrt + 1], "/tmp/glue/dynsym.c");
+    assert_eq!(args[cxxrt + 2], "/tmp/glue/dlopen.c");
+    assert_eq!(args[cxxrt + 3], "-Wl,--end-lib");
     assert!(position(&args, "-lc++abi") < cxxrt);
     assert!(cxxrt < position(&args, "/tmp/sysroot/lib/libc.a"));
 }

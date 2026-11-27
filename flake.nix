@@ -40,6 +40,12 @@
 
         llvmPkg = pkgs.llvmPackages_23;
         llvmVersion = llvmPkg.llvm.version;
+        kandeloLld = llvmPkg.lld.overrideAttrs (old: {
+          # nixpkgs applies LLD's own patches from the lld/ subdirectory.
+          postPatch = (old.postPatch or "") + ''
+            patch -p2 < ${./sdk/lld/0001-kandelo-dynamic-symbol-index.patch}
+          '';
+        });
 
         # Combined tree so LLVM_PREFIX/bin contains clang + llvm-* + wasm-ld,
         # and LLVM_PREFIX/include/c++/v1 contains libc++ headers for generic
@@ -51,7 +57,7 @@
           paths = [
             llvmPkg.clang-unwrapped
             llvmPkg.llvm
-            llvmPkg.lld
+            kandeloLld
             llvmPkg.libcxx
             llvmPkg.libcxx.dev
           ];

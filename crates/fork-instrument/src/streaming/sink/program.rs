@@ -466,18 +466,7 @@ impl<'s, 'a> Program<'s, 'a> {
                 .iter()
                 .filter_map(|f| f.import.as_ref())
                 .any(|(module, name)| {
-                    module == "env"
-                        && matches!(
-                            name.as_str(),
-                            "__wasm_dlopen"
-                                | "__wasm_dlopen_main"
-                                | "__wasm_dlopen_prepare"
-                                | "__wasm_dlopen_next"
-                                | "__wasm_dlopen_commit"
-                                | "__wasm_dlsym"
-                                | "__wasm_dlclose"
-                                | "__wasm_dlerror"
-                        )
+                    crate::call_graph::is_dynamic_linker_function_import(module, name)
                 });
         Ok(Self {
             scan,

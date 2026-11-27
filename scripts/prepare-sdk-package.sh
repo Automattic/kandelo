@@ -11,7 +11,7 @@ if [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ]; then
 fi
 
 rm -rf "$SDK_DIR/glue" "$SDK_DIR/sysroot" "$SDK_DIR/sysroot64"
-cp -R "$REPO_ROOT/glue" "$SDK_DIR/glue"
+cp -R "$REPO_ROOT/libc/glue" "$SDK_DIR/glue"
 cp -R "$REPO_ROOT/sysroot" "$SDK_DIR/sysroot"
 echo "prepare-sdk-package: copied glue/ and sysroot/"
 

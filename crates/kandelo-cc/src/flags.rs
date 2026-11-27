@@ -598,6 +598,7 @@ pub fn shared_link_flags() -> Vec<String> {
         "-Wl,--experimental-pic",
         "-Wl,--shared",
         "-Wl,--shared-memory",
+        "-Wl,--kandelo-side-dynsym",
         "-Wl,--export-all",
         "-Wl,--allow-undefined",
     ]

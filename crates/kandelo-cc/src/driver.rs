@@ -369,10 +369,8 @@ pub struct Glue {
     /// order: the syscall channel and compiler-rt builtins, and the C++
     /// runtime entry (`cxxrt_entry.cpp`) when the link includes libc++abi.
     pub leading: Vec<String>,
-    /// The dlopen loader (`dlopen.c`), linked lazily ahead of the first
-    /// libc archive: a program gets it when it calls dlopen, dlsym,
-    /// dlclose or dlerror, with or without -ldl, and gets none of it
-    /// otherwise. See `loader_position` for where it goes.
+    /// Executable lookup and named loading are separate lazy members.
+    /// See `loader_position` for where they precede the musl archives.
     pub loader: Vec<String>,
     /// Linked lazily after the caller's inputs and the C++ libraries, ahead
     /// of libc.a: the minimal C++ runtime fallback (`cxxrt.c`), used only
@@ -401,7 +399,7 @@ pub fn glue_sources(toolchain: &Toolchain, cxx_runtime: bool) -> Glue {
     let path = |name: &&str| join(&toolchain.glue_dir, name);
     Glue {
         leading: leading.iter().map(path).collect(),
-        loader: ["dlopen.c"].iter().map(path).collect(),
+        loader: ["dynsym.c", "dlopen.c"].iter().map(path).collect(),
         fallback: ["cxxrt.c"].iter().map(path).collect(),
         ..Glue::default()
     }
@@ -722,11 +720,7 @@ fn build_clang_args_internal(
             };
             args.extend(glue.leading);
             if parsed.link_dl {
-                // Fully instrumented side modules need a process activation
-                // owner, even if only their imported callbacks could fork.
-                // Retain the real libc entry so normal instrumentation sees
-                // kernel_fork and supplies that owner; never invent a claim.
-                args.push("-Wl,--export=fork".into());
+                args.push("-Wl,--kandelo-fork-for-plugins".into());
             }
             if !glue.fictions.is_empty() {
                 args.push("-Wl,--start-lib".into());
@@ -1253,6 +1247,9 @@ pub fn run_compiler_driver(
     let module = std::fs::read(&output).ok();
     if let Some(module) = module.as_deref().filter(|m| is_wasm_module(m)) {
         let facts = wasm_artifact::read_artifact_facts(module).map_err(|error| error.0)?;
+        if abi_contract.is_some() && wasm_artifact::program_extensions::uses_abi56_loader(&facts) {
+            return Err("link inputs request the old ABI-56 loader; rebuild them with the current Kandelo SDK".into());
+        }
         let failures = wasm_artifact::program_extensions::describe_failures(
             &facts,
             wasm_artifact::program_extensions::IMPLEMENTED,

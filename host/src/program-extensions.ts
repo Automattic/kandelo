@@ -1,7 +1,10 @@
 /** Import namespaces are required interfaces, not optional metadata to ignore. */
 import {
+  ABI56_LOADER_IMPORTS,
   KLOG_IMPORT,
   KLOG_MODULE,
+  LOADER_IMPORT,
+  LOADER_MODULE,
   RESERVED_MODULE_PREFIX,
   STACK_IMPORT,
   STACK_MODULE,
@@ -20,6 +23,7 @@ interface FunctionImport {
 const EXTENSION_IMPORTS: ReadonlyMap<string, string> = new Map([
   [STACK_MODULE, STACK_IMPORT],
   [KLOG_MODULE, KLOG_IMPORT],
+  [LOADER_MODULE, LOADER_IMPORT],
 ]);
 const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set([...EXTENSION_IMPORTS.values(), MEMORY_GROUP_GROWTH_IMPORT]);
 const implemented = new Set<string>(EXTENSION_IMPORTS.keys());
@@ -41,6 +45,12 @@ export function describeProgramExtensionFailures(
   supported: ReadonlySet<string> = implemented,
 ): string[] {
   const failures: string[] = [];
+  if (functions.some(entry => entry.module === LOADER_MODULE) &&
+      functions.some(({ module, name }) =>
+        module === "env" && (ABI56_LOADER_IMPORTS as readonly string[]).includes(name))) {
+    failures.push("artifact mixes the ABI-56 loader with the process-owned loader");
+  }
+
   for (const entry of imports) {
     if (entry.module === MEMORY_GROUP_MODULE && supported.has(MEMORY_GROUP_MODULE)) {
       if (entry.name !== MEMORY_GROUP_IMPORT || entry.kind !== "memory"

@@ -15,6 +15,8 @@ kandelo_cc_inputs_stamp() {
         "$repo_root/rust-toolchain.toml" \
         "$repo_root/crates/kandelo-cc/Cargo.toml" \
         "$repo_root/crates/kandelo-cc/src/"*.rs \
+        "$repo_root/crates/wasm-artifact/src/program_extensions.rs" \
+        "$repo_root/crates/program-abi/src/program_extensions.rs" \
         "$repo_root/sdk/src/kandelo-cc-inputs.sh" \
         "$repo_root/scripts/build-kandelo-cc.sh"
 }

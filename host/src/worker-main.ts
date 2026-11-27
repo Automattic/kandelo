@@ -22,8 +22,11 @@ import {
   createCppExceptionTag,
   createLongjmpTag,
   DynamicLinker,
+  getTableEntry,
+  tableLength,
   FORK_CAP_DYLINK_MAIN,
   forkInstrumentRoleAvailable,
+  parseDylinkSection,
   readForkInstrumentCapabilityClaim,
   requireCppExceptionTag,
   requireLongjmpTag,
@@ -38,6 +41,7 @@ import {
 } from "./dylink-fork-archive";
 import {
   describeWasmArtifactPolicyFailures,
+  detectPtrWidth,
   extractAbiVersion,
   readWasmFunctionArity,
   readWasmImportDescriptors,
@@ -60,6 +64,7 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  ERRNO,
   EXTENSION_REQUEST_KLOG_V1,
   HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
@@ -150,6 +155,17 @@ import {
   KLOG_IMPORT,
   KLOG_INVALID_ARGUMENT,
   KLOG_MODULE,
+  LOADER_ADVANCE,
+  LOADER_BIND_DATA,
+  LOADER_BIND_DIRECT,
+  LOADER_BIND_FUNCTION_POINTER,
+  LOADER_BIND_WEAK,
+  LOADER_IMPORT,
+  LOADER_INSPECT,
+  LOADER_MAP,
+  LOADER_MAX_IMPORTS,
+  LOADER_RETIRE,
+  LOADER_MODULE,
   STACK_IMPORT,
   STACK_MODULE,
 } from "./generated/program-extensions";
@@ -662,6 +678,12 @@ export function buildKernelImportsForTest(
   );
 }
 
+interface DlopenReplayOptions {
+  readonly memoryOwnership?: "copied" | "borrowed";
+  /** The copied child continues the surviving Worker's staged calls. */
+  readonly resumeLoaderTransactions?: boolean;
+}
+
 export interface DlopenSupport {
   imports: Record<string, WebAssembly.ExportValue>;
   readonly extensionImports: WebAssembly.Imports;
@@ -670,7 +692,7 @@ export interface DlopenSupport {
   /** Recreate the parent's live module and handle state from linear memory. */
   replayDlopens: (
     validatedState?: DylinkForkState,
-    options?: { readonly memoryOwnership?: "copied" | "borrowed" },
+    options?: DlopenReplayOptions,
   ) => void;
   /** Clear a fork parent's copied archive lock in ordinary child memory. */
   resetForkChildLock: () => void;
@@ -724,12 +746,6 @@ interface ProcessDylinkActivationOwnerOptions {
     typedReferenceProvider: ForkGcCodecProvider,
   ) => void;
   readonly isForkChild: boolean;
-  /**
-   * A pthread owns a separate instance graph but adopts the process archive's
-   * stable activation coordinates. Unlike a fork child it captures live state
-   * and therefore uses the parent imported-state owner and bootstrap path.
-   */
-  readonly isPthreadReplica?: boolean;
   readonly invokeProcessFork: () => number;
   readonly label: string;
 }
@@ -784,7 +800,10 @@ function createProcessDylinkActivationOwner(
 
   return {
     prepare(request) {
-      if (options.isForkChild && request.replayActivationId === undefined) {
+      const replaying = request.replayActivationId !== undefined;
+      const childPlanner = options.isForkChild ? options.importedStatePlanner?.() ?? null : null;
+      const restoreSnapshot = childPlanner !== null;
+      if (restoreSnapshot && !replaying) {
         throw new Error(
           `${request.name}: fresh-child replay is missing its activation id`,
         );
@@ -798,17 +817,14 @@ function createProcessDylinkActivationOwner(
           `${request.name}: a parent load supplied a replay activation id`,
         );
       }
-      // WHY: any live process Worker may reconcile an activation published by
-      // a peer or originate dlopen while holding the process archive writer.
-      // Its writer-acquire hook first adopts every published activation, so
-      // the same monotonic allocator safely claims the next process-wide ID.
-      const activationId = claimActivationId(request.replayActivationId);
+      // A peer may miss loads that already retired. New guest-owned mappings
+      // carry their process-unique ID even when this Worker's archive was empty.
+      const activationId = claimActivationId(request.replayActivationId ?? request.guestActivationId);
       let prepared = false;
       let registered = false;
       let released = false;
       let exceptionProvider: ForkExceptionProvider | null = null;
       let importedStatePreparation: PreparedForkParentActivation | null = null;
-      let childImportedStatePlanner: ForkImportedGlobalPlanner | null = null;
       let importedStateRegistered = false;
       let importsWrapped = false;
       const continuation = new LinkedForkContinuation(
@@ -897,16 +913,16 @@ function createProcessDylinkActivationOwner(
         env,
         // Only a fork child has a capture-time snapshot. Every other Worker
         // shares the live process and rebuilds GOT cells deterministically.
-        replayImportState: options.isForkChild ? "saved" : "resolved",
+        replayImportState: restoreSnapshot ? "saved" : "resolved",
         savedMutableGlobalImport(moduleName, importName) {
-          if (!options.isForkChild) return undefined;
-          if (!childImportedStatePlanner) {
+          if (!childPlanner) return undefined;
+          if (!importsWrapped) {
             throw new Error(
               `${request.name}: activation ${activationId} requested saved `
               + "import state before wrapping its final imports",
             );
           }
-          return childImportedStatePlanner.savedMutableGlobalImport(
+          return childPlanner.savedMutableGlobalImport(
             activationId,
             moduleName,
             importName,
@@ -919,16 +935,9 @@ function createProcessDylinkActivationOwner(
             );
           }
           importsWrapped = true;
-          childImportedStatePlanner = options.importedStatePlanner?.() ?? null;
-          if (options.isForkChild && !childImportedStatePlanner) {
-            throw new Error(
-              `${request.name}: child activation ${activationId} has no ` +
-                "pre-instantiation imported-state plan",
-            );
-          }
           let resolvedImports = imports;
-          if (childImportedStatePlanner) {
-            resolvedImports = childImportedStatePlanner.importsForActivation(
+          if (childPlanner) {
+            resolvedImports = childPlanner.importsForActivation(
               activationId,
               imports as unknown as ForkWasmImports,
             ) as unknown as WebAssembly.Imports;
@@ -962,11 +971,6 @@ function createProcessDylinkActivationOwner(
             importedStatePreparation.complete(instance);
             importedStateRegistered = true;
           }
-          if (options.isForkChild && !childImportedStatePlanner) {
-            throw new Error(
-              `${request.name}: child activation ${activationId} did not wrap its final imports`,
-            );
-          }
           exceptionProvider = forkExceptionProviderFromInstance(
             activationId,
             instance,
@@ -990,13 +994,15 @@ function createProcessDylinkActivationOwner(
           );
           registered = true;
           prepared = false;
-          childImportedStatePlanner?.registerInstance(activationId, instance);
-          options.registerChildReferenceActivation?.(
-            activationId,
-            request.module,
-            registration,
-            typedReferenceProvider,
-          );
+          if (childPlanner) {
+            childPlanner.registerInstance(activationId, instance);
+            options.registerChildReferenceActivation?.(
+              activationId,
+              request.module,
+              registration,
+              typedReferenceProvider,
+            );
+          }
           options.importedStateCapture?.bindTableDirtyTrackers(
             new Map(
               options.registry
@@ -1007,15 +1013,12 @@ function createProcessDylinkActivationOwner(
                 ]),
             ),
           );
-          if (
-            options.isPthreadReplica &&
-            request.replayActivationId !== undefined
-          ) {
+          if (replaying && !restoreSnapshot) {
             const threadBootstrap =
               instance.exports[WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP];
             if (typeof threadBootstrap !== "function") {
               throw new Error(
-                `${request.name}: pthread replica is missing its table bootstrap`,
+                `${request.name}: worker replica is missing its table bootstrap`,
               );
             }
             // WHY: this Worker needs fresh instance-local element functions,
@@ -1069,7 +1072,6 @@ function createProcessDylinkActivationOwner(
             prepared = false;
             exceptionProvider = null;
             importedStatePreparation = null;
-            childImportedStatePlanner = null;
             importedStateRegistered = false;
             importsWrapped = false;
           }
@@ -1192,6 +1194,7 @@ export function buildDlopenImports(
     return errno !== 0 ? -errno : result;
   };
   const extensionImports: WebAssembly.Imports = {
+    [LOADER_MODULE]: { [LOADER_IMPORT]: mapGuestModule },
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
@@ -1795,6 +1798,177 @@ export function buildDlopenImports(
     return null;
   };
 
+  const guestAddress = (address: number): WasmGuestPointer =>
+    ptrWidth === 4 ? address : BigInt(address);
+  const guestRange = (address: number, length: number, name: string) =>
+    checkedWasmMemoryRange(memory, guestAddress(address), length, ptrWidth, name);
+  const readGuestWord = (view: ProcessDataView, index: number): number => {
+    const offset = index * ptrWidth;
+    const value = ptrWidth === 4 ? view.getUint32(offset, true) : view.getBigUint64(offset, true);
+    return checkedWasmGuestPointerOffset(value, ptrWidth, "guest mapping word");
+  };
+  const writeGuestWord = (view: ProcessDataView, index: number, value: number): void => {
+    const offset = index * ptrWidth;
+    if (ptrWidth === 4) view.setUint32(offset, value, true);
+    else view.setBigUint64(offset, BigInt(value), true);
+  };
+  // The archive identity includes a guest generation. A later load may
+  // reuse the address without matching a pthread's old engine instance.
+  const guestMappingPrefix = `\0${LOADER_MODULE}/`;
+  const guestGenerationOffset = 2 * ptrWidth + 8;
+  const guestRecordSize = guestGenerationOffset + 4;
+  const guestMappingName = (address: number): string => {
+    const range = guestRange(address, guestRecordSize, "guest mapping record");
+    const generation = processDataView(memory, range.offset, range.length)
+      .getUint32(guestGenerationOffset, true);
+    if (!range.offset || !generation) throw new Error("invalid guest mapping identity");
+    return `${guestMappingPrefix}${range.offset}/${generation}`;
+  };
+  const guestRecord = (name: string): ProcessDataView | undefined => {
+    if (!name.startsWith(guestMappingPrefix)) return undefined;
+    const address = Number(name.slice(guestMappingPrefix.length).split("/")[0]);
+    if (guestMappingName(address) !== name) throw new Error("invalid guest mapping key");
+    return processDataView(memory, address, guestRecordSize);
+  };
+  const guestBindingImports = (imports: readonly WebAssembly.ModuleImportDescriptor[]) => {
+    const bindings: { name: string; kind: number }[] = [];
+    for (const { module, name, kind } of imports) {
+      if (module === "env" && kind === "function" &&
+          name !== "fork" && !name.startsWith("__wpk_fork_")) {
+        bindings.push({ name, kind: LOADER_BIND_DIRECT });
+      } else if (module === "GOT.func" && kind === "global") {
+        bindings.push({ name, kind: LOADER_BIND_FUNCTION_POINTER });
+      } else if (module === "GOT.mem" && kind === "global" && name !== "__dso_handle") {
+        bindings.push({ name, kind: LOADER_BIND_DATA });
+      }
+    }
+    return bindings;
+  };
+  let inspected: { source: number; bytes: Uint8Array; module: WebAssembly.Module } | undefined;
+  let preparedGuestModule: { name: string; module: WebAssembly.Module } | undefined;
+
+  function mapGuestModule(packetPtr: WasmGuestPointer, packetLength: number, action: number): number {
+    if (!acquireMainDlopenLock()) return -22;
+    let transaction = 0;
+    try {
+      requireOwnedMemory("map a guest module");
+      const packet = checkedWasmMemoryRange(
+        memory, packetPtr, packetLength, ptrWidth, "guest module request",
+      );
+      if (packet.length !== 4 * ptrWidth) return -22;
+      const request = processDataView(memory, packet.offset, packet.length);
+      const readField = (index: number): number => readGuestWord(request, index);
+      if (action === LOADER_INSPECT) {
+        inspected = undefined;
+        if (readField(1) > 64 * 1024 * 1024) return -22;
+        const source = guestRange(readField(0), readField(1), "guest module bytes");
+        const output = guestRange(readField(2), readField(3), "guest module metadata");
+        const bytes = readProcessBytes(memory, source.offset, source.length);
+        const metadata = parseDylinkSection(bytes);
+        if (!metadata || metadata.tlsExports.size ||
+            metadata.neededDynlibs.length > LOADER_MAX_IMPORTS) return -22;
+        if (detectPtrWidth(bytes.buffer) !== ptrWidth) return -ERRNO.ENOEXEC;
+        const compiled = new WebAssembly.Module(bytes);
+        const [symtab, duplicate] = WebAssembly.Module.customSections(compiled, "kandelo.dynsym.v1");
+        if (!symtab) return -ERRNO.ENOEXEC;
+        if (duplicate) return -ERRNO.EINVAL;
+        const imports = WebAssembly.Module.imports(compiled);
+        const rows = guestBindingImports(imports).map(({ name, kind }) => ({
+          name: encoder.encode(name),
+          kind: metadata.weakImports.has(name) ? kind | LOADER_BIND_WEAK : kind,
+        }));
+        if (rows.length > LOADER_MAX_IMPORTS) return -22;
+        const dependencies = metadata.neededDynlibs.map(name => encoder.encode(name));
+        const size = 12 + rows.reduce((size, { name }) => size + 8 + name.length + 1, 0)
+          + dependencies.reduce((size, name) => size + 4 + name.length + 1, 0) + symtab.byteLength;
+        if (size > output.length) return -105;
+        const dest = new Uint8Array(size);
+        const view = new DataView(dest.buffer, dest.byteOffset, dest.byteLength);
+        view.setUint32(0, rows.length, true);
+        view.setUint32(4, symtab.byteLength, true);
+        view.setUint32(8, dependencies.length, true);
+        let offset = 12;
+        const writeName = (name: Uint8Array): void => {
+          view.setUint32(offset, name.length + 1, true);
+          dest.set(name, offset + 4);
+          offset += 4 + name.length + 1;
+          dest[offset - 1] = 0;
+        };
+        for (const dependency of dependencies) writeName(dependency);
+        for (const { name, kind } of rows) {
+          view.setUint32(offset, kind, true);
+          offset += 4;
+          writeName(name);
+        }
+        dest.set(new Uint8Array(symtab), offset);
+        writeProcessBytes(memory, output.offset, dest);
+        inspected = { source: source.offset, bytes, module: compiled };
+        return size;
+      }
+      const linker = getLinker();
+      if (action === LOADER_RETIRE) {
+        const retired = linker.retireGuestMapping(guestMappingName(readField(0)));
+        if (retired) notifyCommit(forkArchive.sync(linker.forkState()));
+        return retired ? 0 : -22;
+      }
+      if (action === LOADER_MAP) {
+        const name = guestMappingName(readField(2));
+        if (preparedGuestModule || loadedLibraries.has(name) ||
+            readField(1) > 64 * 1024 * 1024) return -22;
+        const source = guestRange(readField(0), readField(1), "guest module bytes");
+        const prepared = inspected;
+        inspected = undefined;
+        const reuse = prepared?.source === source.offset && prepared.bytes.length === source.length;
+        // A dependency's INSPECT replaces the one-entry cache. The caller
+        // retains the original bytes through MAP, including across a fork.
+        const bytes = reuse ? prepared.bytes :
+          readProcessBytes(memory, source.offset, source.length);
+        linker.guestTableHighWater(readField(3));
+        claimLoaderOwnership();
+        transaction = linker.beginDlopenSync(name, bytes, false);
+        if (transaction <= 0) {
+          releaseLoaderOwnershipIfIdle();
+          return -22;
+        }
+        if (reuse) preparedGuestModule = { name, module: prepared.module };
+        ownedDlopenTransactions.add(transaction);
+        return transaction;
+      }
+      if (action !== LOADER_ADVANCE) return -22;
+      transaction = readField(0);
+      if (!ownedDlopenTransactions.has(transaction)) return -22;
+      const entry = linker.nextDlopenInitialization(transaction);
+      const result = processDataView(memory, packet.offset, packet.length);
+      writeGuestWord(result, 3, linker.guestTableHighWater());
+      if (entry > 0) {
+        notifyCommit(forkArchive.sync(linker.forkState()));
+        return entry;
+      }
+      const mapped = entry === 0 ? linker.finishGuestMapping(transaction) : undefined;
+      if (!mapped) {
+        preparedGuestModule = undefined;
+        linker.abortDlopenTransaction(transaction);
+      }
+      ownedDlopenTransactions.delete(transaction);
+      releaseLoaderOwnershipIfIdle();
+      notifyCommit(forkArchive.sync(linker.forkState()));
+      if (!mapped) return -22;
+      writeGuestWord(result, 1, mapped.tableBase);
+      writeGuestWord(result, 2, mapped.memoryBase);
+      return 0;
+    } catch (error) {
+      if (transaction && ownedDlopenTransactions.delete(transaction)) {
+        preparedGuestModule = undefined;
+        getLinker().abortDlopenTransaction(transaction, error);
+        releaseLoaderOwnershipIfIdle();
+        notifyCommit(forkArchive.sync(getLinker().forkState()));
+      }
+      return -22;
+    } finally {
+      releaseMainDlopenLock();
+    }
+  }
+
   const getLinker = (): DynamicLinker => {
     if (linker) return linker;
     const table = getTable();
@@ -1860,6 +2034,89 @@ export function buildDlopenImports(
       globalSymbolOwners,
       got: new Map(),
       loadedLibraries,
+      takeGuestCompiledModule: (moduleName) => {
+        if (preparedGuestModule?.name !== moduleName) return undefined;
+        const compiled = preparedGuestModule.module;
+        preparedGuestModule = undefined;
+        return compiled;
+      },
+      guestModuleGeneration: (moduleName) => guestRecord(moduleName)?.getUint32(guestGenerationOffset, true),
+      guestModuleDependencies: (moduleName, expectedCount) => {
+        const record = guestRecord(moduleName);
+        if (!record) return undefined;
+        const count = record.getUint32(2 * ptrWidth + 4, true);
+        if (count !== expectedCount || count > LOADER_MAX_IMPORTS)
+          throw new Error("guest mapping dependency count differs from dylink metadata");
+        const range = guestRange(readGuestWord(record, 1), count * ptrWidth, "guest dependency vector");
+        const vector = processDataView(memory, range.offset, range.length);
+        return Array.from({ length: count }, (_, i) => {
+          const name = guestMappingName(readGuestWord(vector, i));
+          if (!loadedLibraries.has(name))
+            throw new Error("guest mapping requires an existing dependency");
+          return name;
+        });
+      },
+      guestModuleBindings: (moduleName, imports, replaying, weakImports) => {
+        const record = guestRecord(moduleName);
+        if (!record) return undefined;
+        const names = guestBindingImports(imports);
+        if (names.length > LOADER_MAX_IMPORTS || names.length !== record.getUint32(2 * ptrWidth, true))
+          throw new Error("guest mapping import count differs from its binding vector");
+        const range = guestRange(readGuestWord(record, 0), names.length * 3 * ptrWidth, "guest binding vector");
+        const view = processDataView(memory, range.offset, range.length);
+        const functions = new Map<string, Function>();
+        const globals = new Map<string, { address: number; relative: boolean }>();
+        const providers = new Set<string>();
+        names.forEach(({ name, kind }, index) => {
+          const address = readGuestWord(view, index * 3);
+          const provider = readGuestWord(view, index * 3 + 2);
+          const providerName = provider ? guestMappingName(provider) : undefined;
+          const relative = providerName === moduleName;
+          let exports = inst?.exports;
+          if (providerName && !relative) {
+            const library = loadedLibraries.get(providerName);
+            if (!library) throw new Error(`guest mapping import ${name} has no mapped provider`);
+            providers.add(providerName);
+            exports = library.instance.exports;
+          }
+          if (kind !== LOADER_BIND_DIRECT) {
+            const key = `${kind === LOADER_BIND_DATA ? "mem" : "func"}:${name}`;
+            const prior = globals.get(key);
+            if (prior && (prior.address !== address || prior.relative !== relative))
+              throw new Error(`guest mapping import ${name} has inconsistent GOT values`);
+            globals.set(key, { address, relative });
+            return;
+          }
+          const nameAddress = readGuestWord(view, index * 3 + 1);
+          if (!address && !nameAddress && !provider && weakImports.has(name)) {
+            functions.set(name, () => {
+              throw new WebAssembly.RuntimeError(`unresolved weak side import ${name}`);
+            });
+            return;
+          }
+          const memoryLength = processMemoryByteLength(memory);
+          if (!address || !nameAddress || nameAddress >= memoryLength)
+            throw new Error(`guest mapping import ${name} has an invalid binding`);
+          const nameBuffer = readProcessBytes(
+            memory, nameAddress, Math.min(4096, memoryLength - nameAddress),
+          );
+          const end = nameBuffer.indexOf(0);
+          if (end <= 0)
+            throw new Error(`guest mapping import ${name} has no provider export name`);
+          const exportName = decoder.decode(nameBuffer.slice(0, end));
+          const target = exports?.[exportName];
+          // Fork reconstructs dependencies first and applies the table overlay
+          // later. Use the already-attached provider's fresh engine reference.
+          if (typeof target !== "function" || (!replaying &&
+              (address >= tableLength(table) || getTableEntry(table, address) !== target)))
+            throw new Error(`guest mapping import ${name} has no callable provider`);
+          const prior = functions.get(name);
+          if (prior && prior !== target)
+            throw new Error(`guest mapping import ${name} has inconsistent bindings`);
+          functions.set(name, target);
+        });
+        return { functions, globals, providers };
+      },
       programExtensionImports: extensionImports,
       withModuleInstantiation: <T>(operation: () => T): T => {
         instantiatingModules++;
@@ -1908,7 +2165,7 @@ export function buildDlopenImports(
 
   const replayDlopens = (
     validatedState?: DylinkForkState,
-    options: { readonly memoryOwnership?: "copied" | "borrowed" } = {},
+    options: DlopenReplayOptions = {},
   ): void => {
     const state = validatedState ?? readForkState();
     if (
@@ -1924,6 +2181,16 @@ export function buildDlopenImports(
     try {
       lk.reconcileForkModules(state, options);
       lk.reconcileForkHandleState(state);
+      if (options.resumeLoaderTransactions && state.transactions?.length) {
+        if (loaderOwner.load() !== workerIdentity) {
+          throw new Error("fork child cannot resume dynamic-loader transactions without their lease");
+        }
+        // Resume the whole stack so closing a nested transaction keeps the
+        // lease for its suspended outer initializer.
+        for (const { token } of state.transactions) {
+          ownedDlopenTransactions.add(token);
+        }
+      }
     } catch (error) {
       abortLinkerOperation();
       throw error;
@@ -4054,6 +4321,7 @@ export async function centralizedWorkerMain(
           }
           dlopenSupport.replayDlopens(childDylinkState, {
             memoryOwnership: forkMemoryOwnership,
+            resumeLoaderTransactions: !borrowedForkChild,
           });
           // Ordinary children reconcile a copied archive under their private
           // lock. Borrowed children already replayed the validated snapshot;
@@ -5733,7 +6001,6 @@ export async function centralizedThreadWorkerMain(
             importedStateCapture: threadImportedStateCapture ?? undefined,
             tableReplication: threadTableReplicationImports,
             isForkChild: false,
-            isPthreadReplica: true,
             invokeProcessFork: () => {
               const fork = threadInstance?.exports.fork;
               if (typeof fork !== "function") {

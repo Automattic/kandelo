@@ -304,50 +304,40 @@ Use `wasm64posix-cc` for both commands to build a memory64 executable and
 side module. Do not mix wasm32 and wasm64 artifacts in one process: memory and
 table imports, pointer globals, and GOT entries are width-specific.
 
-`dlopen`, `dlsym`, `dlclose` and `dlerror` are in libc, as on other musl
-systems: a program that calls them gets Kandelo's loader with or without
-`-ldl`. `RTLD_NEXT` lookup is not currently supported.
+`dlopen`, `dlsym`, `dlclose` and `dlerror` come from libc, with or without
+`-ldl`. The SDK requires its matching wasm-ld to link programs that use
+the loader and to build side modules. Rebuild both sides when moving to
+this SDK. Already-built ABI-56 executables that use the old loader imports
+can still run with their existing side modules. Go's internal linker
+requires external link mode when a build requests dynamic loading.
 
 #### Plugin modules and the programs that load them
 
-A side module carries no libc: every symbol it does not define, libc's
-included, resolves against the program that loads it, and `dlopen()` fails
-with a `dlerror()` naming the first symbol nothing provides. A program
-that loads plugins links with `-rdynamic` (or `-Wl,--export-dynamic`,
-`-Wl,-E`), as on any Unix, to export what they call. The build systems'
-switches produce it: CMake's `ENABLE_EXPORTS`, Meson's
-`export_dynamic: true` and Libtool's `-export-dynamic`.
+A side module carries no libc. The process resolves the module's imports
+against the executable, its global scope and the module's dependencies.
+`dlerror()` reports an unresolved required symbol. A program that loads
+plugins uses `-rdynamic` (or `-Wl,--export-dynamic`, `-Wl,-E`) to export
+the symbols the plugins need. CMake's `ENABLE_EXPORTS`, Meson's
+`export_dynamic: true` and Libtool's `-export-dynamic` request this.
 
-How the SDK makes that work:
+- **The program has a symbol index and canonical function pointers.**
+  The linker emits the index and table entries in a single link. Looking
+  up an executable symbol leaves the table unchanged. A link with no
+  loader calls omits the loader and index. A lookup-only link can omit
+  the mapping import and the side-loading fork role.
+- **The process owns loading.** Libc tracks open handles and references,
+  `RTLD_GLOBAL` and `RTLD_LOCAL`, dependency order and per-thread errors.
+  It binds `RTLD_LAZY` eagerly, as POSIX permits. `dlopen(NULL, ...)` opens
+  the executable scope and `RTLD_DEFAULT` searches it without an explicit
+  handle. `RTLD_DEFAULT` and `RTLD_NEXT` are extensions. `RTLD_NEXT`
+  reports an unsupported operation.
+- **The adapter maps the selected module.** Libc passes the module bytes
+  and its selected providers in batches. The adapter instantiates the
+  module, installs its table entries and records the engine mappings to
+  attach after fork. Fork inherits the guest's handles and bindings.
+  `dylink.0` carries dependencies for side modules. Cyclic dependencies
+  and side TLS exports remain unsupported by this loader.
 
-- **The loader comes with dlopen.** The SDK links its loader
-  (`libc/glue/dlopen.c`) into every executable as a lazy member ahead of
-  the first `libc.a`: after the caller's inputs, or just before a libc the
-  caller names itself (librsvg's pkg-config file adds `-lc`). It is not
-  placed ahead of every input because wasm-ld links an invalid module when
-  a lazy definition precedes a reference with another signature, which
-  Autoconf's `char dlopen (void);` checks make
-  ([runtime workaround entry](../tests/runtime-workarounds/WASM-LD-LAZY-SIGNATURE-MISMATCH/entry.md)).
-  A program that calls `dlopen`, `dlsym`, `dlclose` or `dlerror` gets it
-  instead of musl's static stubs ("Dynamic loading not supported"); a
-  program that never calls them gets none of it, and `-ldl` changes
-  nothing. Configure probes therefore see working functions in libc:
-  Meson's `dependency('dl')` is built in, and Autoconf's
-  `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
-  The loader's imports are among the host imports every program may use
-  (`libc/glue/kandelo-host-imports.txt`). A fork-capable program that
-  imports any of them is instrumented as a dynamic-linking program (fork
-  capability bit 0x02, plus a dlopen contract), which costs code size.
-  With clang 21.1.7 the growth was 0.1% for Vim, 1.1% for notify-send and
-  13% for waybar. In bash, 5.9 KB of it was the loader's code and 4.6 KB
-  the instrumentation; in a large program like waybar it is mostly
-  instrumentation. A package whose program reaches
-  `dlopen` only through a feature Kandelo does not have builds without
-  that feature: bash without loadable builtins, SDL without its dynamic
-  API (which looks for a replacement SDL shared library) and SDL2 without
-  Vulkan (which opens libvulkan). Programs that do load modules keep the
-  loader: waybar's CFFI modules, GLib's GModule, Qt plugins, MariaDB
-  plugins, CPython's extension-module import, Vim.
 - **`-rdynamic` exports.** Unix build systems add `-rdynamic` for the same
   reason, so a program's modules can call it; bash's configure and
   NetHack's Linux hints do. It now exports every default-visibility symbol
@@ -364,10 +354,9 @@ How the SDK makes that work:
 - **Module code keeps hidden visibility.** A compile with `-fPIC`, `-fpic`
   or `-shared` may become a side module, and wasm-ld imports a side
   module's own weak default-visibility definitions (inline functions,
-  template instances, implicit virtual destructors) so that another
-  module's copy can win; Kandelo's loader resolves imports only against the
-  program and other modules, so such a module would not load. Hidden, a
-  module binds them to its own copies, as it always has. The cost: PIC code
+  template instances, implicit virtual destructors) when another
+  module's definition can preempt them. Hidden visibility keeps private
+  functions and C++ implementation details local. The cost: PIC code
   linked into an executable (a Libtool convenience library, a Meson static
   library under its default `b_staticpic`) is not exported by `-rdynamic`
   unless it declares default visibility.
@@ -384,7 +373,16 @@ What `-rdynamic` exports is what the program links. A plugin that calls a
 libc function the program never uses fails to load, because a static
 program contains only the libc members it references; link and export it
 with `-Wl,--export=<symbol>`. Calling `fork` from a plugin likewise needs a
-program that links `fork` and is fork-instrumented.
+program that links `fork` and is fork-instrumented. For executables that
+open named modules, pass `-ldl` to retain that support explicitly. A
+lookup-only executable can still use `-ldl` without retaining it.
+
+Run the instrumenter on the executable and on every plugin a
+fork-instrumented process loads so the host can restore its side-module
+boundaries. This applies even to plugins that never call `fork`.
+An executable that can both load plugins and start pthreads also needs
+instrumentation. That link retains the continuation support that keeps
+the Workers' indirect tables consistent.
 
 Libtool, CMake and Meson build plugin modules natively inside Kandelo:
 see [GNU build tools](#gnu-build-tools) and

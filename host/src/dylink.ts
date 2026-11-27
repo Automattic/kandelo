@@ -483,7 +483,7 @@ function tableAddress(
   return wasmAddress(value, tableWidth, context);
 }
 
-function tableLength(table: WebAssembly.Table): number {
+export function tableLength(table: WebAssembly.Table): number {
   const rawLength = (table as unknown as AddressedTable).length;
   const tableWidth = typeof rawLength === "bigint" ? 8 : 4;
   requireWasmAddress(rawLength, tableWidth, "dynamic-linker table length");
@@ -499,7 +499,7 @@ function growTable(table: WebAssembly.Table, delta: number): void {
   addressed.grow(tableAddress(table, delta, "dynamic-linker table growth"));
 }
 
-function getTableEntry(
+export function getTableEntry(
   table: WebAssembly.Table,
   index: number,
 ): Function | null {
@@ -602,8 +602,10 @@ export interface DylinkForkActivationRequest {
   readonly name: string;
   readonly module: WebAssembly.Module;
   readonly moduleBytes: Uint8Array;
-  /** Exact archived coordinate in a fresh fork child; absent in the parent. */
+  /** Exact coordinate of a replica restored from the process archive. */
   readonly replayActivationId?: number;
+  /** Process-unique coordinate selected by the guest for a new mapping. */
+  readonly guestActivationId?: number;
 }
 
 /**
@@ -791,8 +793,23 @@ export interface DylinkForkReconcileOptions {
 /**
  * Options for loading a shared library.
  */
+export interface GuestModuleBindings {
+  readonly functions: ReadonlyMap<string, Function>;
+  readonly globals: ReadonlyMap<string, { address: number; relative: boolean }>;
+  readonly providers: ReadonlySet<string>;
+}
+
 export interface LoadSharedLibraryOptions {
   programExtensionImports?: WebAssembly.Imports;
+  takeGuestCompiledModule?: (moduleName: string) => WebAssembly.Module | undefined;
+  guestModuleDependencies?: (moduleName: string, count: number) => string[] | undefined;
+  guestModuleGeneration?: (moduleName: string) => number | undefined;
+  guestModuleBindings?: (
+    moduleName: string,
+    imports: readonly WebAssembly.ModuleImportDescriptor[],
+    replaying: boolean,
+    weakImports: ReadonlySet<string>,
+  ) => GuestModuleBindings | undefined;
   withModuleInstantiation?: <T>(operation: () => T) => T;
   /** Process storage for metadata and main-symbol operations. Side-module
    * instantiation currently requires genuine ordinary linear memory. */
@@ -1200,9 +1217,8 @@ function* instantiateSharedLibrarySteps(
   // Compile the exact archive bytes first. Besides producing clearer engine
   // diagnostics, this makes the narrow section parser below operate only on a
   // structurally valid module.
-  const sourceModule = new WebAssembly.Module(
-    wasmBytes as unknown as BufferSource,
-  );
+  const sourceModule = (replay ? undefined : options.takeGuestCompiledModule?.(name)) ??
+    new WebAssembly.Module(wasmBytes as unknown as BufferSource);
   registerWasmModuleReflection(sourceModule, wasmBytes);
   const borrowsMemory = replay?.memoryOwnership === "borrowed";
   if (borrowsMemory) {
@@ -1228,6 +1244,7 @@ function* instantiateSharedLibrarySteps(
     registerWasmModuleReflection(module, borrowedModuleBytes);
   }
   const moduleImports = wasmModuleImports(module);
+  const guestBindings = options.guestModuleBindings?.(name, moduleImports, replay !== undefined, metadata.weakImports);
   checkSideModuleForkContract(
     name,
     moduleImports,
@@ -1451,7 +1468,7 @@ function* instantiateSharedLibrarySteps(
   const gotImports = new Map<string, "mem" | "func">();
   const localGot = new Map<string, WebAssembly.Global>();
   const providerDependencies = new Set(
-    replay?.providerDependencies ?? [],
+    replay?.providerDependencies ?? guestBindings?.providers ?? [],
   );
   const recordProvider = (owner: string | undefined): void => {
     if (owner !== undefined && owner !== name) {
@@ -1492,6 +1509,7 @@ function* instantiateSharedLibrarySteps(
         module,
         moduleBytes: wasmBytes,
         replayActivationId,
+        guestActivationId: replay ? undefined : options.guestModuleGeneration?.(name),
       });
       if (
         !preparedActivation
@@ -1682,6 +1700,26 @@ function* instantiateSharedLibrarySteps(
       symName: string,
       kind: "mem" | "func",
     ): WebAssembly.Global => {
+      if (guestBindings) {
+        if (kind === "mem" && symName === "__dso_handle") {
+          // LLD's synthetic DSO identity is the start of the side image.
+          return new WebAssembly.Global({ value: pointerGlobalType, mutable: true },
+            wasmAddress(memoryBase, ptrWidth, `${name}: DSO identity`));
+        }
+        const key = `${kind}:${symName}`;
+        const binding = guestBindings.globals.get(key);
+        if (!binding)
+          throw new Error(`${name}: missing planned GOT.${kind} binding for ${symName}`);
+        const base = kind === "mem" ? memoryBase : tableBase;
+        const value = binding.relative ? base + binding.address : binding.address;
+        let cell = localGot.get(key);
+        if (!cell) {
+          cell = new WebAssembly.Global({ value: pointerGlobalType, mutable: true },
+            wasmAddress(value, ptrWidth, `${name}: GOT.${kind}.${symName}`));
+          localGot.set(key, cell);
+        }
+        return cell;
+      }
       const resolved = scopedSymbol(options, dependencyScope, symName);
       recordProvider(resolved?.owner);
       if (
@@ -1890,6 +1928,8 @@ function* instantiateSharedLibrarySteps(
                 // ownership between the loader and coordinator. Missing
                 // activation imports fail before the side module executes.
                 value = undefined;
+              } else if (guestBindings) {
+                value = guestBindings.functions.get(prop);
               } else {
                 const resolved = scopedSymbol(
                   options,
@@ -1924,6 +1964,7 @@ function* instantiateSharedLibrarySteps(
             hasCompleteForkInstrumentation
             && (prop === "fork" || prop.startsWith("__wpk_fork_"))
           ) return false;
+          if (guestBindings) return guestBindings.functions.has(prop);
           return scopedSymbol(options, dependencyScope, prop) !== undefined
             || selfFunctionImports.has(prop);
         },
@@ -2185,7 +2226,9 @@ function* instantiateSharedLibrarySteps(
     };
 
     // Update GOT with this library's exports
-    for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
+    // Guest-mapped modules already have canonical slots in their element
+    // segment. The guest index names those slots, and the host adds none.
+    for (const [exportName, exportValue] of guestBindings ? [] : Object.entries(relocatedExports)) {
       if (exportName.startsWith("__") || isForkRuntimeExport(exportName)) {
         // WHY: these are activation-control entry points, not ELF-visible
         // application symbols. Publishing them would put post-catalog
@@ -2543,6 +2586,9 @@ function* loadSharedLibrarySyncSteps(
   if (!metadata) {
     throw new Error(`${name}: not a shared library (no dylink.0 section)`);
   }
+
+  const selected = options.guestModuleDependencies?.(name, metadata.neededDynlibs.length);
+  if (selected) metadata.neededDynlibs = selected;
 
   // Parent archive entries are emitted in dependency-first load order. A
   // child must replay each dependency with its own exact layout/activation
@@ -3595,6 +3641,44 @@ export class DynamicLinker {
 
   hasPendingDlopen(token: number): boolean {
     return this.pendingDlopens.has(token);
+  }
+
+  /** Complete a guest-selected mapping without creating a host dlopen handle. */
+  finishGuestMapping(token: number): LoadedSharedLibrary | undefined {
+    const transaction = this.pendingDlopens.get(token);
+    if (!transaction?.loaded || transaction.awaitingCompletion ||
+        !this.options.guestModuleBindings) {
+      return undefined;
+    }
+    this.pendingDlopens.delete(token);
+    return transaction.loaded;
+  }
+
+  /** A peer that missed earlier retirements still reserves the same slots. */
+  guestTableHighWater(floor = 0): number {
+    const table = this.options.table;
+    const length = tableLength(table);
+    if (floor > 0x7fff_ffff) throw new RangeError("guest module table floor exceeds the loader limit");
+    if (floor > length) growTable(table, floor - length);
+    return Math.max(length, floor);
+  }
+
+  /** Release only the module selected by the guest after finalization. */
+  retireGuestMapping(name: string): boolean {
+    const library = this.options.loadedLibraries.get(name);
+    if (!library || library.loadState !== "loaded" || this.libraryHandles.has(name))
+      return false;
+    for (const other of this.options.loadedLibraries.values()) {
+      if (other !== library && runtimeDependencyNames(other).has(name)) return false;
+    }
+    this.clearLibraryTableEntries(library);
+    this.options.loadedLibraries.delete(name);
+    library.unregisterForkActivation?.();
+    for (const allocation of [...(library.allocations ?? [])].reverse())
+      this.options.deallocateMemory?.(allocation.address, allocation.size);
+    library.allocations = [];
+    this.rebuildDependencyBookkeeping();
+    return true;
   }
 
   /** Commit the fully initialized module closure and return its stable handle. */

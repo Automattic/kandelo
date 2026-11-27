@@ -167,6 +167,9 @@ export async function buildKandeloSdkVfsImage(
     "cxxrt.c",
     "cxxrt_entry.cpp",
     "dlopen.c",
+    "dynsym.c",
+    "loader-internal.h",
+    "kandelo-loader-wire.h",
   ];
   requireInput(join(inputs.sysrootDirectory, "lib", "libc.a"), "sysroot libc");
   requireStagedSysroot(inputs.sysrootDirectory);
@@ -180,7 +183,7 @@ export async function buildKandeloSdkVfsImage(
   requireInput(inputs.clangResourceDirectory, "Clang resource headers");
   // The SDK driver links executables against this generated allowance
   // (shared::abi::HOST_ENV_IMPORTS); without it every link fails.
-  requireInput(join(inputs.glueDirectory, "kandelo-host-imports.txt"), "link allowance");
+  requireInput(join(inputs.glueDirectory, "kandelo-link-imports.txt"), "link allowance");
   for (const name of glueSources) {
     requireInput(join(inputs.glueDirectory, name), `${name} glue source`);
   }

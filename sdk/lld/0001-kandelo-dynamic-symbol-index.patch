@@ -1,0 +1,197 @@
+--- a/lld/wasm/Config.h
++++ b/lld/wasm/Config.h
+@@ -62,0 +63,2 @@
++  bool kandeloSideDynsym;
++  bool kandeloForkForPlugins;
+--- a/lld/wasm/Driver.cpp
++++ b/lld/wasm/Driver.cpp
+@@ -540,0 +541,2 @@
++  ctx.arg.kandeloSideDynsym = args.hasArg(OPT_kandelo_side_dynsym);
++  ctx.arg.kandeloForkForPlugins = args.hasArg(OPT_kandelo_fork_for_plugins);
+@@ -594,0 +597,2 @@
++  if (ctx.arg.kandeloSideDynsym && !ctx.arg.shared)
++    error("--kandelo-side-dynsym requires --shared");
+@@ -1520,1 +1524,10 @@
+   markLive();
++
++  // Side modules can bind the process fork entry when the main program
++  // already links it. The mapping import alone does not make a program fork.
++  if (Symbol *map = symtab->find("__kandelo_map_module_v1");
++      map && map->isLive() && isa<UndefinedFunction>(map)) {
++    if (Symbol *fork = symtab->find("fork");
++        fork && fork->isLive() && isa<DefinedFunction>(fork))
++      fork->forceExport = true;
++  }
+--- a/lld/wasm/MarkLive.cpp
++++ b/lld/wasm/MarkLive.cpp
+@@ -26,0 +27 @@
++#include "lld/Common/ErrorHandler.h"
+@@ -143,0 +145,17 @@
++
++  // A pthread Worker's table needs reconciliation after a module is
++  // mapped. Explicit SDK -ldl also requests activation support for
++  // instrumented plugins when named loading survives the final link.
++  Symbol *map = symtab->find("__kandelo_map_module_v1");
++  Symbol *clone = symtab->find("kernel_clone");
++  if (!ctx.arg.shared && map && map->isLive() && isa<UndefinedFunction>(map) &&
++      (ctx.arg.kandeloForkForPlugins ||
++       (clone && clone->isLive() && isa<UndefinedFunction>(clone)))) {
++    auto *fork = dyn_cast_or_null<DefinedFunction>(symtab->find("fork"));
++    if (!fork) {
++      error("Kandelo plugin fork support requires the SDK fork entry");
++      return;
++    }
++    enqueue(fork);
++    mark();
++  }
+--- a/lld/wasm/Options.td
++++ b/lld/wasm/Options.td
+@@ -72,0 +73,5 @@
++def kandelo_side_dynsym: F<"kandelo-side-dynsym">,
++  HelpText<"Emit Kandelo's module-relative dynamic symbol index for a shared object">;
++def kandelo_fork_for_plugins: F<"kandelo-fork-for-plugins">,
++  HelpText<"Retain fork support when the executable uses named module loading">;
++
+--- a/lld/wasm/Writer.cpp
++++ b/lld/wasm/Writer.cpp
+@@ -28,0 +29 @@
++#include "llvm/Support/Endian.h"
+@@ -86,0 +88,2 @@
++  void reserveKandeloDynsym();
++  void writeKandeloDynsym();
+@@ -109,0 +113,10 @@
++  struct KandeloSymbol {
++    StringRef name;
++    Symbol *symbol;
++  };
++  std::vector<KandeloSymbol> kandeloSymbols;
++  std::vector<uint8_t> kandeloDynsym;
++  WasmSegment kandeloDynsymSegment{};
++  InputSegment *kandeloDynsymInput = nullptr;
++
++
+@@ -152,0 +166,4 @@
++      if (name == "kandelo.dynsym.v1" && ctx.arg.kandeloSideDynsym) {
++        error("input defines the reserved kandelo.dynsym.v1 section");
++        continue;
++      }
+@@ -573,0 +591,3 @@
++  if (ctx.arg.kandeloSideDynsym && kandeloDynsymInput)
++    addSection(make<CustomSection>("kandelo.dynsym.v1",
++                                   ArrayRef<InputChunk *>{kandeloDynsymInput}));
+@@ -1072,0 +1093,17 @@
++
++// The lookup object refers to the section start symbol. If GC removed that
++// reference, leave an ordinary link untouched.
++void Writer::reserveKandeloDynsym() {
++  Symbol *anchor = symtab->find("__start_kandelo_dynsym");
++  bool executable = anchor && anchor->isLive() && isa<UndefinedData>(anchor);
++  if (!executable && !ctx.arg.kandeloSideDynsym)
++    return;
++  if (executable && (ctx.arg.relocatable || ctx.isPic)) {
++    error("Kandelo executable dynamic symbol index requires a non-PIC executable");
++    return;
++  }
++  StringRef name = "kandelo_dynsym";
++  if (segmentMap.contains(name)) {
++    error("input defines the reserved kandelo_dynsym segment");
++    return;
++  }
+@@ -1073,0 +1111,92 @@
++  uint64_t byteSize = 16;
++  DefinedFunction *cMainWithArgs = nullptr;
++  bool hasMainName = false;
++  for (Symbol *sym : symtab->symbols()) {
++    if (!sym->isLive() || !sym->isExported() || !sym->getFile())
++      continue;
++    auto *function = dyn_cast<DefinedFunction>(sym);
++    if (!function && !isa<DefinedData>(sym))
++      continue;
++    if (function && function->isStub)
++      continue;
++    StringRef exportName = sym->getName();
++    if (function)
++      exportName = function->function->getExportName().value_or(exportName);
++    if (exportName == "_start" || exportName.starts_with("__wasm_") ||
++        exportName.starts_with("__kandelo_") ||
++        exportName.starts_with("wpk_fork_") ||
++        exportName.starts_with("_wpk_fork_"))
++      continue;
++    kandeloSymbols.push_back({exportName, sym});
++    byteSize += 16 + exportName.size() + 1;
++    if (executable && exportName == "__main_argc_argv")
++      cMainWithArgs = function;
++    hasMainName |= exportName == "main";
++  }
++  // Clang uses the signature-qualified symbol for C main(argc, argv).
++  // Index the source name at the same slot when the entry was exported.
++  if (cMainWithArgs && !hasMainName) {
++    kandeloSymbols.push_back({"main", cMainWithArgs});
++    byteSize += 16 + sizeof("main");
++  }
++  if (byteSize > 64 * 1024 * 1024) {
++    error("Kandelo dynamic symbol index exceeds 64 MiB");
++    return;
++  }
++  llvm::sort(kandeloSymbols, [](const KandeloSymbol &a, const KandeloSymbol &b) {
++    return a.name < b.name;
++  });
++
++  kandeloDynsym.resize(byteSize);
++  kandeloDynsymSegment.Data.Name = name;
++  kandeloDynsymSegment.Data.Alignment = 3;
++  kandeloDynsymSegment.Data.Content = kandeloDynsym;
++  kandeloDynsymInput = make<InputSegment>(kandeloDynsymSegment, nullptr);
++  kandeloDynsymInput->live = true;
++  if (!ctx.arg.kandeloSideDynsym) {
++    OutputSegment *segment = createOutputSegment(name);
++    segmentMap[name] = segment;
++    segment->addInputSegment(kandeloDynsymInput);
++  }
++}
++
++void Writer::writeKandeloDynsym() {
++  if (kandeloDynsym.empty())
++    return;
++
++  // All existing address-taken functions have slots after relocation scanning.
++  // ElemSection adds slots for the remaining dynamic exports and deduplicates
++  // aliases of an already indexed InputFunction.
++  using namespace llvm::support::endian;
++  uint8_t *header = kandeloDynsym.data();
++  memcpy(header, "KDS1", 4);
++  write32le(header + 4, kandeloDynsym.size());
++  write32le(header + 8, kandeloSymbols.size());
++  size_t nameOffset = 16 + kandeloSymbols.size() * 16;
++  uint8_t *row = header + 16;
++  for (const KandeloSymbol &entry : kandeloSymbols) {
++    uint64_t value;
++    uint32_t kind;
++    if (auto *f = dyn_cast<DefinedFunction>(entry.symbol)) {
++      if (!ctx.sym.indirectFunctionTable)
++        ctx.sym.indirectFunctionTable =
++            symtab->resolveIndirectFunctionTable(/*required=*/true);
++      if (!ctx.sym.indirectFunctionTable)
++        return;
++      out.elemSec->addEntry(f);
++      value = f->getTableIndex();
++      kind = 1;
++    } else {
++      auto *d = cast<DefinedData>(entry.symbol);
++      value = d->getVA();
++      kind = d->isTLS() ? 3 : 2;
++    }
++    write32le(row, nameOffset);
++    write32le(row + 4, kind);
++    write64le(row + 8, value);
++    memcpy(header + nameOffset, entry.name.data(), entry.name.size());
++    nameOffset += entry.name.size() + 1;
++    row += 16;
++  }
++}
++
+@@ -1094,0 +1224,2 @@
++  reserveKandeloDynsym();
++
+@@ -1859,0 +1991 @@
++  writeKandeloDynsym();
