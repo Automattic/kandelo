@@ -294,8 +294,9 @@ Each slice gets its own plan when it starts; the order is dependency order.
         does not decode records.
       - Translates the stream range (read) and each buffer (with its
         access), pins them and assigns the next seqno.
-      - Queues the record. If the outbox lacks room, it parks the caller
-        until a drain makes room.
+      - Queues the record. If the outbox lacks room it commits nothing and
+        returns `EAGAIN`, so the host's existing blocking-retry path re-runs
+        the request after a drain or loss wake (Ruling R13).
       - Returns `EIO` if the context is lost.
     - **WAIT:**
       - Returns at once if `seqno <= last_retired`.
@@ -371,7 +372,10 @@ Each slice gets its own plan when it starts; the order is dependency order.
   `host/test/egl-dmabuf-smoke.test.ts`), and asserts:
   - the kick fires once;
   - `kernel_kgpu_drain` yields ContextCreate then Submit records;
-  - feeding `Retired` lets the program's `KGPU_WAIT` return 0.
+  - feeding `Retired` lets the program's `KGPU_WAIT` return 0;
+  - with the outbox filled, a SUBMIT is retried by the host and the guest
+    sees the correct seqno after a drain; a context lost while the submit
+    retries answers `-EIO` (Ruling R13 end-to-end check).
 - [ ] **Step 2: Build the kernel and confirm the test fails.**
   `scripts/dev-shell.sh bash packages/registry/kernel/build-kernel.sh`, then
   `cd host && npx vitest run test/kgpu-boundary.test.ts`.
