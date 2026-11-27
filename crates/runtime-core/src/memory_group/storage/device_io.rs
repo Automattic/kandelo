@@ -158,11 +158,16 @@ impl Storage {
     /// true: no mapping change can be published in between. A request that
     /// names no bytes at all is refused rather than given an empty pin, and
     /// poisoned storage refuses before reading any PTE.
+    ///
+    /// `admit` sees the translation before anything is pinned; its error
+    /// ends the call with nothing held. A driver uses it to refuse work it
+    /// has no room to queue, so a refusal never strands a pin.
     pub(in crate::memory_group) fn device_translate_and_pin(
         &mut self,
         memory: &impl PhysicalMemory,
         admission: GroupAdmission,
         ranges: &[DeviceRange],
+        admit: impl FnOnce(&[Vec<DeviceExtent>]) -> Result<(), Errno>,
     ) -> Result<(Vec<Vec<DeviceExtent>>, DevicePinId), Errno> {
         let image = self.owned(admission)?.image;
         let mut translated = Vec::new();
@@ -176,6 +181,7 @@ impl Storage {
         if total == 0 {
             return Err(Errno::EINVAL);
         }
+        admit(&translated)?;
         let mut all = Vec::new();
         all.try_reserve(total).map_err(|_| Errno::ENOMEM)?;
         for extents in &translated {

@@ -75,9 +75,6 @@ pub struct KgpuDevice {
     /// still queued or already drained.
     in_flight: BTreeMap<u64, InFlight>,
     next_seqno: u64,
-    /// Held submissions whose records were dropped because their context was
-    /// lost; their parked submitters answer `EIO` at the next settle.
-    dropped: Vec<u64>,
 }
 
 impl Default for KgpuDevice {
@@ -94,7 +91,6 @@ impl KgpuDevice {
             queue: Outbox::new(),
             in_flight: BTreeMap::new(),
             next_seqno: 1,
-            dropped: Vec::new(),
         }
     }
 
@@ -106,12 +102,12 @@ impl KgpuDevice {
 
     /// Copy whole queued records into `out`; returns the bytes written. A
     /// buffer of `OUTBOX_CAPACITY` bytes always takes at least one record.
-    /// Room the drain frees admits backlog records, and a submitter parked
-    /// behind one of them is re-decided at the next settle.
+    /// Freed room is announced with the hosts' broad retry, so a request the
+    /// host is retrying after `EAGAIN` re-executes.
     pub fn drain_outbox(&mut self, out: &mut [u8]) -> usize {
-        let (written, admitted_parked) = self.queue.drain(out);
-        if admitted_parked {
-            note(WakeSource::KgpuOutbox { device: DEVICE });
+        let written = self.queue.drain(out);
+        if written != 0 {
+            crate::wakeup::push_kgpu_outbox_changed();
         }
         written
     }
@@ -191,15 +187,9 @@ impl KgpuDevice {
             return;
         };
         context.lost = true;
-        let (dropped, admitted_parked) = self.queue.drop_submits(id);
-        let mut dropped_parked = false;
-        for (seqno, parked) in dropped {
+        for seqno in self.queue.drop_submits(id) {
             if let Some(work) = self.in_flight.remove(&seqno) {
                 groups.device_unpin(work.group, work.pin);
-            }
-            if parked {
-                self.dropped.push(seqno);
-                dropped_parked = true;
             }
         }
         note(WakeSource::KgpuSeqno {
@@ -207,9 +197,8 @@ impl KgpuDevice {
             context: id,
             seqno: u64::MAX,
         });
-        if dropped_parked || admitted_parked {
-            note(WakeSource::KgpuOutbox { device: DEVICE });
-        }
+        // A request the host is retrying on this context now fails for good.
+        crate::wakeup::push_kgpu_outbox_changed();
     }
 
     /// What a wait for `seqno` on context `id` answers now, or `None` while
@@ -236,19 +225,19 @@ impl KgpuDevice {
         None
     }
 
-    /// What a parked submission answers now, or `None` while its record
-    /// still waits in the backlog.
-    fn decide_submit(&self, seqno: u64) -> Option<Result<(), Errno>> {
-        if self.queue.holds_in_backlog(seqno) {
-            None
-        } else if self.dropped.contains(&seqno) {
-            Some(Err(Errno::EIO))
+    /// Refuse a guest op whose record would not go straight to the outbox:
+    /// it commits nothing and the host re-executes it (R13).
+    fn require_room(&self, len: usize) -> Result<(), Errno> {
+        if self.queue.fits(len) {
+            Ok(())
         } else {
-            Some(Ok(()))
+            Err(Errno::EAGAIN)
         }
     }
 
-    /// Queue a control record (create or destroy) for `context`.
+    /// Queue a control record (create or destroy) for `context`. A guest's
+    /// own create or destroy has checked for room; exit and exec cleanup may
+    /// wait in the backlog.
     fn queue_control(&mut self, kind: SubmissionKind, context: u32) -> Result<(), Errno> {
         let mut bytes = Vec::new();
         bytes
@@ -271,7 +260,6 @@ impl KgpuDevice {
             bytes,
             context,
             submit: None,
-            parked: false,
         });
         Ok(())
     }
@@ -297,6 +285,7 @@ impl KgpuDevice {
         if !self.renderer_available {
             return Err(Errno::ENODEV);
         }
+        self.require_room(abi::SUBMISSION_HEADER_SIZE)?;
         let id = self.contexts.create(pid)?;
         if let Err(error) = self.queue_control(SubmissionKind::ContextCreate, id) {
             self.contexts.remove(id);
@@ -315,6 +304,7 @@ impl KgpuDevice {
             return Err(Errno::EINVAL);
         }
         self.contexts.owned(id, pid)?;
+        self.require_room(abi::SUBMISSION_HEADER_SIZE)?;
         self.queue_control(SubmissionKind::ContextDestroy, id)?;
         self.contexts.remove(id);
         note(WakeSource::KgpuSeqno {
@@ -325,13 +315,20 @@ impl KgpuDevice {
         Ok(ParkOutcome::Done(0))
     }
 
+    /// Commit one submission, or nothing.
+    ///
+    /// Without room in the outbox the call answers `EAGAIN` having pinned,
+    /// numbered and queued nothing (Ruling R13): the host re-executes the
+    /// whole request once a drain frees room, and the execution that commits
+    /// writes `seqno` through the request's ordinary output path. Parking a
+    /// committed submission instead would strand its `seqno` in a staged
+    /// argument no completion record can carry back to the guest.
     fn submit(
         &mut self,
         groups: &mut MemoryGroups,
         host: &mut dyn HostIO,
         caller: ReceiptRecord,
         pid: u32,
-        tid: u32,
         arg: &mut [u8],
     ) -> Result<ParkOutcome, Errno> {
         let id = u32_at(arg, offset_of!(KgpuSubmit, context));
@@ -351,6 +348,9 @@ impl KgpuDevice {
         {
             return Err(Errno::EINVAL);
         }
+        // The smallest possible record: a full outbox refuses before any
+        // guest memory is read.
+        self.require_room(abi::SUBMISSION_HEADER_SIZE + abi::EXTENT_SIZE)?;
 
         // Read once: the header and the buffer table are copied into kernel
         // memory and only those copies are checked and used.
@@ -398,16 +398,28 @@ impl KgpuDevice {
         let seqno = self.next_seqno;
         let next = seqno.checked_add(1).ok_or(Errno::EOVERFLOW)?;
 
-        let (extents, pin) = groups.device_translate_and_pin(caller, &ranges, host)?;
-        // Everything after the pin either commits or releases it.
-        let queued = self.encode_and_queue(id, seqno, &extents, &access);
-        let admitted = match queued {
-            Ok(admitted) => admitted,
-            Err(error) => {
-                groups.device_unpin(caller.group, pin);
-                return Err(error);
+        // The exact record size is known only once the ranges are
+        // translated; the storage owner lets the room check run between
+        // translation and pinning, so a refusal pins nothing.
+        let queue = &self.queue;
+        let (extents, pin) = groups.device_translate_and_pin(caller, &ranges, host, |extents| {
+            let size = record_size(extents)?;
+            if size > OUTBOX_CAPACITY {
+                // It could never be drained.
+                return Err(Errno::E2BIG);
             }
-        };
+            if queue.fits(size) {
+                Ok(())
+            } else {
+                Err(Errno::EAGAIN)
+            }
+        })?;
+        // Everything after the pin either commits or releases it; the room
+        // checked above is still there, since this entry is the only writer.
+        if let Err(error) = self.encode_and_queue(id, seqno, &extents, &access) {
+            groups.device_unpin(caller.group, pin);
+            return Err(error);
+        }
         self.in_flight.insert(
             seqno,
             InFlight {
@@ -418,54 +430,20 @@ impl KgpuDevice {
         );
         self.next_seqno = next;
         put_u64(arg, offset_of!(KgpuSubmit, seqno), seqno);
-        if admitted {
-            return Ok(ParkOutcome::Done(0));
-        }
-        let park = KgpuPark::Submit {
-            device: DEVICE,
-            seqno,
-        };
-        let parked = crate::wait_park::with(|parks| {
-            parks.park(
-                pid,
-                tid,
-                WaitKind::Kgpu,
-                alloc::vec![park.source()],
-                None,
-                Resume::Kgpu(park),
-            )
-        });
-        match parked {
-            Ok(generation) => {
-                self.queue.mark_parked(seqno);
-                Ok(ParkOutcome::Parked(generation))
-            }
-            // The submission is committed; only this one instance of
-            // backpressure is lost.
-            Err(_) => Ok(ParkOutcome::Done(0)),
-        }
+        Ok(ParkOutcome::Done(0))
     }
 
-    /// Encode a submit record and queue it; returns whether it went straight
-    /// to the outbox. Fails, queuing nothing, if the record cannot fit the
-    /// outbox at all (`E2BIG`): it could never be drained.
+    /// Encode a submit record and queue it in the outbox, which the caller
+    /// has proved has room for it.
     fn encode_and_queue(
         &mut self,
         context: u32,
         seqno: u64,
         extents: &[Vec<abi::Extent>],
         access: &[u32],
-    ) -> Result<bool, Errno> {
+    ) -> Result<(), Errno> {
+        let size = record_size(extents)?;
         let (stream, buffers) = extents.split_first().ok_or(Errno::EINVAL)?;
-        let size = abi::SUBMISSION_HEADER_SIZE
-            + stream.len() * abi::EXTENT_SIZE
-            + buffers
-                .iter()
-                .map(|b| abi::BUFFER_HEADER_SIZE + b.len() * abi::EXTENT_SIZE)
-                .sum::<usize>();
-        if size > OUTBOX_CAPACITY {
-            return Err(Errno::E2BIG);
-        }
         let mut specs = Vec::new();
         specs
             .try_reserve_exact(buffers.len())
@@ -491,12 +469,13 @@ impl KgpuDevice {
             },
         )?;
         self.queue.reserve()?;
-        Ok(self.queue.push(Record {
+        let admitted = self.queue.push(Record {
             bytes,
             context,
             submit: Some(seqno),
-            parked: false,
-        }))
+        });
+        debug_assert!(admitted, "room was checked in this entry");
+        Ok(())
     }
 
     fn wait(
@@ -524,7 +503,7 @@ impl KgpuDevice {
         } else {
             Some(crate::wait_park::now_ns(host)?.saturating_add(timeout_ns))
         };
-        let park = KgpuPark::Wait {
+        let park = KgpuPark {
             device: DEVICE,
             context: id,
             seqno,
@@ -541,6 +520,18 @@ impl KgpuDevice {
         })?;
         Ok(ParkOutcome::Parked(generation))
     }
+}
+
+/// The encoded size of a submit record whose stream is `extents[0]` and
+/// whose buffers are the rest.
+fn record_size(extents: &[Vec<abi::Extent>]) -> Result<usize, Errno> {
+    let (stream, buffers) = extents.split_first().ok_or(Errno::EINVAL)?;
+    Ok(abi::SUBMISSION_HEADER_SIZE
+        + stream.len() * abi::EXTENT_SIZE
+        + buffers
+            .iter()
+            .map(|b| abi::BUFFER_HEADER_SIZE + b.len() * abi::EXTENT_SIZE)
+            .sum::<usize>())
 }
 
 fn note(source: WakeSource) {
@@ -589,7 +580,7 @@ impl ProcessTable {
         match op {
             abi::KGPU_OP_CONTEXT_CREATE => device.create(pid, arg),
             abi::KGPU_OP_CONTEXT_DESTROY => device.destroy(pid, arg),
-            abi::KGPU_OP_SUBMIT => device.submit(groups, host, caller, pid, tid, arg),
+            abi::KGPU_OP_SUBMIT => device.submit(groups, host, caller, pid, arg),
             _ => device.wait(host, pid, tid, arg),
         }
     }
@@ -611,18 +602,11 @@ impl ProcessTable {
         let waiters = crate::wait_park::with(|parks| parks.take_dirty_kgpu_waiters());
         let device = self.kgpu_parts().0;
         for (id, _pid, _tid, park) in waiters {
-            let value = match park {
-                KgpuPark::Wait { context, seqno, .. } => device.decide_wait(context, seqno),
-                KgpuPark::Submit { seqno, .. } => device.decide_submit(seqno),
-            };
-            if let Some(decided) = value {
+            if let Some(decided) = device.decide_wait(park.context, park.seqno) {
                 let value = decided.map_or_else(|error| -(error as i32), |()| 0);
                 crate::wait_park::with(|parks| parks.finish_kgpu_waiter(id, park, value));
             }
         }
-        // Every parked submitter a drop concerned was offered above (a drop
-        // fires the outbox source, which concerns them all).
-        device.dropped.clear();
     }
 
     fn kgpu_apply_retirements(&mut self) {
@@ -715,6 +699,15 @@ mod tests {
     const STREAM: u32 = PAGE + 0x100;
     const TABLE: u32 = PAGE + 0x1000;
     const DATA: u32 = 2 * PAGE + 0x40;
+    /// Where a guest keeps a request's argument struct.
+    const ARG: u32 = PAGE + 0x2000;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum HostCall {
+        Done(i32),
+        Parked,
+        Retry,
+    }
 
     struct Fixture<H: HostIO> {
         table: ProcessTable,
@@ -784,6 +777,57 @@ mod tests {
         fn request(&mut self, op: i32, arg: &mut [u8]) -> Result<ParkOutcome, Errno> {
             self.table
                 .kgpu_request(&mut self.host, self.pid, self.pid, op, arg)
+        }
+
+        fn peek(&mut self, addr: u32, len: usize) -> Vec<u8> {
+            let (store, admission) = self
+                .table
+                .memory_groups()
+                .storage_owner(self.record)
+                .unwrap();
+            let memory = HostMemory {
+                resource: store.resource(),
+                host: &mut self.host,
+            };
+            let mut out = Vec::new();
+            for i in 0..len.div_ceil(4) {
+                let word = store
+                    .execution_word(&memory, admission, addr + 4 * i as u32)
+                    .unwrap();
+                out.extend_from_slice(&word.to_le_bytes());
+            }
+            out.truncate(len);
+            out
+        }
+
+        fn poke_arg(&mut self, arg: &[u8]) {
+            self.poke(ARG, arg);
+        }
+
+        fn guest_seqno(&mut self) -> u64 {
+            u64::from_le_bytes(self.peek(ARG + 32, 8).try_into().unwrap())
+        }
+
+        /// One request 602 as the host transports it: stage the guest's own
+        /// argument bytes, dispatch, and on any final answer copy the InOut
+        /// argument back to the guest (a failed InOut request is copied back
+        /// too). `EAGAIN` is not final: the host keeps the request and
+        /// re-executes it from scratch later, publishing nothing.
+        fn host_call(&mut self, op: i32) -> HostCall {
+            let size = op_arg_size(op).unwrap();
+            let mut staged = self.peek(ARG, size);
+            match self.request(op, &mut staged) {
+                Err(Errno::EAGAIN) => HostCall::Retry,
+                Ok(ParkOutcome::Parked(_)) => HostCall::Parked,
+                result => {
+                    self.poke(ARG, &staged);
+                    HostCall::Done(match result {
+                        Ok(ParkOutcome::Done(value)) => value,
+                        Err(error) => -(error as i32),
+                        Ok(ParkOutcome::Parked(_)) => unreachable!(),
+                    })
+                }
+            }
         }
 
         fn poke(&mut self, addr: u32, bytes: &[u8]) {
@@ -937,6 +981,12 @@ mod tests {
         let mut arg = vec![0u8; core::mem::size_of::<KgpuContextDestroy>()];
         arg[0..4].copy_from_slice(&context.to_le_bytes());
         arg
+    }
+
+    /// Take the queued wake records; returns how many there were.
+    fn wake_events() -> u32 {
+        let mut out = [0u8; 256];
+        crate::wakeup::drain(&mut out, 32)
     }
 
     fn decisions() -> Vec<Decision> {
@@ -1150,7 +1200,7 @@ mod tests {
     #[test]
     fn a_timed_wait_that_runs_out_is_etime() {
         let mut parks = crate::wait_park::Parks::new();
-        let park = KgpuPark::Wait {
+        let park = KgpuPark {
             device: DEVICE,
             context: 1,
             seqno: 1,
@@ -1232,10 +1282,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn outbox_full_parks_submitter_until_drain() {
-        let mut f = grouped();
-        let context = f.create();
+    /// Fill the outbox with large submissions until one is refused; returns
+    /// how many were accepted.
+    fn fill_outbox<H: HostIO>(f: &mut Fixture<H>, context: u32) -> u64 {
         // Large records fill the outbox in a few hundred submissions.
         let buffers = vec![
             KgpuBuffer {
@@ -1246,41 +1295,95 @@ mod tests {
             abi::KGPU_MAX_BUFFERS as usize
         ];
         f.write_buffers(&buffers);
-        let mut submitted = 0usize;
-        let (generation, held) = loop {
-            let (result, seqno) = f.submit(context, abi::KGPU_MAX_BUFFERS);
-            submitted += 1;
-            assert!(submitted < 1000, "the outbox never filled");
-            match result {
-                Ok(ParkOutcome::Done(0)) => continue,
-                other => break (parked(other), seqno),
+        let mut accepted = 0;
+        loop {
+            match f.submit(context, abi::KGPU_MAX_BUFFERS) {
+                (Ok(ParkOutcome::Done(0)), seqno) => {
+                    accepted += 1;
+                    assert_eq!(seqno, accepted);
+                    assert!(accepted < 1000, "the outbox never filled");
+                }
+                (Err(Errno::EAGAIN), _) => return accepted,
+                other => panic!("unexpected submit result {other:?}"),
             }
-        };
-        assert_eq!(
-            held, submitted as u64,
-            "a held submission still has its seqno"
-        );
-        // A caught signal does not end a held submission.
-        f.table
-            .get_mut(f.pid)
-            .unwrap()
-            .raise_signal(wasm_posix_shared::signal::SIGUSR1);
-        crate::wait_park::with(|parks| {
-            parks.note_signal_generated();
-            parks.sweep_signals(&f.table);
-        });
-        f.table.kgpu_settle();
-        assert!(decisions().is_empty(), "still held");
+        }
+    }
+
+    #[test]
+    fn outbox_full_parks_submitter_until_drain() {
+        // R13: the submitter "parks" in the host's generic blocking retry.
+        // The refused attempt commits nothing; the host re-executes the
+        // request from the guest's own bytes after a drain, and only the
+        // committing execution's output reaches the guest.
+        let mut f = grouped();
+        let context = f.create();
+        let accepted = fill_outbox(&mut f, context);
+        let pinned = f.pinned();
+        wake_events();
+
+        f.poke_arg(&submit_arg(context, 16, abi::KGPU_MAX_BUFFERS));
+        assert_eq!(f.host_call(SUBMIT), HostCall::Retry);
+        assert_eq!(f.pinned(), pinned, "a refused submission pins nothing");
+        assert_eq!(f.guest_seqno(), 0, "nothing is published to the guest");
 
         let first = f.drain();
-        f.table.kgpu_settle();
-        let done = decisions();
-        assert_eq!(done.len(), 1);
-        assert_eq!((done[0].generation, done[0].value), (generation, 0));
-        assert!(records(&first).iter().all(|r| r.2 != held));
+        assert_eq!(records(&first).last().unwrap().2, accepted);
+        assert!(wake_events() != 0, "the drain asks hosts to retry");
+        assert_eq!(f.host_call(SUBMIT), HostCall::Done(0));
+        assert_eq!(
+            f.guest_seqno(),
+            accepted + 1,
+            "no sequence number was spent"
+        );
         assert_eq!(
             records(&f.drain()),
-            vec![(SubmissionKind::Submit, context, held)]
+            vec![(SubmissionKind::Submit, context, accepted + 1)]
+        );
+        // A caught signal while the host waits to retry is the host's EINTR,
+        // with nothing to undo in the kernel.
+    }
+
+    #[test]
+    fn a_retried_submit_whose_context_is_lost_answers_eio() {
+        let mut f = grouped();
+        let context = f.create();
+        fill_outbox(&mut f, context);
+        f.poke_arg(&submit_arg(context, 16, abi::KGPU_MAX_BUFFERS));
+        assert_eq!(f.host_call(SUBMIT), HostCall::Retry);
+        wake_events();
+        f.complete(CompletionKind::ContextLost, context, 0).unwrap();
+        assert!(wake_events() != 0, "the loss asks hosts to retry");
+        assert_eq!(f.host_call(SUBMIT), HostCall::Done(-(Errno::EIO as i32)));
+        assert_eq!(f.guest_seqno(), 0);
+        // Every undrained submission of the lost context was unpinned.
+        assert_eq!(f.pinned(), 0);
+    }
+
+    #[test]
+    fn create_and_destroy_with_a_full_outbox_commit_nothing() {
+        let mut f = grouped();
+        let context = f.create();
+        fill_outbox(&mut f, context);
+        // Top up the room the large records left with header-sized records.
+        let mut created = 0;
+        let refused = loop {
+            let mut arg = create_arg();
+            match f.request(CREATE, &mut arg) {
+                Ok(ParkOutcome::Done(0)) => created += 1,
+                other => break (other, arg),
+            }
+            assert!(created < 100, "the outbox never filled");
+        };
+        assert_eq!(refused.0, Err(Errno::EAGAIN));
+        assert_eq!(refused.1, create_arg(), "a refused create allocates no id");
+        assert_eq!(
+            f.request(DESTROY, &mut destroy_arg(context)),
+            Err(Errno::EAGAIN)
+        );
+        f.drain();
+        assert_eq!(
+            f.request(DESTROY, &mut destroy_arg(context)),
+            Ok(ParkOutcome::Done(0))
         );
     }
 

@@ -124,6 +124,37 @@ mod wasm {
 mod wasm_api_source_guards {
     use alloc::vec::Vec;
 
+    /// `wasm_api.rs` is compiled only for Wasm targets, so `channel_kgpu`
+    /// cannot run in a native test. Its behavior lives in
+    /// `ProcessTable::kgpu_request`, whose tests in `runtime_core::dri::kgpu`
+    /// model the host transport (including the EAGAIN re-execution of a
+    /// submission that meets a full outbox). This guard pins the glue those
+    /// tests rely on: request 602 reaches that one entry with the staged
+    /// argument, `size` and `op`; its outcome is reported like every other
+    /// park; and the kgpu settle runs in both drains that decide parks.
+    #[test]
+    fn kgpu_request_602_reaches_the_tested_device_entry() {
+        let source = include_str!("wasm_api.rs");
+        let arm = "wasm_posix_shared::extension_requests::KGPU_V1 => {\n            channel_kgpu(channel_mut_ptr!(0, u8), a2, a3)\n        }";
+        assert_eq!(source.matches(arm).count(), 1, "the 602 arm changed");
+        let start = source.find("fn channel_kgpu(").expect("channel_kgpu");
+        let body = &source[start..start + source[start..].find("\n}\n").expect("end")];
+        for required in [
+            "wasm_posix_shared::kgpu::op_arg_size(op)",
+            "table.kgpu_request(&mut host, task.pid, task.tid, op, arg)",
+            "report_park(outcome)",
+        ] {
+            assert!(body.contains(required), "channel_kgpu lost `{required}`");
+        }
+        // The device alone decides; the glue must not park or answer itself.
+        assert!(!body.contains("wait_park::"), "channel_kgpu parks on its own");
+        assert_eq!(
+            source.matches("    settle_retry_waits();\n    settle_kgpu_waits();").count(),
+            2,
+            "both wake-event and wait-completion drains must settle kgpu waits"
+        );
+    }
+
     #[test]
     fn raw_channel_pointer_allowlist_contains_only_process_addresses() {
         let dispatcher = include_str!("wasm_api.rs");

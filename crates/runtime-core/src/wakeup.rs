@@ -255,6 +255,15 @@ pub fn push_timer_deadline_changed() {
     append_coalesced(0, wakeup_event_wire::TYPE_WAIT_COMPLETE);
 }
 
+/// A GPU device drained records from its outbox, or lost a context: a
+/// `kandelo.kgpu.v1` request the host is retrying after `EAGAIN` (no room)
+/// may now succeed or fail for good. It has no pipe token, so it travels as
+/// the same untargeted record as [`push_fence_ready`] and hosts apply their
+/// broad retry; the retried request re-executes from scratch in the kernel.
+pub fn push_kgpu_outbox_changed() {
+    append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
+}
+
 /// The host has GL-fence work to collect (`kernel_dri_fence_host_requests`).
 pub fn push_fence_host_work() {
     append_coalesced(wakeup_event_wire::IDX_FENCE_HOST_WORK, WAKE_READABLE);

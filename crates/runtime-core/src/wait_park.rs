@@ -23,8 +23,8 @@
 //! # How a park ends, and why each way is decided here
 //!
 //! Parked today: `futex` waits and sleeps (`nanosleep`, `clock_nanosleep`,
-//! `usleep`), and `kandelo.kgpu.v1` waits and held submissions, which the GPU
-//! device decides (`crate::dri::kgpu`).
+//! `usleep`), and `kandelo.kgpu.v1` waits, which the GPU device decides
+//! (`crate::dri::kgpu`).
 //!
 //! * **A source fires** (`FUTEX_WAKE`): the waking syscall runs in the kernel,
 //!   so the wake and the park are ordered by the kernel's own serialization.
@@ -110,9 +110,8 @@ pub enum Resume {
     /// (`crate::wait_retry`). A caught signal interrupts it with `EINTR`
     /// (restartable under `SA_RESTART`, as Linux's ERESTARTSYS).
     Retry(crate::wait_retry::RetryOp),
-    /// A `kandelo.kgpu.v1` call the GPU device decides
-    /// (`crate::dri::kgpu`): a wait for a sequence number to retire, or a
-    /// submission held behind a full outbox. The device re-decides it when
+    /// A `kandelo.kgpu.v1` wait for a sequence number to retire, which the
+    /// GPU device decides (`crate::dri::kgpu`). The device re-decides it when
     /// one of its kgpu wake sources fires and publishes the result through
     /// the ordinary completion queue.
     Kgpu(crate::dri::kgpu::KgpuPark),
@@ -712,7 +711,6 @@ impl Parks {
                 Some(proc) if proc.is_live_explicit_tid(sleeper.tid) => {
                     let interruptible = match self.resume.get(&sleeper.id) {
                         Some(Resume::Retry(op)) => op.signal_interrupts(),
-                        Some(Resume::Kgpu(park)) => park.signal_interrupts(),
                         _ => true,
                     };
                     if interruptible && signal_targets_task(proc, sleeper.tid) {

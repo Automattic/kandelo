@@ -16615,9 +16615,12 @@ fn channel_legacy_pshared(nr: u32, a1: u32, a2: u32) -> i32 {
 ///
 /// `size` must equal the op's argument struct size or the answer is
 /// `EINVAL` (R11), checked here before the staged bytes are borrowed and
-/// again by the device. A wait, or a submission held behind a full outbox,
-/// parks like any other kernel-owned wait; grouped callers' results are
-/// published through `group_completion`.
+/// again by the device. A wait parks like any other kernel-owned wait;
+/// grouped callers' results are published through `group_completion`. An op
+/// that finds the outbox full commits nothing and answers `EAGAIN`, which the
+/// host's generic blocking retry re-executes from scratch (Ruling R13), so
+/// the committing execution's outputs reach the guest through the request's
+/// ordinary output path.
 fn channel_kgpu(arg: *mut u8, size: i32, op: i32) -> i32 {
     match (wasm_posix_shared::kgpu::op_arg_size(op), usize::try_from(size)) {
         (Some(expected), Ok(size)) if expected == size => {}

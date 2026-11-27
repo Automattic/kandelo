@@ -392,12 +392,14 @@ impl MemoryGroups {
 /// for its release.
 impl MemoryGroups {
     /// Translate and pin every range of one device request in a single
-    /// storage call, so the pinned frames are the frames translated.
+    /// storage call, so the pinned frames are the frames translated. `admit`
+    /// may refuse the request after translation, before anything is pinned.
     pub(crate) fn device_translate_and_pin(
         &mut self,
         record: wasm_posix_shared::memory_group::ReceiptRecord,
         ranges: &[super::storage::DeviceRange],
         host: &mut dyn HostIO,
+        admit: impl FnOnce(&[alloc::vec::Vec<wasm_posix_shared::kgpu::Extent>]) -> Result<(), Errno>,
     ) -> Result<
         (
             alloc::vec::Vec<alloc::vec::Vec<wasm_posix_shared::kgpu::Extent>>,
@@ -407,7 +409,7 @@ impl MemoryGroups {
     > {
         let (store, admission) = self.storage_owner(record)?;
         let resource = store.resource();
-        store.device_translate_and_pin(&HostMemory { resource, host }, admission, ranges)
+        store.device_translate_and_pin(&HostMemory { resource, host }, admission, ranges, admit)
     }
 
     /// Read request metadata from the caller's memory into kernel memory.

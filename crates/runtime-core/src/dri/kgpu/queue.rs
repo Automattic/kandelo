@@ -2,11 +2,15 @@
 //!
 //! Ownership: the GPU device (`super`) is the only producer; the host GPU
 //! adapter is the only consumer, through `KgpuDevice::drain_outbox`. The
-//! kernel never waits on the consumer, so the outbox is bounded in bytes and
-//! a record that does not fit waits in a backlog behind it, in order. A
-//! submitter whose record lands in the backlog is parked until the record
-//! reaches the outbox; control records (create, destroy) have no caller to
-//! park and simply wait their turn.
+//! kernel never waits on the consumer, so the outbox is bounded in bytes.
+//!
+//! A guest op that would queue a record checks for room first and, without
+//! room, commits nothing and answers `EAGAIN`; the host re-executes the whole
+//! request later (Ruling R13), so the committing execution writes its outputs
+//! through the ordinary output path. Only the destroy records that exit and
+//! exec cleanup queue have no caller to send back; those wait in a backlog
+//! behind the outbox, in order. The backlog is bounded by the context limit,
+//! since each such record removes a context.
 
 extern crate alloc;
 
@@ -25,8 +29,6 @@ pub struct Record {
     pub context: u32,
     /// The sequence number of a submit record; `None` for control records.
     pub submit: Option<u64>,
-    /// Its submitter is parked until the record reaches the outbox.
-    pub parked: bool,
 }
 
 pub struct Outbox {
@@ -51,11 +53,16 @@ impl Outbox {
         self.backlog.try_reserve(1).map_err(|_| Errno::ENOMEM)
     }
 
+    /// Whether a record of `len` bytes would go straight to the outbox.
+    pub fn fits(&self, len: usize) -> bool {
+        self.backlog.is_empty() && self.ready_bytes + len <= OUTBOX_CAPACITY
+    }
+
     /// Queue a record; returns whether it went straight to the outbox. A
     /// nonempty backlog takes every new record, so order is preserved.
     pub fn push(&mut self, record: Record) -> bool {
         let len = record.bytes.len();
-        if self.backlog.is_empty() && self.ready_bytes + len <= OUTBOX_CAPACITY {
+        if self.fits(len) {
             self.ready_bytes += len;
             self.ready.push_back(record);
             true
@@ -63,17 +70,6 @@ impl Outbox {
             self.backlog.push_back(record);
             false
         }
-    }
-
-    pub fn mark_parked(&mut self, seqno: u64) {
-        if let Some(record) = self.backlog.iter_mut().find(|r| r.submit == Some(seqno)) {
-            record.parked = true;
-        }
-    }
-
-    /// Whether the submit `seqno` still waits in the backlog.
-    pub fn holds_in_backlog(&self, seqno: u64) -> bool {
-        self.backlog.iter().any(|r| r.submit == Some(seqno))
     }
 
     /// Whether a submit of `context` at or below `seqno` has not been
@@ -86,9 +82,8 @@ impl Outbox {
     }
 
     /// Copy whole records from the front of the outbox into `out`, then
-    /// admit backlog records into the freed room. Returns the bytes written
-    /// and whether an admitted record's submitter is parked.
-    pub fn drain(&mut self, out: &mut [u8]) -> (usize, bool) {
+    /// admit backlog records into the freed room. Returns the bytes written.
+    pub fn drain(&mut self, out: &mut [u8]) -> usize {
         let mut written = 0;
         while let Some(front) = self.ready.front() {
             let len = front.bytes.len();
@@ -100,45 +95,38 @@ impl Outbox {
             self.ready_bytes -= len;
             self.ready.pop_front();
         }
-        (written, self.refill())
+        self.refill();
+        written
     }
 
     /// Remove every undrained submit record of `context` (the host never saw
-    /// them). Returns each one's `(seqno, parked)` and whether a record the
-    /// freed room admitted has a parked submitter.
-    pub fn drop_submits(&mut self, context: u32) -> (Vec<(u64, bool)>, bool) {
+    /// them) and return their sequence numbers.
+    pub fn drop_submits(&mut self, context: u32) -> Vec<u64> {
         let mut dropped = Vec::new();
-        let mut keep = |record: &Record, bytes: Option<&mut usize>| match record.submit {
-            Some(seqno) if record.context == context => {
-                dropped.push((seqno, record.parked));
-                if let Some(bytes) = bytes {
-                    *bytes -= record.bytes.len();
-                }
+        let mut ready_bytes = self.ready_bytes;
+        self.ready.retain(|r| match r.submit {
+            Some(seqno) if r.context == context => {
+                dropped.push(seqno);
+                ready_bytes -= r.bytes.len();
                 false
             }
             _ => true,
-        };
-        let mut ready_bytes = self.ready_bytes;
-        self.ready.retain(|r| keep(r, Some(&mut ready_bytes)));
+        });
         self.ready_bytes = ready_bytes;
-        self.backlog.retain(|r| keep(r, None));
-        let admitted = self.refill();
-        (dropped, admitted)
+        self.refill();
+        dropped
     }
 
-    fn refill(&mut self) -> bool {
-        let mut parked = false;
+    fn refill(&mut self) {
         while let Some(front) = self.backlog.front() {
             let len = front.bytes.len();
             if self.ready_bytes + len > OUTBOX_CAPACITY {
                 break;
             }
             let record = self.backlog.pop_front().expect("front exists");
-            parked |= record.parked;
             self.ready_bytes += len;
             self.ready.push_back(record);
         }
-        parked
     }
 }
 
@@ -152,7 +140,6 @@ mod tests {
             bytes: vec![fill; len],
             context: 1,
             submit,
-            parked: false,
         }
     }
 
@@ -160,26 +147,20 @@ mod tests {
     fn drain_copies_whole_records_only_and_admits_the_backlog_in_order() {
         let mut outbox = Outbox::new();
         assert!(outbox.push(record(OUTBOX_CAPACITY - 8, 1, Some(1))));
-        assert!(!outbox.push(record(16, 2, Some(2))), "does not fit");
+        assert!(!outbox.fits(16));
+        assert!(!outbox.push(record(16, 2, None)), "does not fit");
+        assert!(!outbox.fits(4), "nothing passes the backlog");
         assert!(
-            !outbox.push(record(4, 3, Some(3))),
+            !outbox.push(record(4, 3, None)),
             "order is kept behind the backlog"
         );
-        outbox.mark_parked(2);
-        assert!(outbox.holds_in_backlog(2));
         let mut small = vec![0u8; 64];
-        assert_eq!(
-            outbox.drain(&mut small),
-            (0, false),
-            "the first record does not fit"
-        );
+        assert_eq!(outbox.drain(&mut small), 0, "the first record does not fit");
         let mut out = vec![0u8; OUTBOX_CAPACITY];
-        let (written, parked) = outbox.drain(&mut out);
-        assert_eq!(written, OUTBOX_CAPACITY - 8);
-        assert!(parked, "the parked submitter's record was admitted");
-        assert!(!outbox.holds_in_backlog(2));
-        assert_eq!(outbox.drain(&mut out), (20, false));
+        assert_eq!(outbox.drain(&mut out), OUTBOX_CAPACITY - 8);
+        assert_eq!(outbox.drain(&mut out), 20);
         assert_eq!(&out[..16], &[2u8; 16]);
         assert_eq!(&out[16..20], &[3u8; 4]);
+        assert!(outbox.fits(OUTBOX_CAPACITY));
     }
 }
