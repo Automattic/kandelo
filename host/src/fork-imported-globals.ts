@@ -137,8 +137,9 @@ function aliasTableDirtyTrackers(
         `${label}: activation ${activation.activationId} has no table dirty tracker`,
       );
     }
-    for (const [name, value] of Object.entries(activation.instance.exports)) {
+    for (const name of Object.keys(activation.instance.exports)) {
       if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
+      const value = activation.instance.exports[name];
       const ownerText = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
       if (!/^[1-9][0-9]*$/.test(ownerText)) {
         throw new Error(`${label}: malformed private table catalog export ${name}`);
@@ -557,8 +558,9 @@ export class ForkImportedGlobalCapture {
       const importedOwners = new Set(
         activation.globalDescriptors.map(({ ownerId }) => ownerId),
       );
-      for (const [name, value] of Object.entries(activation.instance!.exports)) {
+      for (const name of Object.keys(activation.instance!.exports)) {
         if (!name.startsWith(WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX)) continue;
+        const value = activation.instance!.exports[name];
         const ownerText = name.slice(WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX.length);
         if (!/^[1-9][0-9]*$/.test(ownerText)) {
           throw new Error(`${this.label}: malformed private global catalog export ${name}`);
@@ -586,8 +588,9 @@ export class ForkImportedGlobalCapture {
       const importedOwners = new Set(
         activation.tableDescriptors.map(({ ownerId }) => ownerId),
       );
-      for (const [name, value] of Object.entries(activation.instance!.exports)) {
+      for (const name of Object.keys(activation.instance!.exports)) {
         if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
+        const value = activation.instance!.exports[name];
         const ownerText = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
         if (!/^[1-9][0-9]*$/.test(ownerText)) {
           throw new Error(`${this.label}: malformed private table catalog export ${name}`);
