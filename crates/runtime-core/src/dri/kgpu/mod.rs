@@ -122,10 +122,15 @@ impl KgpuDevice {
     /// - `Retired` retires every submission of its context at or below its
     ///   sequence number (an executor runs a context's work in order),
     ///   releases their pins and advances the context's `last_retired`.
-    /// - `ContextLost` marks the context lost. Submissions the host has not
-    ///   drained are dropped and unpinned, since the executor never saw
-    ///   them; drained ones stay pinned until a `Retired` covers them.
+    /// - `ContextLost` marks the context lost and releases it (Ruling R16):
+    ///   the executor promises never to touch a lost context's memory, so
+    ///   every in-flight submission of the context, drained or not, is
+    ///   dropped and unpinned, and any later completion for the context is
+    ///   ignored. Work retired before the loss still answers success.
     /// - `ContextReady` acknowledges a create and changes nothing (R4).
+    ///
+    /// The seqno-0 `Retired` that answers a lost context's destroy names no
+    /// submission, so it is accepted and changes nothing.
     ///
     /// Each wakes the parked waiters it concerns through the parking
     /// owner's dirty-source set; `ProcessTable::kgpu_settle` decides them.
@@ -139,13 +144,51 @@ impl KgpuDevice {
             Err(error) => return Err(error),
         };
         for record in batch {
+            if self
+                .contexts
+                .get(record.context)
+                .is_some_and(|context| context.released)
+            {
+                continue;
+            }
             match record.kind {
                 CompletionKind::Retired => self.retire(groups, record),
-                CompletionKind::ContextLost => self.lose(groups, record.context),
+                CompletionKind::ContextLost => self.lose(groups, record.context, true),
                 CompletionKind::ContextReady => {}
             }
         }
         Ok(())
+    }
+
+    /// The host's GPU worker is gone (Ruling R15; the host calls this only
+    /// once the worker is proven gone, so nothing can still touch a frame).
+    /// In one step: every context is lost, and detached from the dead
+    /// executor; every in-flight submission is dropped and unpinned without
+    /// counting as retired, so its waiters answer `EIO`; the outbox and its
+    /// backlog are discarded, since they were addressed to that executor;
+    /// and the renderer is unavailable until the host has started a new
+    /// worker and sets it again.
+    pub fn reset(&mut self, groups: &mut MemoryGroups) {
+        for (_, work) in core::mem::take(&mut self.in_flight) {
+            groups.device_unpin(work.group, work.pin);
+        }
+        self.queue = Outbox::new();
+        self.renderer_available = false;
+        for id in self.contexts.ids() {
+            if let Some(context) = self.contexts.get_mut(id) {
+                context.lost = true;
+                context.released = true;
+                context.detached = true;
+            }
+            note(WakeSource::KgpuSeqno {
+                device: DEVICE,
+                context: id,
+                seqno: u64::MAX,
+            });
+        }
+        // A request the host is retrying now fails for good, or (a create)
+        // meets the missing renderer.
+        crate::wakeup::push_kgpu_outbox_changed();
     }
 
     /// Decode and check a completion batch without applying any of it.
@@ -174,10 +217,13 @@ impl KgpuDevice {
         Ok(batch)
     }
 
-    /// Lose every context: the device can no longer be trusted.
+    /// Lose every context: the device can no longer be trusted. This is the
+    /// kernel's conclusion, not the executor's report, so nothing promises
+    /// the executor has stopped touching drained work: those pins stay until
+    /// a `Retired` covers them or the host resets the device.
     fn fault(&mut self, groups: &mut MemoryGroups) {
         for id in self.contexts.ids() {
-            self.lose(groups, id);
+            self.lose(groups, id, false);
         }
     }
 
@@ -205,16 +251,31 @@ impl KgpuDevice {
         });
     }
 
-    fn lose(&mut self, groups: &mut MemoryGroups, id: u32) {
-        let Some(context) = self.contexts.get_mut(id) else {
-            return;
-        };
-        context.lost = true;
-        for seqno in self.queue.drop_submits(id) {
+    /// Mark context `id` lost. Undrained submissions are dropped and unpinned
+    /// either way, since the executor never saw them. With `release` (the
+    /// executor's own report), drained ones are too, even when the context
+    /// is already gone from the table (its process exited with work in
+    /// flight): the executor promises not to touch them.
+    fn lose(&mut self, groups: &mut MemoryGroups, id: u32, release: bool) {
+        let mut dropped = self.queue.drop_submits(id);
+        if release {
+            dropped.extend(
+                self.in_flight
+                    .iter()
+                    .filter(|(_, work)| work.context == id)
+                    .map(|(seqno, _)| *seqno),
+            );
+        }
+        for seqno in dropped {
             if let Some(work) = self.in_flight.remove(&seqno) {
                 groups.device_unpin(work.group, work.pin);
             }
         }
+        let Some(context) = self.contexts.get_mut(id) else {
+            return;
+        };
+        context.lost = true;
+        context.released |= release;
         note(WakeSource::KgpuSeqno {
             device: DEVICE,
             context: id,
@@ -290,7 +351,13 @@ impl KgpuDevice {
     /// Destroy every context `pid` owns: its image is gone.
     fn retire_process(&mut self, pid: u32) -> Result<(), Errno> {
         for id in self.contexts.owned_by(pid) {
-            self.queue_control(SubmissionKind::ContextDestroy, id)?;
+            if !self
+                .contexts
+                .get(id)
+                .is_some_and(|context| context.detached)
+            {
+                self.queue_control(SubmissionKind::ContextDestroy, id)?;
+            }
             self.contexts.remove(id);
             note(WakeSource::KgpuSeqno {
                 device: DEVICE,
@@ -326,9 +393,11 @@ impl KgpuDevice {
         if u32_at(arg, offset_of!(KgpuContextDestroy, pad)) != 0 {
             return Err(Errno::EINVAL);
         }
-        self.contexts.owned(id, pid)?;
-        self.require_room(abi::SUBMISSION_HEADER_SIZE)?;
-        self.queue_control(SubmissionKind::ContextDestroy, id)?;
+        // A context detached by a reset is unknown to the current executor.
+        if !self.contexts.owned(id, pid)?.detached {
+            self.require_room(abi::SUBMISSION_HEADER_SIZE)?;
+            self.queue_control(SubmissionKind::ContextDestroy, id)?;
+        }
         self.contexts.remove(id);
         note(WakeSource::KgpuSeqno {
             device: DEVICE,
@@ -637,6 +706,19 @@ impl ProcessTable {
     /// this until it returns 0, so a drain never kicks.
     pub fn kgpu_drain(&mut self, out: &mut [u8]) -> usize {
         self.kgpu_parts().0.drain_outbox(out)
+    }
+
+    /// The host's GPU worker is proven gone: lose and release everything
+    /// (`KgpuDevice::reset`). Contexts of processes retired since the last
+    /// entry are removed after the reset has detached them, so they send
+    /// nothing: no executor knows them now.
+    ///
+    /// Retirement queues nothing for detached contexts, so the outbox stays
+    /// empty and there is nothing to kick.
+    pub fn kgpu_reset(&mut self) {
+        let (device, groups) = self.kgpu_parts();
+        device.reset(groups);
+        self.kgpu_apply_retirements();
     }
 
     /// Whether the host can render (`KgpuDevice::set_renderer_available`).
@@ -1338,17 +1420,147 @@ mod tests {
             f.request(WAIT, &mut wait_arg(context, first, -1)),
             Err(Errno::EIO)
         );
-        // The undrained submission never reaches the host, and its pin is
-        // gone; the drained one stays pinned until the executor retires it.
+        // The undrained submission never reaches the host. R16: the executor
+        // never touches a lost context's memory, so the drained one's pin is
+        // released by the loss itself.
         assert!(records(&f.drain()).iter().all(|r| r.2 != second));
-        assert_eq!(f.pinned(), 1);
+        assert_eq!(f.pinned(), 0);
+        // A later completion for the lost context is ignored: it neither
+        // fails the batch nor turns the lost work into success.
         f.complete(CompletionKind::Retired, context, first).unwrap();
         assert_eq!(f.pinned(), 0);
-        // Work that retired before the loss still reports success.
+        assert_eq!(
+            f.request(WAIT, &mut wait_arg(context, first, -1)),
+            Err(Errno::EIO)
+        );
+    }
+
+    #[test]
+    fn work_retired_before_a_loss_still_succeeds() {
+        let mut f = grouped();
+        let context = f.create();
+        let (_, first) = f.submit(context, 0);
+        let (_, second) = f.submit(context, 0);
+        f.drain();
+        f.complete(CompletionKind::Retired, context, first).unwrap();
+        f.complete(CompletionKind::ContextLost, context, second)
+            .unwrap();
         assert_eq!(
             f.request(WAIT, &mut wait_arg(context, first, -1)),
             Ok(ParkOutcome::Done(0))
         );
+        assert_eq!(
+            f.request(WAIT, &mut wait_arg(context, second, -1)),
+            Err(Errno::EIO)
+        );
+    }
+
+    #[test]
+    fn a_lost_contexts_destroy_answer_is_inert() {
+        let mut f = grouped();
+        let context = f.create();
+        let (_, seqno) = f.submit(context, 0);
+        f.drain();
+        f.complete(CompletionKind::ContextLost, context, seqno)
+            .unwrap();
+        assert_eq!(
+            f.request(DESTROY, &mut destroy_arg(context)),
+            Ok(ParkOutcome::Done(0))
+        );
+        // The executor keeps a lost entry until its destroy, so the destroy
+        // still reaches it, and its seqno-0 Retired answer is accepted.
+        assert_eq!(
+            records(&f.drain()),
+            vec![(SubmissionKind::ContextDestroy, context, 0)]
+        );
+        f.complete(CompletionKind::Retired, context, 0).unwrap();
+        assert_eq!(f.pinned(), 0);
+    }
+
+    #[test]
+    fn a_loss_after_exit_releases_the_exited_contexts_pins() {
+        let mut f = grouped();
+        let context = f.create();
+        let (_, seqno) = f.submit(context, 0);
+        f.drain();
+        assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(0));
+        f.table.kgpu_settle(&f.host);
+        f.drain();
+        assert_eq!(f.pinned(), 1);
+        // The context is gone from the table; the executor's loss report
+        // still names its drained work, which it promises not to touch.
+        f.complete(CompletionKind::ContextLost, context, seqno)
+            .unwrap();
+        assert_eq!(f.pinned(), 0);
+    }
+
+    #[test]
+    fn reset_loses_every_context_and_releases_everything() {
+        let mut f = grouped();
+        let first = f.create();
+        let second = f.create();
+        let (_, drained) = f.submit(first, 0);
+        f.drain();
+        let (_, queued) = f.submit(second, 0);
+        let generation = parked(f.request(WAIT, &mut wait_arg(first, drained, -1)));
+        assert_eq!(f.pinned(), 1, "both submissions pin the one stream page");
+        wake_events();
+
+        f.table.kgpu_reset();
+        f.table.kgpu_settle(&f.host);
+        let done = decisions();
+        assert_eq!(done.len(), 1);
+        assert_eq!(
+            (done[0].generation, done[0].value),
+            (generation, -(Errno::EIO as i32))
+        );
+        assert!(wake_events() != 0, "a retrying submit re-executes");
+        assert_eq!(f.pinned(), 0, "every in-flight submission is unpinned");
+        assert!(f.drain().is_empty(), "the outbox is discarded");
+        for (context, seqno) in [(first, drained), (second, queued)] {
+            assert_eq!(f.submit(context, 0).0, Err(Errno::EIO));
+            assert_eq!(
+                f.request(WAIT, &mut wait_arg(context, seqno, -1)),
+                Err(Errno::EIO)
+            );
+        }
+        // No renderer until the host has started a new executor.
+        assert_eq!(f.request(CREATE, &mut create_arg()), Err(Errno::ENODEV));
+        // The new executor never knew the old contexts: destroying one
+        // sends it nothing.
+        assert_eq!(
+            f.request(DESTROY, &mut destroy_arg(first)),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert!(f.drain().is_empty());
+        f.table.kgpu_set_renderer(true);
+        let third = f.create();
+        assert_eq!(
+            records(&f.drain()),
+            vec![(SubmissionKind::ContextCreate, third, 0)]
+        );
+        // Exit cleanup sends a destroy only for the context the new
+        // executor knows.
+        assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(0));
+        f.table.kgpu_settle(&f.host);
+        assert_eq!(
+            records(&f.drain()),
+            vec![(SubmissionKind::ContextDestroy, third, 0)]
+        );
+    }
+
+    #[test]
+    fn reset_with_queued_exit_destroys_drops_them() {
+        let mut f = grouped();
+        let context = f.create();
+        let (_, _) = f.submit(context, 0);
+        f.drain();
+        // Exit queues a destroy; the executor dies before it is drained.
+        assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(0));
+        f.table.kgpu_settle(&f.host);
+        f.table.kgpu_reset();
+        assert!(f.drain().is_empty());
+        assert_eq!(f.pinned(), 0);
     }
 
     /// Fill the outbox with large submissions until one is refused; returns
@@ -1575,7 +1787,10 @@ mod tests {
         }
         let mut arg = wait_arg(first, seqno, -1);
         assert_eq!(f.request(WAIT, &mut arg), Err(Errno::EIO));
-        // Drained work stays pinned until the executor retires it.
+        // Unlike an executor's own ContextLost, this loss is the kernel's
+        // conclusion that the adapter is out of step, so nothing promises
+        // the executor has stopped: drained work stays pinned until it is
+        // retired or the host resets the device.
         assert_eq!(f.pinned(), 1);
         f.complete(CompletionKind::Retired, first, seqno).unwrap();
         assert_eq!(f.pinned(), 0);

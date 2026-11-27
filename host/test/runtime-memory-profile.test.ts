@@ -4,6 +4,7 @@ import {
   clampProcessMaxPages,
   declaredMachineReservationBytes,
   DESKTOP_MEMORY_PROFILE,
+  GPU_EXECUTOR_RESERVATION_BYTES,
   detectRuntimeMemoryProfile,
   isJavaScriptCoreUserAgent,
   runtimeMemoryProfileById,
@@ -301,6 +302,16 @@ describe("declaredMachineReservationBytes", () => {
       live,
     );
     expect(perMachine).toBeLessThan(4 * 1024 * MiB);
+  });
+
+  it("charges a running kgpu GPU worker's executor ceiling", () => {
+    // The executor's private memory still declares a maximum, which
+    // JavaScriptCore charges at construction.
+    expect(GPU_EXECUTOR_RESERVATION_BYTES).toBe(16 * MiB);
+    const withGpu = declaredMachineReservationBytes(CONSTRAINED_MEMORY_PROFILE, 2, 1);
+    expect(withGpu - declaredMachineReservationBytes(CONSTRAINED_MEMORY_PROFILE, 2)).toBe(16 * MiB);
+    expect(withGpu * 3).toBeLessThan(6 * 1024 * MiB);
+    expect(() => declaredMachineReservationBytes(DESKTOP_MEMORY_PROFILE, 1, 2)).toThrow(/invalid GPU worker count/);
   });
 
   it("rejects a nonsense process count", () => {

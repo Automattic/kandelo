@@ -8,7 +8,8 @@ const reply = () => ({
     allocatedPages: 20, pendingWaitDrains: 0, nativeObservers: 0, mappingStagingBytes: 0,
     retainedMappingReferences: 0, sharedObjects: 1, sharedPages: 2, sharedImageReferences: 1,
     maximumPages: 2048, highWaterPages: 20, physicalExtentPages: 32,
-    pausedImages: 0, unacknowledgedReplicas: 0, waitQueueLock: 0, waitQueueNodes: 0, pendingCompletions: 0 },
+    pausedImages: 0, unacknowledgedReplicas: 0, waitQueueLock: 0, waitQueueNodes: 0, pendingCompletions: 0,
+    devicePinnedFrames: 3 },
 });
 
 it('copies and freezes scalar inspection without retaining extra payloads', () => {
@@ -28,6 +29,13 @@ it('copies and freezes scalar inspection without retaining extra payloads', () =
 it('preserves aggregate staging byte counts beyond one u32 address space', () => {
   const source = reply(); source.backing.mappingStagingBytes = 2 ** 33;
   expect(validateMemoryGroupUsage(source)!.backing!.mappingStagingBytes).toBe(2 ** 33);
+});
+
+it('carries the frames device pins hold beside the storage counters', () => {
+  expect(validateMemoryGroupUsage(reply())!.backing!.devicePinnedFrames).toBe(3);
+  const { devicePinnedFrames: _, ...withoutPins } = reply().backing;
+  expect(() => validateMemoryGroupUsage({ admission: reply().admission, backing: withoutPins }))
+    .toThrow('Invalid memory-group usage reply');
 });
 
 it('distinguishes an absent group from admitted capacity without a backing', () => {

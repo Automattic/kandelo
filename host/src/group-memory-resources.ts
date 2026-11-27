@@ -43,6 +43,14 @@ export class GroupMemoryResources {
   }
 
   memory(id: bigint): WebAssembly.Memory { return this.#resource(id).memory; }
+  /** The one resource's Memory, or null with none or several. A device
+   * record names backing offsets, not resources, so a device can address
+   * group memory only while a single backing exists. */
+  sole(): WebAssembly.Memory | null {
+    if (this.#resources.size !== 1) return null;
+    for (const resource of this.#resources.values()) return resource.memory;
+    return null;
+  }
   pages(id: bigint): number { return this.memory(id).buffer.byteLength / PAGE; }
 
   grow(id: bigint, additional: number): number {

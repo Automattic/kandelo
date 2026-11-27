@@ -1,4 +1,10 @@
 export interface KernelConfig {
+  /**
+   * The kgpu GPU worker this kernel worker may start (`kgpu/kgpu-host.ts`).
+   * Absent, or with renderer "null", the kernel has no renderer and guest
+   * context creation answers ENODEV.
+   */
+  kgpu?: import("./kgpu/kgpu-host").KgpuHostConfig;
   maxWorkers: number;
   dataBufferSize: number;
   useSharedMemory: boolean;

@@ -41,6 +41,7 @@ import type {
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
+import { browserKgpuConfig } from "./kgpu-browser";
 import {
   createWorkerAbsence,
   DeferredWorkerHandle,
@@ -1173,6 +1174,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
       glAudit: parseGlAuditMode(msg.config.glAudit),
+      // The kgpu GPU worker: a renderer only with an executor URL and
+      // OffscreenCanvas (kgpu-browser.ts).
+      kgpu: browserKgpuConfig(msg.config.gpuExecutorUrl),
     },
     io,
     {
@@ -4683,6 +4687,11 @@ async function performDestroy() {
       persistenceSyncFailure = `rootfs persistence shutdown sync failed: ${formatError(error)}`;
       console.error(persistenceSyncFailure);
     }
+  }
+  try {
+    await kernelWorker?.shutdownKgpu();
+  } catch (error) {
+    console.error(`kgpu GPU worker shutdown failed: ${formatError(error)}`);
   }
   let storageCleanupFailure: { error: unknown } | null = null;
   try {

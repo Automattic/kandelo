@@ -203,14 +203,60 @@ moves records:
   or a decided wait reaches the guest.
 - `kernel_kgpu_set_renderer` says whether a renderer exists. Without one,
   context creation answers `-19`.
+- `kernel_kgpu_reset` resets the device after the host's GPU worker dies.
+  The host calls it only once the worker is proven gone: its exit was
+  observed, or its termination completed. A worker that might still run
+  could otherwise write frames the reset has released. In one step the
+  reset loses every context and unpins every in-flight submission without
+  retiring it, so those waits answer `-5`. It also discards the outbox and
+  its backlog, and clears the renderer. The host sets the renderer again
+  only after a new worker has started. The new executor never knew the old
+  contexts, so destroying one sends no record.
 - `kernel_device_pinned_frames` counts the group frames that device pins
   still hold.
 
+**Losing a context.** When the executor reports `ContextLost` for a
+context, the kernel unpins all of that context's in-flight submissions,
+drained or not. The executor never touches a lost context's memory again.
+Waits past the context's last retirement answer `-5`, and any later
+completion for the context is ignored. The seqno-0 `Retired` that answers
+a lost context's destroy names no submission, so it is accepted and
+changes nothing. A malformed completion batch is different. There the
+kernel concludes the adapter is out of step, and nothing promises the
+executor has stopped, so drained work stays pinned until it is retired or
+the host resets the device.
+
+**The GPU worker.** On Node and in browsers, the kernel worker's
+`KgpuHost` (`host/src/kgpu/kgpu-host.ts`) starts a disposable GPU worker
+(`host/src/kgpu/gpu-worker.ts`) on the first kick. That worker runs the Rust
+executor (`kandelo_gpu_executor32.wasm`, `crates/gpu-executor`) over one
+WebGL 2 context. Records cross a 64 KiB shared byte ring in each direction
+(`host/src/device-worker/ring.ts`), with payload-free `MessagePort`
+doorbells. Neither worker blocks on the other. The GPU worker copies each
+submit's stream bytes from the group's shared backing into executor memory
+once, before the executor reads them. It writes read-back pixels only at
+the extents the record names. When the worker exits, errors, reports a
+fault or breaks the protocol, the host terminates it, and only after
+termination completes does it call `kernel_kgpu_reset`. The same happens,
+before any further record reaches the worker, when the group backing it was
+given has been replaced (its group removed and another created): records
+name offsets into the current backing, which that worker cannot see. A renderer-less
+device stays down until the embedder calls the kernel worker's
+`restartKgpu()`; there is no automatic restart. The executor's memory has a
+16 MiB ceiling. `host/src/kgpu/protocol.ts` gives the arithmetic, and
+`runtime-memory-profile.ts` budgets it.
+
 **Status.** The interface is served, and `kandelo.kgpu.v1` is in the
 implemented-extension and grouped-worker lists (Rust and TypeScript).
-Every op from a program outside a memory group answers `-95`. No host
-provides a renderer yet, so context creation answers `-19` until an
-embedder or a GPU worker supplies one.
+Every op from a program outside a memory group answers `-95`. A renderer
+exists only where the embedder provides one. In browsers that needs
+`BrowserKernelOptions.gpuExecutorUrl` and `OffscreenCanvas`; the browser
+path builds but is not yet verified in a browser. On Node it needs
+`NodeKernelHostOptions.kgpuWebGL2Factory`, a module whose
+`createWebGL2Context()` returns `{ gl, canvas }`, since Node has no WebGL 2.
+Without a renderer, context creation answers `-19`. The device addresses
+group memory only while the machine has a single memory-group backing,
+because records name backing offsets, not groups.
 
 See [optional source-line maps](fork-instrumentation.md#optional-source-line-maps)
 and the [Rust debugging workflow](rust-target.md#source-diagnostics-and-backtraces).

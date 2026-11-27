@@ -16687,9 +16687,9 @@ pub extern "C" fn kernel_kgpu_drain(out_ptr: *mut u8, out_len: u32) -> u32 {
 
 /// Apply `len` bytes of executor completion records (`wasm_posix_shared::kgpu`
 /// completion wire). Returns 0, or a negative errno for a malformed batch,
-/// which changes nothing. A malformed batch means the host adapter and the
-/// kernel no longer agree, so the host treats it as a device fault and
-/// reports every context it knows of as lost.
+/// which changes nothing but loses every context: the host adapter and the
+/// kernel no longer agree, so the host also retires its GPU worker and,
+/// once the worker is gone, calls `kernel_kgpu_reset`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kgpu_complete(in_ptr: *const u8, len: u32) -> i32 {
     if in_ptr.is_null() && len != 0 {
@@ -16705,6 +16705,19 @@ pub extern "C" fn kernel_kgpu_complete(in_ptr: *const u8, len: u32) -> i32 {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
+}
+
+/// The host's GPU worker is gone; call only once it is proven gone (its exit
+/// was observed, or its termination completed), never before (Ruling R15).
+/// In one step every context is lost, every in-flight submission is unpinned
+/// and fails its waiters with `EIO`, the outbox and backlog are discarded and
+/// the renderer is unavailable until `kernel_kgpu_set_renderer(1)` after a
+/// new worker starts. Parked waiters are decided by the settle pass, so the
+/// host drains wake events after this, in the same kernel entry.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kgpu_reset() {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.kgpu_reset();
 }
 
 /// Whether the host has a renderer. Without one (`available == 0`, the

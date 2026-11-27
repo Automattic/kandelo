@@ -93,6 +93,7 @@ import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { OfflineEgressBackend } from "./networking/offline-egress-backend";
 import { NodeLazyAssetResolver } from "./node-lazy-asset-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
+import { nodeKgpuConfig } from "./kgpu-node";
 import {
   createWorkerAbsence,
   DeferredWorkerHandle,
@@ -1218,6 +1219,9 @@ async function handleInit(msg: InitMessage) {
       // instrument here; the option is still parsed for host parity.
       glAudit: parseGlAuditMode(process.env.KANDELO_GL_AUDIT),
       imageBuildDeterminism: msg.config.imageBuildDeterminism,
+      // The kgpu GPU worker: renderer "null" unless the embedder supplied a
+      // WebGL 2 factory (kgpu-node.ts).
+      kgpu: nodeKgpuConfig(msg.config.kgpuWebGL2Factory),
     },
     io,
     {
@@ -3925,6 +3929,7 @@ async function performDestroy() {
   connectedNamesFile?.close(); connectedNamesFile = undefined;
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
+  await kernelWorker.shutdownKgpu();
   let persistenceSyncFailure: string | undefined;
   if (persistentOverlay !== null) {
     try {

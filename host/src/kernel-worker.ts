@@ -62,6 +62,7 @@ import type { VfsChangeEvent } from "./vfs/types";
  */
 import { ERRNO } from "./generated/abi";
 import { KGPU_OUTBOX_CAPACITY } from "./generated/abi";
+import { KgpuHost, type KgpuHostStatus } from "./kgpu/kgpu-host";
 import { isProcessMemoryCreatorAdmissionClosed } from "./process-memory-creator-gate";
 import { selectRootfsHostMetadataBytes, selectRootfsIoBytes, selectRootfsJournalStateBytes, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
 import { StorageMemoryBudget, type StorageMetadataMap } from "./vfs/storage-memory-budget";
@@ -3550,6 +3551,9 @@ export class CentralizedKernelWorker {
   /** The kgpu drain/complete staging region, allocated by the first kgpu
    * entry: most kernels never render, and the region is a whole outbox. */
   #kgpuScratchRegion: KernelScratchRegion | null = null;
+  /** The kgpu GPU worker's host side, when the embedder configured one
+   * (`KernelConfig.kgpu`). It starts its worker on the first kick. */
+  readonly #kgpuHost: KgpuHost | null;
   /** Node.js net module (loaded dynamically for browser compatibility) */
   private netModule: typeof import("net") | null = null;
   /**
@@ -3907,6 +3911,17 @@ export class CentralizedKernelWorker {
       );
     }
     this.#rootfsTransportMetadata = new StorageMemoryBudget(selectRootfsHostMetadataBytes(config.kernelMaxPages));
+    this.#kgpuHost = config.kgpu === undefined ? null : new KgpuHost({
+      ...config.kgpu,
+      groupMemory: () => getWasmPosixKernelRuntimeAccess(this.#kernel).soleGroupMemory(),
+      kernel: {
+        drain: () => this.drainKgpu(),
+        complete: records => this.completeKgpu(records),
+        reset: () => this.resetKgpu(),
+        setRenderer: available => this.setKgpuRenderer(available),
+      },
+      onDiagnostic: message => this.callbacks.onHostDiagnostic?.({ pid: 0, source: "kgpu", message }),
+    });
     this.#schedulerReceiver = globalThis;
     this.#scheduleImmediate = setImmediate;
     this.#cancelImmediate = clearImmediate;
@@ -4009,6 +4024,7 @@ export class CentralizedKernelWorker {
       },
       onKmsCanvasUpdated: (crtcId: number) => this.kmsBitmapRelays.get(crtcId)?.changed(0),
       onKgpuKick: (): void => {
+        this.#kgpuHost?.onKick();
         this.callbacks.onKgpuKick?.();
       },
       onKmsGlPresented: (crtcId: number) => {
@@ -5554,6 +5570,9 @@ export class CentralizedKernelWorker {
     for (const refuse of this.#httpRequests) refuse(error);
     this.#initialized = false;
     for (const store of this.#memoryGroupStores.values()) store.close();
+    // The GPU worker may still hold views of group memory; stop it. No
+    // device reset follows: the kernel generation is gone.
+    void this.#kgpuHost?.terminate().catch(() => {});
     // A poisoned generation can never execute or explicitly settle a parked
     // request again. Drop every detached snapshot synchronously so neither
     // guest memory nor a future kernel generation remains retained.
@@ -7107,6 +7126,9 @@ export class CentralizedKernelWorker {
 
     this.#initialized = true;
     this.setInputCanvasDims(ABSOLUTE_POINTER_EXTENT, ABSOLUTE_POINTER_EXTENT);
+    // A renderer exists only where the embedder configured a WebGL 2 GPU
+    // worker and its executor; the worker itself starts on the first kick.
+    if (this.#kgpuHost?.rendererAvailable) this.setKgpuRenderer(true);
     // The vblank pump runs only when something needs it: an attached KMS
     // canvas or stats view (attachKmsCanvas starts it too), or a program
     // that has started scanning out -- onKmsScanoutActive, since its page
@@ -9568,7 +9590,13 @@ export class CentralizedKernelWorker {
       if (!this.#memoryGroupAdmissionAvailable(entry)) return undefined;
       const admission = this.#inspectMemoryGroupWithinKernelEntry(group, entry);
       if (typeof admission === 'number') { result = admission; return undefined; }
-      const backing = this.#memoryGroupStores.get(group)?.trySnapshot(entry) ?? null;
+      const snapshot = this.#memoryGroupStores.get(group)?.trySnapshot(entry) ?? null;
+      // Frames a device may still touch, from the same entry. The kernel
+      // counts over every group; a machine has one opted-in group.
+      const pinned = this.#kernelInstanceForEntry(entry).exports.kernel_device_pinned_frames as (() => number) | undefined;
+      if (typeof pinned !== 'function') this.#memoryGroupProtocolError('Missing device pinned-frames export');
+      const backing = snapshot === null || snapshot === 'busy' ? snapshot
+        : { ...snapshot, devicePinnedFrames: pinned() >>> 0 };
       // WHY: select public scalar fields before any RPC can reach a persistent
       // browser realm. A future internal snapshot field must not export a view.
       result = backing === 'busy' ? -EAGAIN : validateMemoryGroupUsage({ admission, backing })!;
@@ -9640,6 +9668,38 @@ export class CentralizedKernelWorker {
       return undefined;
     });
     return status;
+  }
+
+  /**
+   * The GPU worker is proven gone (it exited, or its termination completed):
+   * lose every context, release every pin and discard the outbox
+   * (`kernel_kgpu_reset`, Ruling R15). Never call it while a worker could
+   * still touch group memory. Parked waits are decided by the wake drain.
+   */
+  resetKgpu(): void {
+    this.#runImmediateKernelEntry("reset kgpu device", entry => {
+      const reset = this.#kernelInstanceForEntry(entry).exports.kernel_kgpu_reset as (() => void) | undefined;
+      if (typeof reset !== "function") throw new Error("kernel has no kernel_kgpu_reset export");
+      reset();
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      return undefined;
+    });
+  }
+
+  /** Start a new GPU worker after a reset and set the renderer again once it
+   * is ready; nothing without a configured renderer. */
+  restartKgpu(): Promise<void> {
+    return this.#kgpuHost?.restart() ?? Promise.resolve();
+  }
+
+  /** Copied counters of the GPU worker host, or null without one. */
+  kgpuStatus(): KgpuHostStatus | null {
+    return this.#kgpuHost?.status() ?? null;
+  }
+
+  /** Kernel teardown: stop the GPU worker. */
+  shutdownKgpu(): Promise<void> {
+    return this.#kgpuHost?.terminate() ?? Promise.resolve();
   }
 
   /** Distinct group-memory frames device pins hold, over every memory group:

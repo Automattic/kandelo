@@ -143,6 +143,8 @@ export interface InitMessage {
   kernelWasmBytes: ArrayBuffer;
   config: {
     experimentalMemoryGroup?: TrustedMemoryGroupOptions;
+    /** See `NodeKernelHostOptions.kgpuWebGL2Factory`. */
+    kgpuWebGL2Factory?: string;
     maxWorkers: number;
     maxPages?: number;
     kernelMaxPages?: number;

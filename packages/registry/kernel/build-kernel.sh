@@ -102,6 +102,7 @@ wasm_require_exports "$OUT" \
     kernel_is_fd_nonblock \
     kernel_kgpu_complete \
     kernel_kgpu_drain \
+    kernel_kgpu_reset \
     kernel_kgpu_set_renderer \
     kernel_kms_cursor_configure \
     kernel_kms_cursor_read \

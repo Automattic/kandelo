@@ -39,6 +39,17 @@ import {
   WASM_PAGE_SIZE,
 } from "./constants";
 import { MAX_KERNEL_IO_BUDGET_BYTES, MAX_REPORTABLE_TRANSFER_BYTES } from "./generated/abi";
+import { GPU_EXECUTOR_MAX_PAGES } from "./kgpu/protocol";
+
+/**
+ * The kgpu executor memory's declared ceiling, in bytes: one per running GPU
+ * worker. The executor's memory is private (not shared), but its maximum is
+ * still a declared ceiling, so it is budgeted here like the others. 16 MiB is
+ * about four times the executor's worst-case slice-1 working set; see
+ * `GPU_EXECUTOR_MAX_PAGES` (kgpu/protocol.ts) for the arithmetic. A machine
+ * runs at most one GPU worker, started only when a guest first renders.
+ */
+export const GPU_EXECUTOR_RESERVATION_BYTES = GPU_EXECUTOR_MAX_PAGES * 65536;
 
 export interface RuntimeMemoryProfile {
   /** Stable identifier, surfaced in diagnostics so the choice is visible. */
@@ -158,17 +169,23 @@ export function runtimeMemoryProfileById(
   return RUNTIME_MEMORY_PROFILES.find((p) => p.id === id);
 }
 
-/** Total address space one machine declares under `profile`, in bytes. */
+/** Total address space one machine declares under `profile`, in bytes,
+ * with `gpuWorkers` (0 or 1) kgpu GPU workers running. */
 export function declaredMachineReservationBytes(
   profile: RuntimeMemoryProfile,
   liveProcesses: number,
+  gpuWorkers = 0,
 ): number {
   if (!Number.isSafeInteger(liveProcesses) || liveProcesses < 0) {
     throw new Error(`invalid live process count: ${liveProcesses}`);
   }
+  if (gpuWorkers !== 0 && gpuWorkers !== 1) {
+    throw new Error(`invalid GPU worker count: ${gpuWorkers}`);
+  }
   return (
     profile.kernelMaxPages * WASM_PAGE_SIZE +
-    liveProcesses * profile.processMaxPages * WASM_PAGE_SIZE
+    liveProcesses * profile.processMaxPages * WASM_PAGE_SIZE +
+    gpuWorkers * GPU_EXECUTOR_RESERVATION_BYTES
   );
 }
 

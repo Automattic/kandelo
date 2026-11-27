@@ -1,7 +1,9 @@
 import { MEMORY_GROUP_PROTOCOL } from './generated/abi';
 import { MemoryGroupProtocolFault, memoryGroupU32, type MemoryGroupSnapshot } from './memory-group-protocol';
 
-const backingFields = MEMORY_GROUP_PROTOCOL.storage.snapshot_fields;
+// The storage snapshot's counters, plus the kgpu device's pinned frames
+// (`kernel_device_pinned_frames`), collected in the same kernel entry.
+const backingFields = [...MEMORY_GROUP_PROTOCOL.storage.snapshot_fields, 'devicePinnedFrames'] as const;
 
 /** Independent scalar counters, never a Memory, mapping root or ownership token. */
 export type MemoryGroupBackingUsage = Readonly<Record<typeof backingFields[number], number>>;

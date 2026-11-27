@@ -268,9 +268,12 @@ blocking the kernel Worker. The caller can request a fresh snapshot later.
 `admission` reports the kernel identity, effective limits and live/pending task,
 process, image, backing and quarantine counts. `backing` is `null` until backing
 exists; otherwise it reports allocator, shared-object, replica, native-observer
-and mapping-staging counters. Page counts use 64 KiB units. `allocatedPages`
-counts live pool allocations once; `sharedPages` counts unique object pages,
-not the sum across aliases. `physicalExtentPages` is the current common buffer
+and mapping-staging counters. It also reports `devicePinnedFrames`: the frames
+device pins still hold (`kernel_device_pinned_frames`), which a kgpu device may
+still read or write and the allocator will not reuse. The kernel counts it over
+every group, which is this machine's one opted-in group. Page counts use 64 KiB
+units. `allocatedPages` counts live pool allocations once; `sharedPages` counts
+unique object pages, not the sum across aliases. `physicalExtentPages` is the current common buffer
 capacity, `highWaterPages` is the allocator high-water mark and `maximumPages`
 is the admitted ceiling. The backing stays available for reuse until machine
 destruction; returning pages to the allocator does not shrink its buffer.

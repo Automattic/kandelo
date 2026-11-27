@@ -36,6 +36,12 @@ export function initializeBrowserWorker(worker: Worker, workerData: unknown): Wo
   return new BrowserWorkerHandle(worker);
 }
 
+/** A handle for a Worker whose first message the caller sends itself, as
+ * when it must transfer a MessagePort with it. */
+export function wrapBrowserWorker(worker: Worker): WorkerHandle {
+  return new BrowserWorkerHandle(worker);
+}
+
 class BrowserWorkerHandle implements WorkerHandle {
   private worker: Worker;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

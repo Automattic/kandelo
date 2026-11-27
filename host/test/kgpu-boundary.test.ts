@@ -104,14 +104,15 @@ it('serves kgpu.v1 to a grouped program across the kernel/host boundary', async 
     ]);
 
     // A context lost while the submit retries answers -EIO; its undrained
-    // records are dropped, and drained work stays pinned until retired.
+    // records are dropped, and (R16) the executor's own loss report also
+    // releases its drained work, so a later Retired for it changes nothing.
     expect(r.refilled).toBe(r.heldSeqno + FILL);
     expect(r.lostBeforeLoss).toBe(false);
     expect(r.lossStatus).toBe(0);
     expect(r.lostResult).toBe(-EIO);
     expect(r.lostSeqno).toBe(0);
     expect(r.afterLossCount).toBe(0);
-    expect(r.pinnedBeforeRetire).toBeGreaterThan(0);
+    expect(r.pinnedBeforeRetire).toBe(0);
     expect(r.finalRetireStatus).toBe(0);
     expect(r.pinnedAfterRetire).toBe(0);
     // Exit destroys the process's context through the device.

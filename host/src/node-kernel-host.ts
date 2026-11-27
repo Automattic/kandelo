@@ -100,6 +100,13 @@ const DEFAULT_SSL_ENV = [
 export interface NodeKernelHostOptions {
   /** Experimental opt-in for compatible trusted memory-group artifacts only. */
   experimentalMemoryGroup?: TrustedMemoryGroupOptions;
+  /**
+   * A module URL whose `createWebGL2Context()` returns `{ gl, canvas }`: the
+   * WebGL 2 renderer of the kgpu GPU worker. Node has no WebGL 2 of its own,
+   * so without one the machine has no renderer and kgpu context creation
+   * answers ENODEV.
+   */
+  kgpuWebGL2Factory?: string;
   /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
   remoteNetwork?: RemoteSegmentInit;
   /** Opt-in fixed-size image-file overwrites journaled at this absolute path. */
@@ -545,6 +552,7 @@ export class NodeKernelHost {
           kernelWasmBytes: wasmBytes,
           config: {
             experimentalMemoryGroup: this.options.experimentalMemoryGroup === undefined ? undefined : { ...this.options.experimentalMemoryGroup },
+            kgpuWebGL2Factory: this.options.kgpuWebGL2Factory,
             maxWorkers,
             maxPages,
             rootfsMetadataBytes: selectRootfsMetadataBytes(this.options.rootfsMetadataBytes, this.options.kernelMaxPages),

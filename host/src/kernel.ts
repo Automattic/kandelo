@@ -130,6 +130,7 @@ interface WasmPosixKernelRuntimeAccess {
   readonly instance: () => WebAssembly.Instance | null;
   readonly memory: () => WebAssembly.Memory | null;
   readonly groupMemory: (resource: bigint) => WebAssembly.Memory;
+  readonly soleGroupMemory: () => WebAssembly.Memory | null;
 }
 
 interface KernelGraphicsAccess {
@@ -1957,6 +1958,7 @@ export class WasmPosixKernel {
           instance: () => this.#instance,
           memory: () => this.#memory,
           groupMemory: (resource: bigint) => this.#groupMemoryResources.memory(resource),
+          soleGroupMemory: () => this.#groupMemoryResources.sole(),
         },
       ],
     );

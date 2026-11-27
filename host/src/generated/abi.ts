@@ -898,6 +898,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_is_fd_nonblock",
   "kernel_kgpu_complete",
   "kernel_kgpu_drain",
+  "kernel_kgpu_reset",
   "kernel_kgpu_set_renderer",
   "kernel_kms_cursor_configure",
   "kernel_kms_cursor_read",
@@ -2354,6 +2355,15 @@ export const KGPU_SUBMISSION_CONTEXT_DESTROY = 3 as const;
 export const KGPU_COMPLETION_RETIRED = 1 as const;
 export const KGPU_COMPLETION_CONTEXT_LOST = 2 as const;
 export const KGPU_COMPLETION_CONTEXT_READY = 3 as const;
+
+/* Byte offsets of each field of the kgpu submission and completion
+* records (shared::kgpu wire structs). */
+export const KGPU_RECORD_FIELDS = {
+  submission: { kind: 0, context: 4, seqno: 8, streamExtentCount: 16, bufferCount: 20 },
+  buffer: { access: 0, extentCount: 4 },
+  extent: { offset: 0, len: 8, pad: 12 },
+  completion: { kind: 0, context: 4, seqno: 8, status: 16, pad: 20 },
+} as const;
 
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [

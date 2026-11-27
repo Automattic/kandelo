@@ -6202,6 +6202,62 @@ fn render_ts_kgpu() -> String {
         out.push_str(&format!("export const {name} = {value} as const;\n"));
     }
     out.push('\n');
+    // Field offsets of the submission and completion wire records, from the
+    // repr(C) structs the codec itself reads at, so a host that parses
+    // records (the GPU worker) never copies an offset by hand.
+    out.push_str(
+        "/* Byte offsets of each field of the kgpu submission and completion\n\
+         * records (shared::kgpu wire structs). */\n\
+         export const KGPU_RECORD_FIELDS = {\n",
+    );
+    for (record, fields) in [
+        (
+            "submission",
+            vec![
+                ("kind", offset_of!(SubmissionHeaderWire, kind)),
+                ("context", offset_of!(SubmissionHeaderWire, context)),
+                ("seqno", offset_of!(SubmissionHeaderWire, seqno)),
+                (
+                    "streamExtentCount",
+                    offset_of!(SubmissionHeaderWire, stream_extent_count),
+                ),
+                ("bufferCount", offset_of!(SubmissionHeaderWire, buffer_count)),
+            ],
+        ),
+        (
+            "buffer",
+            vec![
+                ("access", offset_of!(BufferHeaderWire, access)),
+                ("extentCount", offset_of!(BufferHeaderWire, extent_count)),
+            ],
+        ),
+        (
+            "extent",
+            vec![
+                ("offset", offset_of!(Extent, offset)),
+                ("len", offset_of!(Extent, len)),
+                ("pad", offset_of!(Extent, pad)),
+            ],
+        ),
+        (
+            "completion",
+            vec![
+                ("kind", offset_of!(CompletionWire, kind)),
+                ("context", offset_of!(CompletionWire, context)),
+                ("seqno", offset_of!(CompletionWire, seqno)),
+                ("status", offset_of!(CompletionWire, status)),
+                ("pad", offset_of!(CompletionWire, pad)),
+            ],
+        ),
+    ] {
+        let fields = fields
+            .iter()
+            .map(|(name, offset)| format!("{name}: {offset}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("  {record}: {{ {fields} }},\n"));
+    }
+    out.push_str("} as const;\n\n");
     out
 }
 

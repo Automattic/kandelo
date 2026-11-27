@@ -107,6 +107,12 @@ export interface BrowserKernelOptions {
   /** Experimental opt-in for compatible trusted memory-group artifacts only. */
   experimentalMemoryGroup?: TrustedMemoryGroupOptions;
   /**
+   * Where the deployment serves `kandelo_gpu_executor32.wasm`, the kgpu GPU
+   * worker's executor. Without it the machine has no renderer and kgpu
+   * context creation answers ENODEV.
+   */
+  gpuExecutorUrl?: string;
+  /**
    * Kandelo exchange: whether the platform may start the image's agent
    * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
    * `"on-demand"` (the default) or `"off"`, fixed for the machine's
@@ -898,6 +904,7 @@ export class BrowserKernel {
           workerEntryUrl,
           config: {
             experimentalMemoryGroup: this.options.experimentalMemoryGroup === undefined ? undefined : { ...this.options.experimentalMemoryGroup },
+            gpuExecutorUrl: this.options.gpuExecutorUrl,
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
             kernelMaxPages: this.memoryProfile.kernelMaxPages,

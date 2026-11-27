@@ -2412,8 +2412,8 @@ pub mod abi {
     /// 41: carry the engine-observed indirect-call trap in a signal exit.
     /// 42: the kgpu.v1 extension request, plus the kgpu host adapter
     ///    boundary: the `host_kgpu_kick` import and the `kernel_kgpu_drain`,
-    ///    `kernel_kgpu_complete`, `kernel_kgpu_set_renderer` and
-    ///    `kernel_device_pinned_frames` exports.
+    ///    `kernel_kgpu_complete`, `kernel_kgpu_set_renderer`,
+    ///    `kernel_kgpu_reset` and `kernel_device_pinned_frames` exports.
     pub const HOST_ADAPTER_VERSION: u32 = 42;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
@@ -2618,6 +2618,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_is_fd_nonblock"),
         HostAdapterKernelExport::required("kernel_kgpu_complete"),
         HostAdapterKernelExport::required("kernel_kgpu_drain"),
+        HostAdapterKernelExport::required("kernel_kgpu_reset"),
         HostAdapterKernelExport::required("kernel_kgpu_set_renderer"),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),

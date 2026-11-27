@@ -2700,6 +2700,7 @@
       "kernel_is_fd_nonblock",
       "kernel_kgpu_complete",
       "kernel_kgpu_drain",
+      "kernel_kgpu_reset",
       "kernel_kgpu_set_renderer",
       "kernel_kms_cursor_configure",
       "kernel_kms_cursor_read",
@@ -4771,6 +4772,11 @@
       "kind": "func",
       "name": "kernel_kgpu_drain",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_kgpu_reset",
+      "signature": "() -> ()"
     },
     {
       "kind": "func",

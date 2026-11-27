@@ -120,6 +120,43 @@ pub const BUFFER_HEADER_SIZE: usize = 8;
 pub const EXTENT_SIZE: usize = 16;
 pub const COMPLETION_SIZE: usize = 24;
 
+/// The submission record header's wire layout. The codec reads every field
+/// at its `offset_of!` here, and `cargo xtask dump-abi` generates the host's
+/// field offsets from the same struct, so a host that parses records (the
+/// GPU worker) cannot drift from the kernel that writes them.
+#[repr(C)]
+pub struct SubmissionHeaderWire {
+    pub kind: u32,
+    pub context: u32,
+    pub seqno: u64,
+    pub stream_extent_count: u32,
+    pub buffer_count: u32,
+}
+
+/// One buffer-table entry's header on the wire; its extents follow.
+#[repr(C)]
+pub struct BufferHeaderWire {
+    pub access: u32,
+    pub extent_count: u32,
+}
+
+/// A completion record's wire layout (see `SubmissionHeaderWire`).
+#[repr(C)]
+pub struct CompletionWire {
+    pub kind: u32,
+    pub context: u32,
+    pub seqno: u64,
+    pub status: i32,
+    pub pad: u32,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<SubmissionHeaderWire>() == SUBMISSION_HEADER_SIZE);
+    assert!(core::mem::size_of::<BufferHeaderWire>() == BUFFER_HEADER_SIZE);
+    assert!(core::mem::size_of::<Extent>() == EXTENT_SIZE);
+    assert!(core::mem::size_of::<CompletionWire>() == COMPLETION_SIZE);
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SubmissionKind {
@@ -356,12 +393,14 @@ impl BufferView<'_> {
 }
 
 pub fn decode_submission(bytes: &[u8]) -> Result<SubmissionView<'_>, RecordError> {
-    let kind_raw = rd_u32(bytes, 0)?;
+    use core::mem::offset_of;
+    type H = SubmissionHeaderWire;
+    let kind_raw = rd_u32(bytes, offset_of!(H, kind))?;
     let kind = SubmissionKind::from_u32(kind_raw).ok_or(RecordError::UnknownKind(kind_raw))?;
-    let context = rd_u32(bytes, 4)?;
-    let seqno = rd_u64(bytes, 8)?;
-    let stream_extents = rd_u32(bytes, 16)?;
-    let buffer_count = rd_u32(bytes, 20)?;
+    let context = rd_u32(bytes, offset_of!(H, context))?;
+    let seqno = rd_u64(bytes, offset_of!(H, seqno))?;
+    let stream_extents = rd_u32(bytes, offset_of!(H, stream_extent_count))?;
+    let buffer_count = rd_u32(bytes, offset_of!(H, buffer_count))?;
     if stream_extents > KGPU_MAX_EXTENTS || buffer_count > KGPU_MAX_BUFFERS {
         return Err(RecordError::TooMany);
     }
@@ -375,8 +414,8 @@ pub fn decode_submission(bytes: &[u8]) -> Result<SubmissionView<'_>, RecordError
         return Err(RecordError::Truncated);
     }
     for _ in 0..buffer_count {
-        let access = rd_u32(bytes, at)?;
-        let n = rd_u32(bytes, at + 4)?;
+        let access = rd_u32(bytes, at + offset_of!(BufferHeaderWire, access))?;
+        let n = rd_u32(bytes, at + offset_of!(BufferHeaderWire, extent_count))?;
         if n > KGPU_MAX_EXTENTS {
             return Err(RecordError::TooMany);
         }
@@ -423,14 +462,16 @@ pub fn encode_completion(out: &mut [u8], c: &Completion) -> Result<usize, Record
 }
 
 pub fn decode_completion(bytes: &[u8]) -> Result<Completion, RecordError> {
-    let kind_raw = rd_u32(bytes, 0)?;
+    use core::mem::offset_of;
+    type C = CompletionWire;
+    let kind_raw = rd_u32(bytes, offset_of!(C, kind))?;
     let kind = CompletionKind::from_u32(kind_raw).ok_or(RecordError::UnknownKind(kind_raw))?;
-    let status = rd_u32(bytes, 16)? as i32;
-    rd_u32(bytes, 20)?;
+    let status = rd_u32(bytes, offset_of!(C, status))? as i32;
+    rd_u32(bytes, offset_of!(C, pad))?;
     Ok(Completion {
         kind,
-        context: rd_u32(bytes, 4)?,
-        seqno: rd_u64(bytes, 8)?,
+        context: rd_u32(bytes, offset_of!(C, context))?,
+        seqno: rd_u64(bytes, offset_of!(C, seqno))?,
         status,
     })
 }
@@ -438,7 +479,77 @@ pub fn decode_completion(bytes: &[u8]) -> Result<Completion, RecordError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::mem::size_of;
+    use core::mem::{offset_of, size_of};
+
+    /// The encoders write sequentially; the wire structs hosts are generated
+    /// from must name the bytes they actually write.
+    #[test]
+    fn encoders_write_fields_at_the_wire_struct_offsets() {
+        let extent = Extent {
+            offset: 0x1122_3344_5566_7788,
+            len: 0x99aa_bbcc,
+            pad: 0,
+        };
+        let mut out = [0u8; 128];
+        let n = encode_submission(
+            &mut out,
+            &SubmissionHeader {
+                kind: SubmissionKind::Submit,
+                context: 0x0102_0304,
+                seqno: 0x0a0b_0c0d_0e0f_1011,
+            },
+            &[extent],
+            &[BufferSpec {
+                access: KGPU_ACCESS_WRITE,
+                extents: &[extent, extent],
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            n,
+            SUBMISSION_HEADER_SIZE + EXTENT_SIZE + BUFFER_HEADER_SIZE + 2 * EXTENT_SIZE
+        );
+        let u32_at = |at: usize| u32::from_le_bytes(out[at..at + 4].try_into().unwrap());
+        let u64_at = |at: usize| u64::from_le_bytes(out[at..at + 8].try_into().unwrap());
+        type H = SubmissionHeaderWire;
+        assert_eq!(u32_at(offset_of!(H, kind)), SubmissionKind::Submit as u32);
+        assert_eq!(u32_at(offset_of!(H, context)), 0x0102_0304);
+        assert_eq!(u64_at(offset_of!(H, seqno)), 0x0a0b_0c0d_0e0f_1011);
+        assert_eq!(u32_at(offset_of!(H, stream_extent_count)), 1);
+        assert_eq!(u32_at(offset_of!(H, buffer_count)), 1);
+        let at = SUBMISSION_HEADER_SIZE;
+        assert_eq!(u64_at(at + offset_of!(Extent, offset)), extent.offset);
+        assert_eq!(u32_at(at + offset_of!(Extent, len)), extent.len);
+        let buffer = at + EXTENT_SIZE;
+        assert_eq!(
+            u32_at(buffer + offset_of!(BufferHeaderWire, access)),
+            KGPU_ACCESS_WRITE
+        );
+        assert_eq!(
+            u32_at(buffer + offset_of!(BufferHeaderWire, extent_count)),
+            2
+        );
+
+        let mut done = [0xffu8; COMPLETION_SIZE];
+        encode_completion(
+            &mut done,
+            &Completion {
+                kind: CompletionKind::ContextLost,
+                context: 7,
+                seqno: 9,
+                status: -5,
+            },
+        )
+        .unwrap();
+        type C = CompletionWire;
+        let c32 = |at: usize| u32::from_le_bytes(done[at..at + 4].try_into().unwrap());
+        assert_eq!(c32(offset_of!(C, kind)), CompletionKind::ContextLost as u32);
+        assert_eq!(c32(offset_of!(C, context)), 7);
+        assert_eq!(u64::from_le_bytes(done[8..16].try_into().unwrap()), 9);
+        assert_eq!(offset_of!(C, seqno), 8);
+        assert_eq!(c32(offset_of!(C, status)) as i32, -5);
+        assert_eq!(c32(offset_of!(C, pad)), 0);
+    }
 
     #[test]
     fn struct_sizes_match_contract() {

@@ -222,6 +222,10 @@ export interface InitMessage {
   bridgePort?: MessagePort;
   config: {
     experimentalMemoryGroup?: TrustedMemoryGroupOptions;
+    /** Where the deployment serves `kandelo_gpu_executor32.wasm`, the kgpu
+     * GPU worker's executor. Absent, the machine has no renderer and kgpu
+     * context creation answers ENODEV. */
+    gpuExecutorUrl?: string;
     maxWorkers: number;
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */

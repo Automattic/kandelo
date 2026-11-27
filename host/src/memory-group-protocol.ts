@@ -2,7 +2,7 @@ import { MEMORY_GROUP_PROTOCOL as P } from './generated/abi';
 import type { MemoryGroupBackingUsage } from './memory-group-usage';
 
 export class MemoryGroupProtocolFault extends Error {
-  constructor(message: string, options?: ErrorOptions, readonly retainedBacking?: MemoryGroupBackingUsage) {
+  constructor(message: string, options?: ErrorOptions, readonly retainedBacking?: Omit<MemoryGroupBackingUsage, 'devicePinnedFrames'>) {
     super(message, options);
   }
 }

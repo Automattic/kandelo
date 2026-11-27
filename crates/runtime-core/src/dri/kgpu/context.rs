@@ -25,8 +25,16 @@ pub struct Context {
     /// Every submission of this context at or below this sequence number
     /// has retired.
     pub last_retired: u64,
-    /// The executor reported the context lost: nothing new runs on it.
+    /// The context is lost: nothing new runs on it, and waits past
+    /// `last_retired` answer `EIO`.
     pub lost: bool,
+    /// The executor reported the loss itself (Ruling R16). It promises never
+    /// to touch the context's memory again, so the loss released every
+    /// in-flight pin and later completions for the context are ignored.
+    pub released: bool,
+    /// The executor that knew the context is gone (`KgpuDevice::reset`). A
+    /// replacement executor never saw it, so destroying it sends nothing.
+    pub detached: bool,
 }
 
 pub struct Contexts {
@@ -56,6 +64,8 @@ impl Contexts {
                 owner,
                 last_retired: 0,
                 lost: false,
+                released: false,
+                detached: false,
             },
         );
         Ok(id)

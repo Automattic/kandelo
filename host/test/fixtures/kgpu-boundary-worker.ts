@@ -132,7 +132,8 @@ async function execute() {
   const lossStatus = await complete(completion(KGPU_COMPLETION_CONTEXT_LOST, context!, 0));
   const [lostResult, lostSeqno] = await waitFor('lost');
   const afterLoss = await drainAll();
-  // Drained work stays pinned until the executor retires it.
+  // R16: the loss released the drained work's pins; the late Retired is
+  // accepted and ignored.
   const pinnedBeforeRetire = await retry(() => kernel.devicePinnedFrames());
   const finalRetireStatus = await complete(completion(KGPU_COMPLETION_RETIRED, context!, heldSeqno!));
   const pinnedAfterRetire = await retry(() => kernel.devicePinnedFrames());

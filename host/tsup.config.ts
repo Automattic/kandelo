@@ -18,6 +18,10 @@ export default defineConfig({
     "src/worker-main.ts",
     "src/program-policy-node-worker.ts",
     "src/program-policy-browser-worker.ts",
+    // The kgpu GPU worker: the Node entry `kgpu-node.ts` starts, and the
+    // module the browser runs as a Worker.
+    "src/kgpu/gpu-worker-node.ts",
+    "src/kgpu/gpu-worker.ts",
     "src/vfs/index.ts",
     "src/vfs/opfs-worker.ts",
     "src/networking/index.ts",

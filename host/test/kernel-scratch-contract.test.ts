@@ -673,6 +673,18 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     count: 1,
     why: "kernel_device_pinned_frames is ()->i32 and returns one inspection count inside an immediate entry. No kernel pointer, borrowed range or scratch authority crosses it.",
   },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.inspectMemoryGroupUsage::kernel-export-direct-use::pinned()",
+    disposition: "kernel-control",
+    count: 1,
+    why: "kernel_device_pinned_frames is ()->i32; usage inspection reads its one count in the same immediate entry as the storage snapshot. No kernel pointer, borrowed range or scratch authority crosses it.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.resetKgpu::kernel-export-direct-use::reset()",
+    disposition: "kernel-control",
+    count: 1,
+    why: "kernel_kgpu_reset is ()->() and runs inside an immediate entry the GPU host issues only after its worker is proven gone (R15). It takes and returns nothing, so no kernel pointer, borrowed range or scratch authority crosses it.",
+  },
   // Kandelo exchange control calls: scalars in, a scalar status out; every
   // pointer-bearing exchange export goes through KernelScratchLease.
   reviewedScalarKernelExportCall(
@@ -1279,6 +1291,18 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "The structurally audited read-only comparator synchronously borrows the registry-validated original process span and independent framebuffer baseline. Its kernel-named import is the device baseline here, not kernel memory. No start function, store, guest callback, retained Instance or escaping export is admitted.",
+  },
+  {
+    key: "host/src/kgpu/gpu-worker.ts::startGpuWorker::wasm-memory-authority::new WebAssembly.Memory({ initial: GPU_EXECUTOR_INITIAL_PAGES, maximum: GPU_EXECUTOR_MAX_PAGES })",
+    disposition: "non-kernel",
+    authorityOwner: "framebuffer",
+    why: "The disposable GPU worker allocates the kgpu executor's private nonshared memory, device-side state like the GBM baseline. It runs in its own worker, apart from any kernel Memory, and its 16 MiB ceiling is budgeted in runtime-memory-profile.ts.",
+  },
+  {
+    key: "host/src/kgpu/gpu-worker.ts::startGpuWorker::wasm-instance-authority::WebAssembly.instantiate(bytes, { env: { memory }, kgpu_backend: shell.imports() })",
+    disposition: "non-kernel",
+    authorityOwner: "framebuffer",
+    why: "The kgpu executor instance imports only its own private memory and the backend callbacks. Group memory reaches it only as bytes the shell copies into that memory, and no kernel Memory exists in the GPU worker.",
   },
   {
     key: "crates/shared-memory-instrument/tests/fixtures/runner.mjs::check::wasm-instance-authority::WebAssembly.instantiate(bytes,memoryImports(memory))",
@@ -2108,9 +2132,9 @@ const auditAllowances: AuditAllowance[] = [
     why: "The raw sink runs only after lossless pointer conversion, explicit Rust-lent capacity/current-memory proof, and an intrinsic producer-length check; it publishes once synchronously.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, instance: () => this.#instance, memory: () => this.#memory, groupMemory: (resource: bigint) => this.#groupMemoryResources.memory(resource), }, ], )",
+    key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-escape::intrinsicApply( intrinsicWeakMapSet, wasmPosixKernelRuntimeAccess, [ this, { gate: this.#kernelEntryGate, instance: () => this.#instance, memory: () => this.#memory, groupMemory: (resource: bigint) => this.#groupMemoryResources.memory(resource), soleGroupMemory: () => this.#groupMemoryResources.sole(), }, ], )",
     disposition: "kernel-control",
-    why: "The package-private WeakMap grants only the dedicated worker access to this wrapper's exact gate, gated instance, and memory; none is exported from the public package surface.",
+    why: "The package-private WeakMap grants only the dedicated worker access to this wrapper's exact gate, gated instance, and memory, plus group backings (never kernel memory) for the worker's own device adapters; none is exported from the public package surface.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.constructor::kernel-memory-return::() => this.#memory",
