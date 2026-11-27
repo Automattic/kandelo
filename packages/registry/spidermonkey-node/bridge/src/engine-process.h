@@ -8,6 +8,7 @@ void RegisterNativeBufferOwnerFactory();
 void InitializeNativeContextMetadata(JSContext*);
 void RetireProcessContext();
 bool ExposedGcEnabled();
+bool ImmutableArrayBuffersEnabled();
 JSContext* NewProcessContext();
 void DestroyProcessContext(JSContext*);
 }

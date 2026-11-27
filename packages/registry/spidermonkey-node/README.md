@@ -38,6 +38,11 @@ symlink. Experimental QUIC/DTLS are not enabled in this standard build; their
 implementation and qualification remain required later compatibility work.
 There is no automatic second executable or user profile selector.
 
+Node realms materialize backing buffers for fixed-length typed arrays larger
+than 64 bytes, matching the pinned native Node release. Passing
+`--js-immutable-arraybuffer` enables the immutable ArrayBuffer operations in
+Node realms. The option is off by default.
+
 Node's bundled OpenSSL uses `no-secure-memory`, like the
 [standalone OpenSSL package](../openssl/README.md#no-secure-heap). WebAssembly
 linear memory cannot enforce the secure heap's guard pages. Node reports the

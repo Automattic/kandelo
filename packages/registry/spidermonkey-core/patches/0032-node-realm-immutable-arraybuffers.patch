@@ -1,0 +1,179 @@
+# Compile the upstream immutable ArrayBuffer operations for the Node embedding.
+# Realm creation opts in; ordinary ESR realms keep the feature disabled.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -183,6 +183,13 @@
+   // embeddings to use an embedding-specific error message.)
+   bool getCoopAndCoepEnabled() const;
+   RealmCreationOptions& setCoopAndCoepEnabled(bool flag);
++
++  // The Node embedding opts in before this realm initializes its builtins.
++  bool getImmutableArrayBuffersEnabled() const { return immutableArrayBuffers_; }
++  RealmCreationOptions& setImmutableArrayBuffersEnabled(bool flag) {
++    immutableArrayBuffers_ = flag;
++    return *this;
++  }
+ 
+   bool getToSourceEnabled() const { return toSource_; }
+   RealmCreationOptions& setToSourceEnabled(bool flag) {
+@@ -237,6 +244,7 @@
+   bool sharedMemoryAndAtomics_ = false;
+   bool defineSharedArrayBufferConstructor_ = true;
+   bool coopAndCoep_ = false;
++  bool immutableArrayBuffers_ = false;
+   bool toSource_ = false;
+ 
+   bool secureContext_ = false;
+--- a/js/src/vm/ArrayBufferObject.h
++++ b/js/src/vm/ArrayBufferObject.h
+@@ -200,17 +200,17 @@
+   static bool maxByteLengthGetterImpl(JSContext* cx, const CallArgs& args);
+   static bool resizableGetterImpl(JSContext* cx, const CallArgs& args);
+   static bool detachedGetterImpl(JSContext* cx, const CallArgs& args);
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+   static bool immutableGetterImpl(JSContext* cx, const CallArgs& args);
+ #endif
+   static bool sliceImpl(JSContext* cx, const CallArgs& args);
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+   static bool sliceToImmutableImpl(JSContext* cx, const CallArgs& args);
+ #endif
+   static bool resizeImpl(JSContext* cx, const CallArgs& args);
+   static bool transferImpl(JSContext* cx, const CallArgs& args);
+   static bool transferToFixedLengthImpl(JSContext* cx, const CallArgs& args);
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+   static bool transferToImmutableImpl(JSContext* cx, const CallArgs& args);
+ #endif
+ 
+@@ -467,7 +467,7 @@
+ 
+   static bool detachedGetter(JSContext* cx, unsigned argc, Value* vp);
+ 
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+   static bool immutableGetter(JSContext* cx, unsigned argc, Value* vp);
+ #endif
+ 
+@@ -475,7 +475,7 @@
+ 
+   static bool slice(JSContext* cx, unsigned argc, Value* vp);
+ 
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+   static bool sliceToImmutable(JSContext* cx, unsigned argc, Value* vp);
+ #endif
+ 
+@@ -485,7 +485,7 @@
+ 
+   static bool transferToFixedLength(JSContext* cx, unsigned argc, Value* vp);
+ 
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+   static bool transferToImmutable(JSContext* cx, unsigned argc, Value* vp);
+ #endif
+ 
+--- a/js/src/vm/ArrayBufferObject.cpp
++++ b/js/src/vm/ArrayBufferObject.cpp
+@@ -322,14 +322,14 @@
+ 
+ static const JSFunctionSpec arraybuffer_proto_functions[] = {
+     JS_FN("slice", ArrayBufferObject::slice, 2, 0),
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+     JS_FN("sliceToImmutable", ArrayBufferObject::sliceToImmutable, 2, 0),
+ #endif
+     JS_FN("resize", ArrayBufferObject::resize, 1, 0),
+     JS_FN("transfer", ArrayBufferObject::transfer, 0, 0),
+     JS_FN("transferToFixedLength", ArrayBufferObject::transferToFixedLength, 0,
+           0),
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+     JS_FN("transferToImmutable", ArrayBufferObject::transferToImmutable, 0, 0),
+ #endif
+     JS_FS_END,
+@@ -341,7 +341,7 @@
+     JS_PSG("maxByteLength", ArrayBufferObject::maxByteLengthGetter, 0),
+     JS_PSG("resizable", ArrayBufferObject::resizableGetter, 0),
+     JS_PSG("detached", ArrayBufferObject::detachedGetter, 0),
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+     JS_PSG("immutable", ArrayBufferObject::immutableGetter, 0),
+ #endif
+     JS_STRING_SYM_PS(toStringTag, "ArrayBuffer", JSPROP_READONLY),
+@@ -499,7 +499,7 @@
+     return nullptr;
+   }
+ 
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+   // Additional step from Immutable ArrayBuffer proposal.
+   if (preserveResizability == PreserveResizability::Immutable) {
+     return ImmutableArrayBufferObject::copyAndDetach(cx, size_t(newByteLength),
+@@ -627,7 +627,7 @@
+   return CallNonGenericMethod<IsArrayBuffer, detachedGetterImpl>(cx, args);
+ }
+ 
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+ /**
+  * get ArrayBuffer.prototype.immutable
+  *
+@@ -721,7 +721,7 @@
+                                                                         args);
+ }
+ 
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+ /**
+  * ArrayBuffer.prototype.transferToImmutable ( [ newLength ] )
+  *
+@@ -1031,7 +1031,7 @@
+   return CallNonGenericMethod<IsArrayBuffer, sliceImpl>(cx, args);
+ }
+ 
+-#ifdef NIGHTLY_BUILD
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
+ /**
+  * ArrayBuffer.prototype.sliceToImmutable ( start, end )
+  *
+--- a/js/src/vm/JSObject.cpp
++++ b/js/src/vm/JSObject.cpp
+@@ -1855,6 +1855,21 @@
+   }
+ #endif
+ 
++#if defined(__kandelo__) || defined(NIGHTLY_BUILD)
++  if (key == JSProto_ArrayBuffer &&
++      !cx->realm()->creationOptions().getImmutableArrayBuffersEnabled()
++#ifdef NIGHTLY_BUILD
++      && !JS::Prefs::experimental_arraybuffer_immutable()
++#endif
++  ) {
++    if (id == NameToId(cx->names().immutable) ||
++        id == NameToId(cx->names().sliceToImmutable) ||
++        id == NameToId(cx->names().transferToImmutable)) {
++      return true;
++    }
++  }
++#endif
++
+ #ifdef NIGHTLY_BUILD
+   // It's gently surprising that this is JSProto_Function, but the trick
+   // to realize is that this is a -constructor function-, not a function
+@@ -1867,14 +1882,6 @@
+     if (!JS::Prefs::experimental_promise_allkeyed() &&
+         (id == NameToId(cx->names().allKeyed) ||
+          id == NameToId(cx->names().allSettledKeyed))) {
+-      return true;
+-    }
+-  }
+-  if (key == JSProto_ArrayBuffer &&
+-      !JS::Prefs::experimental_arraybuffer_immutable()) {
+-    if (id == NameToId(cx->names().immutable) ||
+-        id == NameToId(cx->names().sliceToImmutable) ||
+-        id == NameToId(cx->names().transferToImmutable)) {
+       return true;
+     }
+   }

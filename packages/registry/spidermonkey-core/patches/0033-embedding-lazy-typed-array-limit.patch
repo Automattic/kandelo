@@ -1,0 +1,58 @@
+# Node's internal backing-state query observes actual ArrayBuffer ownership.
+# Let its JITless embedding request earlier materialization at allocation time.
+# Drop this patch if upstream offers an equivalent per-realm allocation option.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -14,6 +14,8 @@
+ #include "mozilla/Assertions.h"  // MOZ_ASSERT
+ #include "mozilla/Maybe.h"
+ 
++#include <stdint.h>
++
+ #include "jstypes.h"  // JS_PUBLIC_API
+ 
+ #include "js/Class.h"  // JSTraceOp
+@@ -188,6 +190,15 @@
+   bool getImmutableArrayBuffersEnabled() const { return immutableArrayBuffers_; }
+   RealmCreationOptions& setImmutableArrayBuffersEnabled(bool flag) {
+     immutableArrayBuffers_ = flag;
++    return *this;
++  }
++
++  // Embedders can request eager backing objects for fixed-length typed arrays
++  // above this size in the interpreter. The engine's inline capacity still
++  // bounds which views can use lazy storage.
++  uint32_t getMaxLazyTypedArrayBytes() const { return maxLazyTypedArrayBytes_; }
++  RealmCreationOptions& setMaxLazyTypedArrayBytes(uint32_t bytes) {
++    maxLazyTypedArrayBytes_ = bytes;
+     return *this;
+   }
+ 
+@@ -245,6 +256,7 @@
+   bool defineSharedArrayBufferConstructor_ = true;
+   bool coopAndCoep_ = false;
+   bool immutableArrayBuffers_ = false;
++  uint32_t maxLazyTypedArrayBytes_ = UINT32_MAX;
+   bool toSource_ = false;
+ 
+   bool secureContext_ = false;
+--- a/js/src/vm/TypedArrayObject.cpp
++++ b/js/src/vm/TypedArrayObject.cpp
+@@ -57,6 +57,7 @@
+ #include "vm/JSContext.h"
+ #include "vm/JSObject.h"
++#include "vm/Realm.h"
+ #include "vm/SelfHosting.h"
+ #include "vm/SharedMem.h"
+ #include "vm/Uint8Clamped.h"
+ #include "vm/WrapperObject.h"
+@@ -832,7 +833,8 @@
+     static_assert(INLINE_BUFFER_LIMIT % BYTES_PER_ELEMENT == 0,
+                   "ArrayBuffer inline storage shouldn't waste any space");
+ 
+-    if (byteLength <= INLINE_BUFFER_LIMIT) {
++    if (byteLength <= INLINE_BUFFER_LIMIT &&
++        byteLength <= cx->realm()->creationOptions().getMaxLazyTypedArrayBytes()) {
+       // The array's data can be inline, and the buffer created lazily.
+       return true;
+     }
