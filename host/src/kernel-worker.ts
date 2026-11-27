@@ -35219,6 +35219,12 @@ export class CentralizedKernelWorker {
         const takeVblankWake = entry.instance.exports.kernel_kms_take_vblank_wake as
           (() => number) | undefined;
         const vblankWake = takeVblankWake?.() === 1;
+        if (vblankWake) {
+          // Vblank can make Rust-owned epoll waits ready without a guest
+          // syscall to settle them. Drain the kernel's readiness in this
+          // entry before scheduling retries for host-owned waits.
+          this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+        }
         if (flips !== this.vblankFlipCount || vblankWake) {
           this.vblankFlipCount = flips;
           this.scheduleWakeBlockedRetries(entry);
