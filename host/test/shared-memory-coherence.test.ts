@@ -462,7 +462,6 @@ describe("kernel-owned shared-mapping boundary failures", () => {
     channel.consecutiveSyscalls = 0;
     Object.assign(h.kw as any, {
       config: {},
-      syscallRing: new Map(),
       syscallTraceEnabled: false,
       pendingCancels: new Set(),
     });

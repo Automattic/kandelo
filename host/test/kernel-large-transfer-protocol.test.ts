@@ -230,7 +230,6 @@ function makeTransferHarness(
   Object.assign(worker, {
     currentHandlePid: 0,
     activeChannels: [channel],
-    syscallRing: new Map(),
     syscallTraceEnabled: false,
     syscallTraceRing: [],
     syscallTraceCap: 64,

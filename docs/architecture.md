@@ -9283,6 +9283,11 @@ The following "optimizations" in `kernel-worker.ts` were benchmarked and **all m
 
 4. **Conditional debug ring logging**: Skipping syscall ring buffer entries for 0-arg syscalls. The ring buffer is a fixed-size array push — negligible cost, but valuable for crash diagnostics.
 
+The crash history contains up to 30 syscalls on the live process
+registration. An exec replacement inherits the history. The browser reports
+Worker failure context while the registration is still live, and detaching
+the last registration releases the history.
+
 **Why they fail**: The Wasm kernel execution (calling `kernel_handle_channel` which dispatches into Rust-compiled syscall logic) dominates each syscall's wall time. The TypeScript overhead around it — reading 6 args, creating views, draining events, logging — is noise. Micro-optimizing noise adds complexity and risk for no throughput gain.
 
 **What to optimize instead**: If syscall throughput needs improvement, focus on the kernel Wasm code (`crates/kernel/`), the channel protocol, or the worker thread scheduling. The TypeScript host path is not the bottleneck.

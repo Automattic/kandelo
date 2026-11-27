@@ -270,7 +270,6 @@ function configureKernelSyscallHarness(h: FileHarness, pid: number) {
   const completeChannel = vi.fn();
   Object.assign(h.kw as any, {
     config: {},
-    syscallRing: new Map(),
     syscallTraceEnabled: false,
   });
   h.kw.testAuthority.configureScratchBoundaryHooksForTest({
@@ -1301,7 +1300,6 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     const relistenChannel = vi.fn();
     Object.assign(h.kw as any, {
       config: {},
-      syscallRing: new Map(),
       syscallTraceEnabled: false,
       pendingCancels: new Set(),
     });

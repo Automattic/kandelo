@@ -160,7 +160,6 @@ function makeHarness(
     }]]),
     relistenBatchSize: 64,
     relistenCount: 0,
-    syscallRing: new Map(),
     syscallTraceCap: 64,
     syscallTraceEnabled: false,
     syscallTraceRing: [],
