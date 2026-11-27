@@ -10,6 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
 const fixtureSource = join(repoRoot, "host/test/fixtures/dlopen-main-scope.c");
 const fixtureWasm = join(tmpdir(), `kandelo-dlopen-main-${process.pid}.wasm`);
+const forkInstrument = join(repoRoot, "scripts/run-wasm-fork-instrument.sh");
 
 test.beforeAll(() => {
   execFileSync(
@@ -17,6 +18,9 @@ test.beforeAll(() => {
     ["-O2", "-ldl", "-Wl,--export-dynamic", fixtureSource, "-o", fixtureWasm],
     { cwd: repoRoot, stdio: "pipe" },
   );
+  // WHY: the SDK driver keeps `fork` in every `-ldl` program, so the host
+  // refuses the program until it is fork-instrumented.
+  execFileSync(forkInstrument, [fixtureWasm, "-o", fixtureWasm], { stdio: "pipe" });
 });
 
 test.afterAll(() => {
