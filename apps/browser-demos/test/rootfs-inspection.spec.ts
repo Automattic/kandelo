@@ -89,7 +89,8 @@ test("worker inspection lists live procfs descriptors and devfs through guest cl
   expect(result.dev!.find((entry) => entry.name === "null")!.mode & 0o170000).toBe(0o020000);
   expect(result.input!.map((entry) => entry.name)).toEqual(["mice", "event0", "event1"]);
   expect(result.dri!.map((entry) => entry.name)).toEqual(["card0", "renderD128"]);
-  expect(result.kandelo!.map((entry) => entry.name)).toEqual(["clipboard"]);
+  expect(result.kandelo!.map((entry) => entry.name)).toEqual(["fs-events", "clipboard"]);
+  expect(result.kandelo!.find((entry) => entry.name === "fs-events")!.mode & 0o170000).toBe(0o020000);
   expect(result.shm).toEqual([]);
   expect(result.pts!.length).toBe(result.initialPts!.length + 2);
   expect(result.closedPts!.length).toBe(result.initialPts!.length + 1);
