@@ -69,6 +69,11 @@ Host address translation and ordered queue notification execute shared stateless
 
 Grouped mappings must enter the Rust physical/PTE transaction owner. The ordinary direct/synthetic mmap, munmap, mremap and mprotect entries refuse grouped images; direct brk leaves the break unchanged. SysV attachment to a grouped image is unsupported and is refused by the kernel before attachment accounting, rather than entering the legacy synthetic-mmap and byte-mirror path. Ordinary processes retain that path. This refusal does not add SysV sharing to the grouped preview.
 
+Mapping publication and rollback verify the whole live page table against
+the transaction's expected snapshot while the image is paused and the
+growth lock is held. They write only blocks that differ between the
+transaction's before and after tables.
+
 The kernel and a group's backing are separate Wasm memories. Raw host imports perform Rust-requested bounded byte and atomic operations; they do not choose frames or authorize reuse. Rust retains the actual logical memory-manager and driver plans through physical publication and commit, rather than asking TypeScript to reconstruct their effects. SDK private growth sends only its unsigned page delta through the admitted syscall channel. The actual kernel storage owner allocates and zeroes frames through its existing pool, retains image custody before publishing page-table entries, and publishes the new virtual extent last. Contention retries through the existing completion owner; stopped tasks cannot grow, and uncertain publication contains the image without dropping its charges. No SDK or TypeScript allocator chooses frames. A native wait's timeout permits a retry, never page reuse. After a fatal uncertainty, a copied snapshot captured before the fatal latch may describe retained charges; it does not reopen the failed kernel for inspection.
 Inspection and UI consume that state; they do not invent group membership or
 authorize reuse. The optional scalar usage API reports allocator contention as

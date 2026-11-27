@@ -460,6 +460,7 @@ pub(super) mod tests {
         maximum: u32,
         pub(in crate::memory_group) refuse_growth: bool,
         fail_bitmap_write: bool,
+        pub(in crate::memory_group) fail_write_after_at: Option<u32>,
         fail_atomic_store_at: Option<u32>,
         watched_load: Option<u32>,
         watched_loads: core::cell::Cell<usize>,
@@ -488,6 +489,7 @@ pub(super) mod tests {
                 maximum,
                 refuse_growth: false,
                 fail_bitmap_write: false,
+                fail_write_after_at: None,
                 fail_atomic_store_at: None,
                 watched_load: None,
                 watched_loads: core::cell::Cell::new(0),
@@ -529,6 +531,9 @@ pub(super) mod tests {
                 .get_mut(address as usize..address as usize + input.len())
                 .ok_or(Errno::EFAULT)?
                 .copy_from_slice(input);
+            if self.fail_write_after_at == Some(address) {
+                return Err(Errno::EIO);
+            }
             Ok(())
         }
         fn fill(&mut self, address: u32, length: u32, value: u8) -> Result<(), Errno> {
