@@ -2502,8 +2502,10 @@ cached.
 Within one artifact-policy check, the import declarations, export names,
 and custom-section names are read once for the checks that use them. The
 program-extension and fork-contract checks share one successful decode of
-the detailed fork artifact facts. These results live only for the current
-check of those bytes. See [the fork-child measurements](measurements/2026-11-26-wasm-admission-facts.md).
+the detailed fork artifact facts. The same Worker can use the decoded
+function signatures when routing the admitted main module's imports.
+This uses the results of that invocation on the same owned bytes, with no
+shared cache. See [the fork-child measurements](measurements/2026-11-26-wasm-admission-facts.md).
 
 **Lifetime.** The cache's own index holds each module through a `WeakRef`.
 Strong references belong to the users: each process record's
