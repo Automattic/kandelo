@@ -162,6 +162,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
 - Create: `crates/shared/src/kgpu.rs` (and add `pub mod kgpu;` in `crates/shared/src/lib.rs`)
 - Modify: `crates/shared/src/ioctl_contract.rs` (four entries, keeping the table sorted by request)
 - Modify (generated): `abi/snapshot.json`, `host/src/generated/abi.ts`, `libc/glue/abi_constants.h`, `libc/musl-overlay/include/bits/kandelo_syscall_marshal.h`
+- Modify: `tools/xtask/src/dump_abi.rs` (generate `libc/musl-overlay/include/kandelo/kgpu.h`: the four request numbers, the ioctl structs with `_Static_assert` sizes, access flags and limits; `--check` fails on drift)
 
 **Interfaces:**
 - Produces (in `wasm_posix_shared::kgpu`):
@@ -410,7 +411,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
 
 - [ ] **Step 1: Write failing native tests** with `RecordingBackend`:
   - `clear_and_readback_records_calls`: the exact recorded sequence is
-    create_surface(7,4,4), viewport, clear_color([0.25,0.5,0.75,1.0]),
+    create_surface(7,4,4), viewport, clear_color([0.2,0.4,0.6,1.0]),
     clear(0x4000), read_pixels(…, dst extents).
   - `stream_context_mismatch_faults_context`
   - `readpixels_into_read_only_buffer_faults`
@@ -472,7 +473,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - `kgpu-host.test.ts`, using a Node worker with the executor and the
     WebGL 2 test double from `host/test/support/logging-graphics-gl.ts`,
     injected through the backend:
-    - `clear_and_readback_roundtrip`: the guest fixture reads 64,128,191,255
+    - `clear_and_readback_roundtrip`: the guest fixture reads 51,102,153,255
       for all 16 pixels;
     - `ring_full_backpressure_completes_all`: 200 submissions, all retire in
       order;
@@ -490,9 +491,9 @@ Each slice gets its own plan when it starts; the order is dependency order.
 ### Task 8: End-to-end guest program in browsers
 
 **Files:**
-- Create: `programs/kgpu-clear.c`. Using only `<kandelo/kgpu_stream.h>` and raw ioctls, it does the following:
+- Create: `programs/kgpu-clear.c`. Using only `<kandelo/kgpu_stream.h>`, `<kandelo/kgpu.h>` and raw ioctls, it does the following:
   - opens `/dev/dri/renderD128` and creates a context;
-  - encodes viewport, clear-color 0.25/0.5/0.75/1.0, clear COLOR, and a 4×4
+  - encodes viewport, clear-color 0.2/0.4/0.6/1.0, clear COLOR, and a 4×4
     readback into a 64-byte heap buffer;
   - submits, waits with an infinite timeout, and prints the 16 RGBA pixels
     as `pixel i r g b a`;
@@ -508,7 +509,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - convert the program with `sdk/bin/wasm32posix-shared-memory`;
   - boot `BrowserKernel` with `experimentalMemoryGroup: { maximumPages: 512 }`;
   - spawn with `executionBackend: "memory-group"`;
-  - assert exit 0 and that all 16 lines read `64 128 191 255`.
+  - assert exit 0 and that all 16 lines read `51 102 153 255`.
 
   A second test spawns the same program ungrouped and asserts that the
   output names `EOPNOTSUPP`. A third test spawns, reads back, exits and
