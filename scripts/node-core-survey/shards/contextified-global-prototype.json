@@ -1,0 +1,15 @@
+{
+  "id": "contextified-global-prototype",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-contextified-global-prototype",
+      "file": "test/parallel/test-kandelo-contextified-global-prototype.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": ["node:vm"],
+      "contract": "Contextified global prototypes inherit from their own realm's Object.prototype and retain the actual template constructor. Plain globals and the supplied sandbox retain their existing prototype behavior.",
+      "owners": ["maintained SpiderMonkey engine bridge"]
+    }
+  ],
+  "fixtures": []
+}

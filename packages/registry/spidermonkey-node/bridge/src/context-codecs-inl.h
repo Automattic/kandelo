@@ -714,6 +714,22 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
     // never write generic wrapper fields over SpiderMonkey's reserved slots.
     CHECK(TemplateInfo(record).fieldCount==0);
     if(!ApplyTemplateProperties(frame,record,global,context))return {};
+    if (constructor) {
+      // Like a template instance, a contextified global inherits the
+      // constructor's prototype from the new realm.
+      JS::RootedValue constructorRecord(frame.cx, JS::ObjectValue(*constructor));
+      Local<Function> function;
+      if (!frame.Own<FunctionTemplate>(constructorRecord)->GetFunction(context).ToLocal(&function)) {
+        return {};
+      }
+      JS::RootedObject callable(frame.cx, &Input(function).toObject());
+      JS::RootedValue prototype(frame.cx);
+      if (!JS_GetProperty(frame.cx, callable, "prototype", &prototype)) return {};
+      if (prototype.isObject()) {
+        JS::RootedObject globalPrototype(frame.cx, &prototype.toObject());
+        if (!JS_SetPrototype(frame.cx, global, globalPrototype)) return {};
+      }
+    }
   }
   return context;
 }
