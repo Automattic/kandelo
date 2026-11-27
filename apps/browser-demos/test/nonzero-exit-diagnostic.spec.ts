@@ -87,5 +87,5 @@ test("a browser worker trap retains process failure context", async ({
     .join("\n");
   expect(diagnosticText).toContain("RuntimeError");
   expect(diagnosticText).toContain('argv=["wasm_trap_test"]');
-  expect(diagnosticText).toContain("last syscalls:");
+  expect(diagnosticText).toMatch(/last syscalls:\n\s+\[\d+(?::t\d+)?\] /);
 });

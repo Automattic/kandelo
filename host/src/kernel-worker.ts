@@ -1840,6 +1840,8 @@ interface ProcessRegistration {
   };
   memory: WebAssembly.Memory;
   channels: ChannelInfo[];
+  /** Crash diagnostics for the live process, carried across an exec. */
+  lastSyscalls?: string[];
   /** True only while a vfork child borrows its suspended parent's Memory. */
   borrowedAddressSpace: boolean;
   /** The original pthread reservation if fork resumed this image on its TLS. */
@@ -9906,6 +9908,7 @@ export class CentralizedKernelWorker {
         }
         const registration: ProcessRegistration = {
           pid, memory, source, channels, execGeneration, borrowedAddressSpace, inheritedThreadSlot,
+          lastSyscalls: existingRegistration?.lastSyscalls,
           ptrWidth, explicitMaxAddr: grouped !== undefined || explicitMaxAddr !== undefined,
           grouped: grouped && Object.freeze({ store: grouped.store, handle: grouped.handle, receipt: grouped.receipt }),
         };
@@ -14239,10 +14242,8 @@ export class CentralizedKernelWorker {
     return this.#kernelPointerWidth === 8 ? BigInt(exact) : exact;
   }
 
-  /** Debug: last N syscalls per pid for crash diagnosis */
-  private syscallRing = new Map<number, string[]>();
   dumpLastSyscalls(pid: number): string {
-    return (this.syscallRing.get(pid) ?? []).join("\n");
+    return this.processes.get(pid)?.lastSyscalls?.join("\n") ?? "";
   }
 
   /** Read a null-terminated C string from process memory */
@@ -15554,19 +15555,18 @@ export class CentralizedKernelWorker {
     }
     const diagnosticArgs = channelDiagnosticArguments(origArgs, adjustedArgs);
 
-    // Track last 30 syscalls per channel for crash diagnostics
-    const ringKey = channel.pid;
-    let ring = this.syscallRing.get(ringKey);
-    if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
-    ring.push(
-      `  ${this.formatSyscallEntry(
+    // The platform reports process failures before detaching the registration.
+    const registration = this.processes.get(channel.pid);
+    if (registration) {
+      const history = registration.lastSyscalls ??= [];
+      history.push(`  ${this.formatSyscallEntry(
         channel,
         syscallNr,
         origArgs,
         diagnosticArgs,
-      )}`,
-    );
-    if (ring.length > 30) ring.shift();
+      )}`);
+      if (history.length > 30) history.shift();
+    }
 
     // Opt-in live trace ring. enableSyscallTrace() flips the flag; the
     // host polls via drainSyscallTrace(). Zero cost when off.
@@ -15594,7 +15594,7 @@ export class CentralizedKernelWorker {
     // wasm64 process in a mixed-arch demo needs a focused trace).
     const widthFilter = this.config.syscallLogPtrWidth;
     const matchesWidthFilter = widthFilter !== undefined
-      && this.processes.get(channel.pid)?.ptrWidth === widthFilter;
+      && registration?.ptrWidth === widthFilter;
     const logging = !!this.config.enableSyscallLog || matchesWidthFilter;
     let logEntry = "";
     if (logging) {

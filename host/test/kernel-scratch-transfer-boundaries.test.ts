@@ -14,6 +14,7 @@ import {
   WasmPosixKernel,
 } from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
 import {
   ABI_SYSCALLS,
   CH_ARGS,
@@ -312,6 +313,7 @@ function makeScratchHarness(
     kernel_dequeue_signal: () => 0,
     // PTY input drains kernel wakeup events; these fixtures queue none.
     kernel_drain_wakeup_events: () => 0,
+    kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_get_socket_timeout_ms: () => -1n,
     kernel_is_fd_nonblock: () => 0,
     kernel_get_process_exit_signal: () => 0,
@@ -442,7 +444,6 @@ function prepareGenericSyscallHarness(
   ptrWidth: 4 | 8,
 ): void {
   harness.worker.config = {};
-  harness.worker.syscallRing = new Map();
   harness.worker.syscallTraceEnabled = false;
   harness.worker.syscallTraceRing = [];
   harness.worker.syscallTraceCap = 64;
@@ -497,6 +498,25 @@ function dispatchScratchBoundarySyscallWithArgs(
   );
   dispatchScratchBoundarySyscall(harness);
 }
+
+it("retains bounded syscall diagnostics until the exact process registration detaches", () => {
+  const harness = makeScratchHarness();
+  prepareGenericSyscallHarness(harness, 4);
+  const { worker, channel } = harness;
+  for (let fd = 0; fd < 35; fd++) {
+    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Fcntl, [fd, 1, 0]);
+  }
+
+  const history = worker.dumpLastSyscalls(channel.pid).split("\n");
+  expect(history).toHaveLength(30);
+  expect(history[0]).toContain("fcntl(5,");
+  expect(history.at(-1)).toContain("fcntl(34,");
+  expect(worker.deactivateProcess(channel.pid, sharedMemory(2))).toBe(false);
+  expect(worker.dumpLastSyscalls(channel.pid)).toBe(history.join("\n"));
+
+  expect(worker.deactivateProcess(channel.pid, channel.memory)).toBe(true);
+  expect(worker.dumpLastSyscalls(channel.pid)).toBe("");
+});
 
 function invokeNetworkIoctlHandler(
   harness: ScratchHarness,
