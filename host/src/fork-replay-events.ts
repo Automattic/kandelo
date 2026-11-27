@@ -78,10 +78,6 @@ function exactU64(value: bigint | number, context: string): bigint {
   return exact;
 }
 
-function eventKey(activationId: number, functionOrdinal: number): string {
-  return `${activationId}:${functionOrdinal}`;
-}
-
 interface CapturedEventPage {
   readonly words: Uint32Array;
   count: number;
@@ -628,11 +624,6 @@ export class ForkReplayEventJournal {
   }
 }
 
-interface RegisteredResumeTarget extends ForkResumeTarget {
-  readonly activationId: number;
-  readonly slot: number;
-}
-
 /**
  * Host reconstruction owner for the private heterogeneous resume table.
  *
@@ -647,8 +638,9 @@ export class ForkResumeTable {
     initial: 1,
   });
 
-  private readonly targets = new Map<string, RegisteredResumeTarget>();
-  private readonly activationKeys = new Map<number, string[]>();
+  // The native table owns the thunks. Each activation indexes only its slots.
+  private readonly slotsByActivation = new Map<number, Map<number, number>>();
+  // Descending so the lowest free slot can be consumed from the end.
   private freeSlots: number[] = [];
 
   registerActivation(
@@ -656,13 +648,12 @@ export class ForkResumeTable {
     targets: readonly ForkResumeTarget[],
   ): void {
     assertU32(activationId, "resume-table activation id");
-    if (this.activationKeys.has(activationId)) {
+    if (this.slotsByActivation.has(activationId)) {
       throw new Error(`resume-table activation ${activationId} is already registered`);
     }
     const ordered = [...targets].sort(
       (left, right) => left.functionOrdinal - right.functionOrdinal,
     );
-    const keys: string[] = [];
     let previous: number | undefined;
     for (const target of ordered) {
       assertU32(target.functionOrdinal, "resume function ordinal");
@@ -675,37 +666,52 @@ export class ForkResumeTable {
         );
       }
       previous = target.functionOrdinal;
-      const slot = this.allocateSlot();
-      this.table.set(slot, target.thunk);
-      const key = eventKey(activationId, target.functionOrdinal);
-      this.targets.set(key, { ...target, activationId, slot });
-      keys.push(key);
     }
-    this.activationKeys.set(activationId, keys);
+
+    const slots = new Map<number, number>();
+    const reusable = Math.min(ordered.length, this.freeSlots.length);
+    const additional = ordered.length - reusable;
+    const firstNew = this.table.length;
+    if (additional) this.table.grow(additional);
+    try {
+      for (let index = 0; index < ordered.length; index++) {
+        const { functionOrdinal, thunk } = ordered[index]!;
+        const slot = index < reusable
+          ? this.freeSlots[this.freeSlots.length - 1 - index]!
+          : firstNew + index - reusable;
+        slots.set(functionOrdinal, slot);
+        this.table.set(slot, thunk);
+      }
+      this.slotsByActivation.set(activationId, slots);
+    } catch (error) {
+      // Native insertion can reject a JavaScript function. Keep borrowed
+      // slots free and make the new native capacity available for a retry.
+      for (const slot of slots.values()) this.table.set(slot, null);
+      for (let slot = firstNew; slot < this.table.length; slot++) this.freeSlots.push(slot);
+      this.freeSlots.sort((left, right) => right - left);
+      throw error;
+    }
+    this.freeSlots.length -= reusable;
   }
 
   unregisterActivation(activationId: number): void {
     assertU32(activationId, "resume-table activation id");
-    const keys = this.activationKeys.get(activationId);
-    if (!keys) {
+    const slots = this.slotsByActivation.get(activationId);
+    if (!slots) {
       throw new Error(`resume-table activation ${activationId} is not registered`);
     }
-    for (const key of keys) {
-      const target = this.targets.get(key)!;
-      this.table.set(target.slot, null);
-      this.targets.delete(key);
-      this.freeSlots.push(target.slot);
+    for (const slot of slots.values()) {
+      this.table.set(slot, null);
+      this.freeSlots.push(slot);
     }
-    this.freeSlots.sort((left, right) => left - right);
-    this.activationKeys.delete(activationId);
+    this.freeSlots.sort((left, right) => right - left);
+    this.slotsByActivation.delete(activationId);
   }
 
   slotFor(event: ForkReplayEvent | null): number {
     if (!event) return 0;
-    const target = this.targets.get(
-      eventKey(event.activationId, event.functionOrdinal),
-    );
-    if (!target) {
+    const slot = this.slotsByActivation.get(event.activationId)?.get(event.functionOrdinal);
+    if (slot === undefined) {
       throw new Error(
         `fork replay target ${event.activationId}:${event.functionOrdinal} `
         + `is not registered`,
@@ -716,23 +722,15 @@ export class ForkResumeTable {
     // call_indirect, which validates the exact result type before the thunk
     // can consume its frame. Reimplementing canonical recursive types in JS
     // would create a second, weaker type system.
-    return target.slot;
+    return slot;
   }
 
   clear(): void {
-    for (const activationId of [...this.activationKeys.keys()].sort(
+    for (const activationId of [...this.slotsByActivation.keys()].sort(
       (left, right) => right - left,
     )) {
       this.unregisterActivation(activationId);
     }
     this.freeSlots = [];
-  }
-
-  private allocateSlot(): number {
-    const reused = this.freeSlots.shift();
-    if (reused !== undefined) return reused;
-    const slot = this.table.length;
-    this.table.grow(1);
-    return slot;
   }
 }
