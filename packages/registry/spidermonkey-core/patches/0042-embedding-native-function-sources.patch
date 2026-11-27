@@ -53,11 +53,17 @@
          return nullptr;
        }
 
-@@ -957,13 +959,14 @@
-       // NormalFunction, Getter, or Setter. Strip any leading "get " or "set "
-       // if present.
-       JSAtom* name = fun->maybePartialExplicitName();
+@@ -957,13 +959,17 @@
+-      // NormalFunction, Getter, or Setter. Strip any leading "get " or "set "
+-      // if present.
+-      JSAtom* name = fun->maybePartialExplicitName();
 -      size_t offset = hasGetterOrSetterPrefix(name) ? 4 : 0;
++      // NormalFunction, Getter, or Setter. Resolve lazy accessor names in
++      // Node realms and strip their prefixes in other realms.
++      Rooted<JSAtom*> name(cx, fun->maybePartialExplicitName());
++      if (nodeSource && !fun->getExplicitName(cx, &name)) {
++        return nullptr;
++      }
 +      size_t offset = !nodeSource && hasGetterOrSetterPrefix(name) ? 4 : 0;
        if (!out.appendSubstring(name, offset, name->length() - offset)) {
          return nullptr;
