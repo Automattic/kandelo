@@ -10,6 +10,12 @@ use fork_instrument::{
 #[path = "optimize.rs"]
 mod optimize;
 
+pub(super) fn preoptimize(input: &MappedArtifact, level: &str, limit: u64) -> Result<MappedArtifact> {
+    let (artifact, _) = optimize::run(input, level, true, limit, None, true)?;
+    native::validate(artifact.bytes()).context("validating pre-optimized module")?;
+    Ok(artifact)
+}
+
 pub(super) struct Settings<'a> {
     pub optimize: &'a str,
     pub keep_names: bool,
@@ -17,6 +23,7 @@ pub(super) struct Settings<'a> {
     pub debug_map_if_present: bool,
     pub output_bytes: u64,
     pub original: Option<&'a OriginalReference>,
+    pub require_facts: bool,
 }
 pub(super) fn run(
     input: &[u8],
@@ -34,6 +41,17 @@ pub(super) fn run(
     } else {
         native::instrument(input, options, limits)?
     };
+    if settings.require_facts {
+        anyhow::ensure!(
+            output.decision.source == fork_instrument::PlanSource::Facts
+                && output.decision.facts.as_ref().is_some_and(|facts| facts.bound > 0),
+            "fork instrumentation requires compiler facts with linked function bindings (source {}): {}",
+            output.decision.source.as_str(),
+            output.decision.facts_error.as_deref().unwrap_or(
+                "preserve linked code, function names and compiler facts until instrumentation"
+            ),
+        );
+    }
     if let Some(error) = &output.decision.facts_error {
         eprintln!(
             "wasm-fork-instrument: compiler facts not used ({error}); using bounded native baseline"
@@ -50,6 +68,7 @@ pub(super) fn run(
             settings.keep_names,
             settings.output_bytes,
             source_map.as_ref(),
+            false,
         )?;
     }
     if optimized {

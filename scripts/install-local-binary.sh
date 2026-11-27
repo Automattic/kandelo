@@ -416,6 +416,7 @@ install_local_binary() {
     local declared_artifact="$requested_artifact"
     local declared_policy=""
     local original_artifact=""
+    local pre_optimize=none post_optimize=Os require_facts=false
     if [ "$install_local_mirror" = "1" ] || [ -n "${WASM_POSIX_INSTALL_OUTPUT_METADATA:-}" ]; then
         if [ "$install_local_mirror" = "1" ]; then
             host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
@@ -459,14 +460,21 @@ install_local_binary() {
                 !value.original_wasm.length || /[\t\n]/.test(value.original_wasm))) {
                 throw new Error("invalid original_wasm metadata");
             }
+            const pre = value.fork_pre_optimize ?? "none";
+            const post = value.fork_post_optimize ?? "Os";
+            const requireFacts = value.fork_require_facts ?? false;
+            if (!["none", "O2", "Oz"].includes(pre) || !["Os", "O2", "Oz"].includes(post) ||
+                typeof requireFacts !== "boolean" || (pre !== "none" && requireFacts)) {
+                throw new Error("invalid fork optimization metadata");
+            }
             process.stdout.write(
-              `${value.mirror_path}\t${value.fork_instrumentation}\t${value.source_artifact}\t${value.original_wasm ?? ""}`,
+              `${value.mirror_path}\t${value.fork_instrumentation}\t${value.source_artifact}\t${pre}\t${post}\t${requireFacts}\t${value.original_wasm ?? ""}`,
             );
           ' "$metadata")"; then
             echo "install_local_binary: invalid output metadata for '$program:$requested_artifact'" >&2
             return 1
         fi
-        IFS=$'\t' read -r mirror_path declared_policy declared_artifact original_artifact <<<"$fields"
+        IFS=$'\t' read -r mirror_path declared_policy declared_artifact pre_optimize post_optimize require_facts original_artifact <<<"$fields"
         if ! _wasm_posix_require_portable_relative_path "$mirror_path" \
             || ! _wasm_posix_require_portable_relative_path "$declared_artifact"; then
             echo "install_local_binary: xtask returned an unsafe output path" >&2
@@ -478,6 +486,15 @@ install_local_binary() {
             echo "install_local_binary: sealed installs require explicit WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto|disabled" >&2
             return 2
         fi
+    fi
+
+    local fork_profile=0
+    if [ "$pre_optimize" != none ] || [ "$post_optimize" != Os ] || [ "$require_facts" = true ]; then
+        if [ "$arch" != wasm32 ] || [ "$declared_policy" != auto ]; then
+            echo "install_local_binary: fork optimization requires an auto-instrumented wasm32 output" >&2
+            return 1
+        fi
+        fork_profile=1
     fi
 
     if [ -n "$original_artifact" ]; then
@@ -519,6 +536,13 @@ install_local_binary() {
                     return 1
                 fi
             fi
+            if [ "$fork_profile" = 1 ] && {
+                [ "$artifact_role" != executable ] || [ "$imports_kernel_fork" != 1 ] ||
+                    wasm_has_complete_fork_instrumentation "$src"
+            }; then
+                echo "install_local_binary: fork optimization requires a raw fork executable: $src" >&2
+                return 1
+            fi
             if { [ "$imports_kernel_fork" = 1 ] || [ "$artifact_role" = side-module ]; } \
                 && ! wasm_has_complete_fork_instrumentation "$src"; then
                 # WHY reject every partial ABI marker before reinstrumenting:
@@ -531,7 +555,17 @@ install_local_binary() {
                 echo "  applying wasm-fork-instrument to $(basename "$src")"
                 local instrumented
                 instrumented="$(mktemp "${TMPDIR:-/tmp}/wpk-fork-instrument.XXXXXX.wasm")"
-                if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" -o "$instrumented"; then
+                local instrument_args=("$src" -o "$instrumented")
+                if [ "$pre_optimize" != none ]; then
+                    instrument_args+=(--pre-optimize "$pre_optimize")
+                fi
+                if [ "$post_optimize" != Os ]; then
+                    instrument_args+=(--post-optimize "$post_optimize")
+                fi
+                if [ "$require_facts" = true ]; then
+                    instrument_args+=(--require-facts)
+                fi
+                if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "${instrument_args[@]}"; then
                     rm -f "$instrumented"
                     return 1
                 fi

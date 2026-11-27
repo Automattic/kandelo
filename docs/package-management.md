@@ -899,6 +899,48 @@ hits. It mirrors them at
 `{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
 number of `[[outputs]]` entries.
 
+### Fork optimization profiles
+
+Program packages can set a top-level `[fork_optimization]` default and
+override individual fields under `[outputs.fork_optimization]`.
+
+```toml
+[fork_optimization]
+post = "Oz"
+
+[[outputs]]
+name = "tool"
+wasm = "tool.wasm"
+
+[outputs.fork_optimization]
+require_facts = true
+
+[[outputs]]
+name = "helper"
+wasm = "helper.wasm"
+
+[outputs.fork_optimization]
+pre = "O2"
+post = "Os"
+```
+
+`pre` accepts `none` (the default), `O2` and `Oz`. `post` accepts `Os`
+(the default), `O2` and `Oz`. `require_facts` defaults to false. Set it
+to true when the output must use compiler facts with at least one linked
+function binding. It is incompatible with pre-optimization.
+
+The installer applies nondefault profiles to raw wasm32 main executables
+that import `kernel.kernel_fork` and use `fork_instrumentation = "auto"`.
+Pass the original link to `install_local_binary` for a profiled output.
+Package defaults apply to auto-instrumented Wasm declarations. Set the
+output fields to their defaults for outputs that need their established
+preparation path, such as side modules and copies of prepared executables.
+The resolver keys each nondefault effective profile with its output and
+supplies the settings through sealed output metadata.
+
+See [optimization around instrumentation](fork-instrumentation.md#optimization-around-instrumentation)
+for the pre-pass and its analysis.
+
 ### Shared-memory outputs
 
 An SDK program can declare a separate compatible executable as a normal ZIP

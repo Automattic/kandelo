@@ -11,6 +11,7 @@ use wasm_posix_program_abi::abi::{
 };
 
 pub mod artifact_io;
+pub mod preopt;
 pub mod call_graph;
 pub mod contract_inventory;
 pub mod debug_info;

@@ -184,10 +184,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let preoptimized = cli.pre_optimize.as_deref().map(|level| {
+        transform::preoptimize(&snapshot, level, cli.max_output_bytes)
+            .with_context(|| format!("pre-optimizing {input_name}"))
+    }).transpose()?;
+    let input = preoptimized.as_ref().map_or(input, |artifact| artifact.bytes());
     let opts = Options {
         entry_import: cli.entry,
-        sinks: !cli.no_sinks,
-        facts: !cli.no_facts,
+        // The sink refinements use source-level libc shapes that inlining
+        // can erase. Keep the full fork closure for explicitly rewritten Wasm.
+        sinks: !cli.no_sinks && preoptimized.is_none(),
+        facts: !cli.no_facts && preoptimized.is_none(),
         effective_types: !cli.no_effective_types,
         side_modules: if cli.side_modules == "assume-all-entries-fork-returning" {
             fork_instrument::SideModules::AssumeAllEntriesForkReturning
@@ -293,6 +300,7 @@ fn main() -> Result<()> {
             debug_map_if_present: cli.debug_map_if_present,
             output_bytes: cli.max_output_bytes,
             original: original.as_ref(),
+            require_facts: cli.require_facts,
         },
     )
     .with_context(|| format!("instrumenting {input_name}"))?;

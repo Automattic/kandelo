@@ -29,9 +29,14 @@ pub(super) fn run(
     keep_names: bool,
     limit: u64,
     source_map: Option<&MappedArtifact>,
+    before_instrumentation: bool,
 ) -> Result<(MappedArtifact, Option<MappedArtifact>)> {
     let mut source = tempfile::NamedTempFile::new().context("creating private optimizer input")?;
-    source.write_all(input.bytes())?;
+    if before_instrumentation {
+        fork_instrument::preopt::prepare(input.bytes(), &mut source)?;
+    } else {
+        source.write_all(input.bytes())?;
+    }
     let output = tempfile::NamedTempFile::new().context("creating private optimizer output")?;
     let executable = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
     let mut command = Command::new(&executable);
@@ -61,16 +66,19 @@ pub(super) fn run(
         .arg(format!("-{level}"))
         // [RUNTIME-WORKAROUND: BINARYEN-133-CONSTRAINT-ANALYSIS] at every level.
         .arg(SKIP_CONSTRAINT_ANALYSIS);
+    if before_instrumentation {
+        command.args(["--partial-inlining-ifs=0", "--no-stack-ir"]);
+    }
     if keep_names {
         command.arg("-g");
     }
     command.arg("-o").arg(output.path());
     let status = command.status().with_context(|| format!(
-        "running {} after fork instrumentation (Binaryen is required; run inside scripts/dev-shell.sh or set WASM_OPT)",
+        "running {} for fork instrumentation (Binaryen is required; run inside scripts/dev-shell.sh or set WASM_OPT)",
         Path::new(&executable).display()))?;
     ensure!(
         status.success(),
-        "{} -{level} failed on private instrumented output ({status})",
+        "{} -{level} failed on private optimizer input ({status})",
         Path::new(&executable).display()
     );
     drop(map_input);

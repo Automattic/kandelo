@@ -7547,6 +7547,14 @@ fn compute_sha_with_identity_context_for_platform(
                     h.update(b"|fork_instrumentation=");
                     h.update(out.fork_instrumentation.as_str().as_bytes());
                 }
+                let optimization = out.fork_optimization;
+                if !optimization.is_default() {
+                    h.update(b"|fork_optimization=");
+                    h.update(optimization.pre().as_str().as_bytes());
+                    h.update(b",");
+                    h.update(optimization.post().as_str().as_bytes());
+                    h.update([b',', u8::from(optimization.requires_facts())]);
+                }
                 if let Some(source) = &out.shared_memory_from {
                     h.update(b"|shared_memory_from="); h.update(source.as_bytes());
                 }
@@ -18446,6 +18454,9 @@ fn output_metadata_value(m: &DepsManifest, output: &crate::pkg_manifest::Program
         "source_artifact": output.wasm,
         "mirror_path": m.output_dest_rel_for(output),
         "fork_instrumentation": output.fork_instrumentation.as_str(),
+        "fork_pre_optimize": output.fork_optimization.pre().as_str(),
+        "fork_post_optimize": output.fork_optimization.post().as_str(),
+        "fork_require_facts": output.fork_optimization.requires_facts(),
     });
     if let Some(original) = &output.original_wasm {
         value["original_wasm"] = serde_json::json!(original);
@@ -26558,6 +26569,52 @@ fork_instrumentation = "disabled"
             assert_eq!(wasm_artifact_policy_failures_with_extensions(&bytes,
                 ForkInstrumentationPolicy::Auto, &[], &supported).is_empty(), allowed);
         }
+    }
+
+    #[test]
+    fn fork_optimization_keys_effective_output_policy() {
+        let root = tempdir("fork-optimization-cache-key");
+        let outputs = r#"[[outputs]]
+name = "one"
+wasm = "one.wasm"
+[[outputs]]
+name = "two"
+wasm = "two.wasm"
+"#;
+        write_program_manifest(&root, "probe", "1.0.0", outputs);
+        let registry = Registry { roots: vec![root.clone()] };
+        let path = root.join("probe/package.toml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let reference = sha_of(&registry, "probe");
+        let explicit_defaults = format!(
+            "fork_optimization = {{ pre = \"none\", post = \"Os\", require_facts = false }}\n{original}"
+        );
+        std::fs::write(&path, explicit_defaults).unwrap();
+        assert_eq!(sha_of(&registry, "probe"), reference);
+
+        let policy = "fork_optimization = { pre = \"Oz\", post = \"O2\" }";
+        let package_default = format!("{policy}\n{original}");
+        std::fs::write(&path, &package_default).unwrap();
+        let on_both = sha_of(&registry, "probe");
+        assert_ne!(on_both, reference);
+        std::fs::write(&path, original.replace("[[outputs]]", &format!("[[outputs]]\n{policy}"))).unwrap();
+        assert_eq!(sha_of(&registry, "probe"), on_both);
+
+        let second = "wasm = \"two.wasm\"";
+        let reset = format!("{second}\nfork_optimization = {{ pre = \"none\", require_facts = true }}");
+        std::fs::write(&path, package_default.replace(second, &reset)).unwrap();
+        let on_one = sha_of(&registry, "probe");
+        assert_ne!(on_one, on_both);
+        let manifest = registry.load("probe").unwrap();
+        let one = output_metadata_value(&manifest, &manifest.program_outputs[0]);
+        let two = output_metadata_value(&manifest, &manifest.program_outputs[1]);
+        assert_eq!(one["fork_pre_optimize"], "Oz");
+        assert_eq!(two["fork_pre_optimize"], "none");
+        assert_eq!(two["fork_post_optimize"], "O2");
+        assert_eq!(two["fork_require_facts"], true);
+
+        std::fs::write(&path, package_default.replace(second, &format!("{second}\nfork_optimization = {{ require_facts = true }}"))).unwrap();
+        assert!(registry.load("probe").unwrap_err().contains("cannot require facts after pre-optimization"));
     }
 
     #[test]
