@@ -18,10 +18,14 @@ convention — CI enforces it.
 
 ## Positioned root filesystem
 
-Host-adapter 42 extends `host_fetch_deferred` with the low and high words
-of the resource length declared by the filesystem. The host uses the length
-to bound deferred storage. Rust verifies the resource before use. Rebuild
-the kernel and host together. Program ABI 56 and its digest are unchanged.
+Host-adapter 42 publishes the address of a read-only, little-endian u64
+through `kernel_rootfs_deferred_transfer_size_address()`. During the
+six-argument `host_fetch_deferred` import, that word holds the resource's
+declared length. The kernel clears it to `u64::MAX` when the import returns.
+The host snapshots the length before invoking its byte provider and uses it to
+bound deferred storage. The snapshot requires no reentrant kernel call or
+full namespace walk. Rust verifies the resource before use. Rebuild the
+kernel and host together. Program ABI 56 and its digest are unchanged.
 
 The optional rootfs stat lease is gated by
 `kernel_rootfs_supports_stat_lease()`. A mounted filesystem that supports it

@@ -2407,7 +2407,7 @@ pub mod abi {
     /// 39: direct shared-group page-table scanning.
     /// 40: integrate kernel-owned epoll waits with those group contracts.
     /// 41: carry the engine-observed indirect-call trap in a signal exit.
-    /// 42: supply each deferred resource's declared length to the host.
+    /// 42: publish a kernel-owned transfer bound for the deferred byte import.
     pub const HOST_ADAPTER_VERSION: u32 = 42;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
@@ -2666,6 +2666,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_rootfs_activate_kifs_handoff"),
         HostAdapterKernelExport::optional("kernel_rootfs_cancel_kifs_handoff"),
         HostAdapterKernelExport::optional("kernel_rootfs_compact_kifs_v3"),
+        HostAdapterKernelExport::required("kernel_rootfs_deferred_transfer_size_address"),
         HostAdapterKernelExport::optional("kernel_rootfs_format_version"),
         HostAdapterKernelExport::optional("kernel_rootfs_kifs_compaction_needed"),
         HostAdapterKernelExport::optional("kernel_rootfs_mount_kifs_v3"),

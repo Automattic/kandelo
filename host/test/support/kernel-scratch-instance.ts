@@ -192,6 +192,10 @@ function signatures(
       parameters: [],
       result: i32,
     },
+    kernel_rootfs_deferred_transfer_size_address: {
+      parameters: [],
+      result: pointer,
+    },
     kernel_rootfs_lazy_resource_limits: {
       parameters: [i32, pointer, i32],
       result: i32,
@@ -856,7 +860,7 @@ export function createKernelScratchTestInstance(
   const excluded = new Set(excludedExports);
   const entries = Object.entries(signatures(pointerWidth)).filter(
     ([name]) =>
-      (selected === undefined || selected.has(name))
+      (selected?.has(name) ?? name !== "kernel_rootfs_deferred_transfer_size_address")
       && !excluded.has(name),
   );
   if (selected !== undefined) {

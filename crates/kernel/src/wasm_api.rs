@@ -20,6 +20,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::slice;
+use core::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
 
 use wasm_posix_shared::{
@@ -114,8 +115,6 @@ unsafe extern "C" {
         buf_len: u32,
         offset_lo: u32,
         offset_hi: u32,
-        size_lo: u32,
-        size_hi: u32,
     ) -> i32;
     // Native validation rejected these transport bytes. Eviction only;
     // the failed read still returns EIO and does not automatically retry.
@@ -472,6 +471,10 @@ fn checked_host_transfer_result(result: i32, capacity: usize) -> Result<usize, E
 fn fetch_deferred_uri(uri: &[u8], buf: &mut [u8], offset: u64, size: u64) -> Result<usize, Errno> {
     let capacity = checked_host_buffer_len(buf.len())?;
     let uri_len = u32::try_from(uri.len()).map_err(|_| Errno::EIO)?;
+    if size == u64::MAX {
+        return Err(Errno::EOVERFLOW);
+    }
+    DEFERRED_TRANSFER_SIZE.store(size, Ordering::Relaxed);
     let result = unsafe {
         host_fetch_deferred(
             uri.as_ptr(),
@@ -480,11 +483,21 @@ fn fetch_deferred_uri(uri: &[u8], buf: &mut [u8], offset: u64, size: u64) -> Res
             capacity,
             offset as u32,
             (offset >> 32) as u32,
-            size as u32,
-            (size >> 32) as u32,
         )
     };
+    DEFERRED_TRANSFER_SIZE.store(u64::MAX, Ordering::Relaxed);
     checked_host_transfer_result(result, buf.len())
+}
+
+static DEFERRED_TRANSFER_SIZE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Publish the address of a read-only transport word during host setup.
+/// The owning worker serializes kernel entry. This little-endian u64 holds the
+/// exact transfer bound for the synchronous deferred read, or MAX when idle.
+/// Reading it during the import needs no second entry into the kernel.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_deferred_transfer_size_address() -> *const u64 {
+    DEFERRED_TRANSFER_SIZE.as_ptr()
 }
 
 fn checked_host_i64_result(result: i64) -> Result<i64, Errno> {

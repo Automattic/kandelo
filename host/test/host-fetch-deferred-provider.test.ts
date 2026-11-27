@@ -10,6 +10,7 @@ import { createKernelScratchTestInstance } from "./support/kernel-scratch-instan
 const ENOSYS = 38;
 const EIO = 5;
 const EPERM = 1;
+const DEFERRED_SIZE_ADDRESS = 128;
 
 /** Write a URI into kernel memory and return its (pointer, length) pair.
  *
@@ -34,6 +35,7 @@ function kernelHarness(
   callbacks: KernelCallbacks = {},
 ): { kernel: WasmPosixKernel & Record<string, any>; memory: WebAssembly.Memory } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  new DataView(memory.buffer).setBigUint64(DEFERRED_SIZE_ADDRESS, 0x1_0000_0014n, true);
   const kernel = createWasmPosixKernelTestHarness({
     memory,
     callbacks,
@@ -41,7 +43,11 @@ function kernelHarness(
     instance: createKernelScratchTestInstance(
       pointerWidth,
       memory,
-      () => exports,
+      () => ({
+        kernel_rootfs_deferred_transfer_size_address: () =>
+          pointerWidth === 8 ? BigInt(DEFERRED_SIZE_ADDRESS) : DEFERRED_SIZE_ADDRESS,
+        ...exports,
+      }),
       (capacity) => {
         const allocator = exports.kernel_alloc_scratch;
         if (typeof allocator !== "function") {
@@ -49,6 +55,8 @@ function kernelHarness(
         }
         return Reflect.apply(allocator, undefined, [capacity]) as number | bigint;
       },
+      4,
+      ["kernel_rootfs_deferred_transfer_size_address"],
     ),
   }) as WasmPosixKernel & Record<string, any>;
   return { kernel, memory };
@@ -225,7 +233,7 @@ describe("host_fetch_deferred provider seam", () => {
     const imports = importsOf(kernel, memory);
 
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(-ENOSYS);
   });
 
@@ -249,7 +257,7 @@ describe("host_fetch_deferred provider seam", () => {
       "https://example.invalid/caf\u00e9.wasm?v=2&x=%20",
     ]) {
       const [p, l] = writeUri(memory, uri);
-      imports.env.host_fetch_deferred(p, l, 4096, 4, 0, 0, 20, 1);
+      imports.env.host_fetch_deferred(p, l, 4096, 4, 0, 0);
     }
 
     expect(seen).toEqual([
@@ -269,10 +277,34 @@ describe("host_fetch_deferred provider seam", () => {
     });
 
     const [p, l] = writeUri(memory, "https://example.invalid/big.bin");
-    imports.env.host_fetch_deferred(p, l, 4096, 4, 9, 0, 20, 1);
-    imports.env.host_fetch_deferred(p, l, 4096, 4, 5, 1, 20, 1);
+    imports.env.host_fetch_deferred(p, l, 4096, 4, 9, 0);
+    imports.env.host_fetch_deferred(p, l, 4096, 4, 5, 1);
 
     expect(seen).toEqual([[9n, 0x1_0000_0014], [0x1_0000_0005n, 0x1_0000_0014]]);
+  });
+
+  it.each([4, 8] as const)("binds the transfer descriptor once and snapshots each bound for width %s", width => {
+    const address = vi.fn(() => width === 8 ? BigInt(DEFERRED_SIZE_ADDRESS) : DEFERRED_SIZE_ADDRESS);
+    const { kernel, memory } = kernelHarness({ kernel_rootfs_deferred_transfer_size_address: address }, width);
+    const imports = importsOf(kernel, memory);
+    const view = new DataView(memory.buffer);
+    const provider = vi.fn((_uri: string, _offset: bigint, _bytes: Uint8Array, _size: number) => 0);
+    kernel.setRootfsDeferredProvider(provider);
+    const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
+    const pointer = (value: number) => width === 8 ? BigInt(value) : value;
+    const fetch = () => imports.env.host_fetch_deferred(pointer(uriPtr), uriLen, pointer(4096), 0, 0, 0);
+
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 0xffff_ffff_ffff_ffffn, true);
+    expect(fetch()).toBe(-EIO);
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 2n ** 53n, true);
+    expect(fetch()).toBe(-75); // EOVERFLOW
+    expect(provider).not.toHaveBeenCalled();
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 0n, true);
+    expect(fetch()).toBe(0);
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 123n, true);
+    expect(fetch()).toBe(0);
+    expect(provider.mock.calls.map(call => call[3])).toEqual([0, 123]);
+    expect(address).toHaveBeenCalledOnce();
   });
 
   it("stages installed provider bytes into the destination exactly once", () => {
@@ -293,7 +325,7 @@ describe("host_fetch_deferred provider seam", () => {
     kernel.setRootfsDeferredProvider(provider);
 
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(2);
     expect(provider).toHaveBeenCalledOnce();
     expect(new Uint8Array(memory.buffer, 4096, 4))
@@ -313,7 +345,7 @@ describe("host_fetch_deferred provider seam", () => {
     kernel.setRootfsDeferredProvider(() => -EPERM);
 
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(-EPERM);
   });
 
@@ -331,7 +363,7 @@ describe("host_fetch_deferred provider seam", () => {
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
     new Uint8Array(memory.buffer, 4096, 8).fill(0xa5);
 
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(-EIO);
     expect(new Uint8Array(memory.buffer, 4096, 8))
       .toEqual(new Uint8Array(8).fill(0xa5));

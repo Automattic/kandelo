@@ -958,6 +958,7 @@ export class WasmPosixKernel {
   #memoryGeneration: object = intrinsicObjectFreeze({});
   readonly #kernelEntryGate = new KernelEntryGate();
   #kernelPtrWidth: 4 | 8 = 4;
+  #deferredTransferSizeAddress: KernelPointer | undefined;
   #testEngine: WasmPosixKernelTestHarnessOptions["engine"] | undefined;
   /**
    * One wrapper owns exactly one kernel Wasm generation.
@@ -1932,6 +1933,7 @@ export class WasmPosixKernel {
       this.#instance = testRuntime.instance ?? null;
       this.#memory = testRuntime.memory ?? null;
       this.#kernelPtrWidth = testRuntime.pointerWidth ?? 4;
+      this.#bindDeferredTransferSize();
       this.#testEngine = testRuntime.engine;
       if (
         testRuntime.initialized
@@ -2492,6 +2494,7 @@ export class WasmPosixKernel {
         rawInstance,
         this.#kernelEntryGate,
       );
+      this.#bindDeferredTransferSize();
       this.#initializationState = "initialized";
       const exports = this.#instance.exports;
       const configureCursor = exports.kernel_kms_cursor_configure;
@@ -2599,6 +2602,7 @@ export class WasmPosixKernel {
     this.#memoryGeneration = intrinsicObjectFreeze({});
     this.#memory = null;
     this.#kernelPtrWidth = 4;
+    this.#deferredTransferSizeAddress = undefined;
     this.#initializationState = "uninitialized";
     throw error;
   }
@@ -2785,8 +2789,6 @@ export class WasmPosixKernel {
           bufLen: number,
           offsetLo: number,
           offsetHi: number,
-          sizeLo: number,
-          sizeHi: number,
         ): number => {
           try {
             return this.#hostFetchDeferred(
@@ -2797,7 +2799,6 @@ export class WasmPosixKernel {
                 bufLen,
                 "host_fetch_deferred destination",
               ),
-              Number(u64FromWords(sizeLo, sizeHi)),
             );
           } catch {
             return -14; // EFAULT
@@ -4895,6 +4896,17 @@ export class WasmPosixKernel {
     return result;
   }
 
+  #bindDeferredTransferSize(): void {
+    const address = this.#instance?.exports.kernel_rootfs_deferred_transfer_size_address;
+    if (typeof address !== "function") return;
+    const pointer = this.toKernelPtr(address());
+    if (pointer === 0 || pointer === 0n) {
+      throw new Error("Kernel returned a null deferred transfer descriptor");
+    }
+    this.#readKernelBytes(pointer, 8);
+    this.#deferredTransferSizeAddress = pointer;
+  }
+
   /**
    * Serve positioned bytes using the URI and resource length recorded in the
    * filesystem. The provider decides whether it can serve that URI and uses
@@ -4906,13 +4918,21 @@ export class WasmPosixKernel {
     uri: string,
     offset: bigint,
     destination: RustLentKernelDestination,
-    size: number,
   ): number {
     const provider = this.#rootfsDeferredProvider;
     if (provider === undefined) {
       return -38; // ENOSYS
     }
-    if (!Number.isSafeInteger(size)) return -75; // EOVERFLOW
+    const sizeAddress = this.#deferredTransferSizeAddress;
+    if (sizeAddress === undefined) return -38; // ENOSYS
+    const sizeBytes = this.#readKernelBytes(sizeAddress, 8);
+    const sizeView = new IntrinsicDataView(typedArrayBuffer(sizeBytes));
+    const low = dataViewGetUint32(sizeView, 0, true);
+    const high = dataViewGetUint32(sizeView, 4, true);
+    // MAX marks the idle descriptor. Snapshot it before entering the provider.
+    if (low === 0xffff_ffff && high === 0xffff_ffff) return -5; // EIO
+    const size = high * 2 ** 32 + low;
+    if (!intrinsicNumberIsSafeInteger(size)) return -75; // EOVERFLOW
     const destinationCapacity = destination.capacity;
     let staged: Uint8Array;
     try {

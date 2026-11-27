@@ -80,6 +80,7 @@ wasm_require_exports "$OUT" \
     kernel_get_fd_path \
     kernel_get_parent_pid \
     kernel_get_process_exec_generation \
+    kernel_get_process_exit_published \
     kernel_get_process_exit_signal \
     kernel_get_process_state \
     kernel_get_socket_timeout_ms \
@@ -126,6 +127,7 @@ wasm_require_exports "$OUT" \
     kernel_reap_exited_child \
     kernel_remove_process \
     kernel_reset_tcp_connection \
+    kernel_rootfs_deferred_transfer_size_address \
     kernel_rootfs_take_compaction_request \
     kernel_set_current_tid \
     kernel_set_cwd \

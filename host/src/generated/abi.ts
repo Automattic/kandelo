@@ -920,6 +920,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_reap_exited_child",
   "kernel_remove_process",
   "kernel_reset_tcp_connection",
+  "kernel_rootfs_deferred_transfer_size_address",
   "kernel_rootfs_take_compaction_request",
   "kernel_set_current_tid",
   "kernel_set_cwd",
