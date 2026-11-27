@@ -6,6 +6,15 @@ Keep port-specific usage, build notes, patches, workarounds, and limits in
 for the boundary between package notes, shared platform guides, and local
 investigation records.
 
+When a port drops or weakens an upstream security protection, document the
+compromise in `packages/registry/<name>/SECURITY.md` in the same change.
+Link it from the package README. Include compromises inherited through bundled
+dependencies when they affect the installed package. Describe the protection
+users lose, which builds or options are affected, why the port needs the
+fallback, and what users can do if they require the protection. Point to the
+recipe or patch and a check that distinguishes the fallback from the protected
+behavior. Update the entry when the tradeoff changes or the protection returns.
+
 Packages are consumers of the platform and distribution units for reproducible
 artifacts. A package build should exercise the SDK, libc, resolver, sysroot,
 VFS image tooling, fork instrumentation, and kernel assumptions through the

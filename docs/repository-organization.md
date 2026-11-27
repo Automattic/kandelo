@@ -59,6 +59,7 @@ Each package is self-contained under `packages/registry/<name>/`:
 ```
 packages/registry/<name>/
   README.md          Port usage, build notes, patches, workarounds, and limits
+  SECURITY.md        Security protections weakened by the port, when applicable
   package.toml       Package metadata consumed by release/build automation
   build*.sh          Package build scripts
   patches/           Package-specific source patches
@@ -66,7 +67,8 @@ packages/registry/<name>/
   test/              Package-owned tests, fixtures, and browser specs
 ```
 
-Keep port-specific documentation beside its package definition in `README.md`.
+Link package security compromises from the README to `SECURITY.md`. Keep other
+port-specific documentation beside the package definition in `README.md`.
 Use `docs/` for shared platform contracts and guides, linking to a package's
 README when an example needs package-specific detail. Keep investigation logs
 and agent handoffs in `.context/` rather than adding a general docs page for
