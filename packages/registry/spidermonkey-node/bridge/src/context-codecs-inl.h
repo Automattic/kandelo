@@ -708,6 +708,7 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
   options.creationOptions().setStringRepeatErrorReporter(ReportNodeStringRepeatError);
   options.creationOptions().setPrivateReadErrorReporter(ReportNodePrivateReadError);
   options.creationOptions().setCaptureCallReceivers(true);
+  options.creationOptions().setNodeNativeFunctionSource(true);
   JS::RootedObject global(frame.cx,JS_NewGlobalObject(frame.cx,
     intercepted?&nativeInterceptedGlobalClass:&nativeNodeGlobalClass,
     nullptr,JS::DontFireOnNewGlobalHook,options));

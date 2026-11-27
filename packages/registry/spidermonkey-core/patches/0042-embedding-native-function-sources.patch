@@ -1,0 +1,114 @@
+# Match native-function source presentation when requested by the Node embedding.
+# Keep SpiderMonkey's source-backed function output and toSource behavior.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -246,6 +246,13 @@
+   bool captureCallReceivers() const { return captureCallReceivers_; }
+   RealmCreationOptions& setCaptureCallReceivers(bool enabled) {
+     captureCallReceivers_ = enabled;
++    return *this;
++  }
++
++  // The Node embedding uses V8's native-function source presentation.
++  bool getNodeNativeFunctionSource() const { return nodeNativeFunctionSource_; }
++  RealmCreationOptions& setNodeNativeFunctionSource(bool enabled) {
++    nodeNativeFunctionSource_ = enabled;
+     return *this;
+   }
+
+@@ -309,6 +316,7 @@
+   uint32_t maxLazyTypedArrayBytes_ = UINT32_MAX;
+   bool captureCallReceivers_ = false;
+   bool toSource_ = false;
++  bool nodeNativeFunctionSource_ = false;
+
+   bool secureContext_ = false;
+   bool freezeBuiltins_ = false;
+--- a/js/src/vm/JSFunction.cpp
++++ b/js/src/vm/JSFunction.cpp
+@@ -45,6 +45,7 @@
+ #include "vm/Interpreter.h"
+ #include "vm/JSAtomUtils.h"  // ToAtom
+ #include "vm/JSContext.h"
++#include "vm/Realm.h"
+ #include "vm/JSObject.h"
+ #include "vm/JSONPrinter.h"  // js::JSONPrinter
+ #include "vm/JSScript.h"
+@@ -936,7 +937,8 @@
+                   : hasGetterOrSetterPrefix(name->twoByteChars(nogc)));
+     };
+
+-    if (!out.append("function")) {
++    bool nodeSource = cx->realm()->creationOptions().getNodeNativeFunctionSource();
++    if (!(nodeSource ? out.append("function ") : out.append("function"))) {
+       return nullptr;
+     }
+
+@@ -949,7 +951,7 @@
+                                      fun->kind() == FunctionFlags::Setter)) ||
+          fun->kind() == FunctionFlags::Wasm ||
+          fun->kind() == FunctionFlags::ClassConstructor)) {
+-      if (!out.append(' ')) {
++      if (!nodeSource && !out.append(' ')) {
+         return nullptr;
+       }
+
+@@ -957,13 +959,14 @@
+       // NormalFunction, Getter, or Setter. Strip any leading "get " or "set "
+       // if present.
+       JSAtom* name = fun->maybePartialExplicitName();
+-      size_t offset = hasGetterOrSetterPrefix(name) ? 4 : 0;
++      size_t offset = !nodeSource && hasGetterOrSetterPrefix(name) ? 4 : 0;
+       if (!out.appendSubstring(name, offset, name->length() - offset)) {
+         return nullptr;
+       }
+     }
+
+-    if (!out.append("() {\n    [native code]\n}")) {
++    if (!(nodeSource ? out.append("() { [native code] }")
++                     : out.append("() {\n    [native code]\n}"))) {
+       return nullptr;
+     }
+   } else {
+--- a/js/src/vm/BoundFunctionObject.cpp
++++ b/js/src/vm/BoundFunctionObject.cpp
+@@ -8,6 +8,7 @@
+
+ #include "util/StringBuilder.h"
+ #include "vm/Interpreter.h"
++#include "vm/Realm.h"
+ #include "vm/Shape.h"
+ #include "vm/Stack.h"
+
+@@ -121,6 +122,12 @@
+     static constexpr std::string_view nativeCodeBound =
+         "function bound() {\n    [native code]\n}";
+     return NewStringCopy<CanGC>(cx, nativeCodeBound);
++  }
++
++  if (cx->realm()->creationOptions().getNodeNativeFunctionSource()) {
++    static constexpr std::string_view nodeNativeCode =
++        "function () { [native code] }";
++    return NewStringCopy<CanGC>(cx, nodeNativeCode);
+   }
+
+   static constexpr std::string_view nativeCode =
+--- a/js/src/proxy/BaseProxyHandler.cpp
++++ b/js/src/proxy/BaseProxyHandler.cpp
+@@ -11,6 +11,7 @@
+ #include "proxy/DeadObjectProxy.h"
+ #include "vm/Interpreter.h"
+ #include "vm/ProxyObject.h"
++#include "vm/Realm.h"
+ #include "vm/WrapperObject.h"
+
+ #include "vm/JSContext-inl.h"
+@@ -311,5 +312,8 @@
+ JSString* BaseProxyHandler::fun_toString(JSContext* cx, HandleObject proxy,
+                                          bool isToSource) const {
+   if (proxy->isCallable()) {
++    if (!isToSource && cx->realm()->creationOptions().getNodeNativeFunctionSource()) {
++      return JS_NewStringCopyZ(cx, "function () { [native code] }");
++    }
+     return JS_NewStringCopyZ(cx, "function () {\n    [native code]\n}");
+   }

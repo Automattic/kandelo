@@ -1,0 +1,15 @@
+{
+  "id": "native-function-source",
+  "fixtures": [],
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-native-function-source",
+      "file": "test/parallel/test-kandelo-native-function-source.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": ["node:test", "node:vm", "node:worker_threads"],
+      "owners": ["maintained SpiderMonkey engine bridge"],
+      "contract": "Compare native functions, built-in accessors, bound functions, callable proxies, and authored source in main, VM, and worker realms"
+    }
+  ]
+}
