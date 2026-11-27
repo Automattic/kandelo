@@ -39,7 +39,10 @@ nonzero entry and its index. It has no allocation, writes, scratch memory,
 platform callbacks or lifecycle state. The main kernel retains the existing
 locks and validates every returned entry before publication or reclamation;
 this is not a coherent snapshot of concurrently changing tables. TypeScript
-retains the instance's callable function with the exact backing resource.
+retains the instance's callable function with the exact backing resource. Fork uses
+the same scanner under the parent pause and growth lock. It checks the full
+table, including holes beyond the live extent, before allocating child frames.
+[Grouped fork measurement](measurements/2026-11-26-grouped-fork-scan.md)
 `xtask dump-abi` generates/checks the embedded scanner, including a read-only
 instruction check. This kernel-host interface requires adapter 40 and leaves
 program ABI 56 unchanged.
