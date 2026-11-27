@@ -328,6 +328,13 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [],
     mode: 0o644,
   },
+  {
+    id: "sway-status-clock",
+    dependency: "sway",
+    resolverPath: "programs/sway/sway-status-clock.wasm",
+    vfsPath: "/usr/bin/sway-status-clock",
+    symlinks: [],
+  },
   // swaybg draws the wallpaper sway's config names; sway execs it by name.
   { id: "swaybg", resolverPath: "programs/swaybg/swaybg.wasm", vfsPath: "/usr/bin/swaybg", symlinks: [] },
   // Shared desktop panel, its real loadable app menu, configuration and

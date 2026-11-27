@@ -204,6 +204,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     let buttons = 0;
     let lastPointerType = "";
     let activePointerId: number | null = null;
+    let earlyHover: { id: number; at: number; x: number; y: number } | null = null;
     const sink: MouseEventSink = {
       injectMouseEvent: (dx, dy, bts) => {
         handleRef.current?.sendMouseEvent(dx, dy, bts);
@@ -272,7 +273,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     };
     const updatePointer = (e: PointerEvent, phase: "down" | "move" | "up", allowPresses: boolean) => {
       const c = toCanvasCoords(e.clientX, e.clientY);
-      if (!c) return;
+      if (!c) return false;
       const next = pointerButtons(buttons, e, phase, allowPresses);
       // Deliver the new position before the button edge in both feeds.
       handlePointerAt(c.x, c.y);
@@ -282,6 +283,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       }
       if (e.buttons === 0) activePointerId = null;
       sendAbs(c.x, c.y);
+      return true;
     };
     const onPointerEnter = (e: PointerEvent) => {
       if (locked()) return;
@@ -289,10 +291,28 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       if (e.pointerType === "touch") return;
       updatePointer(e, "move", false);
     };
+    // Send the first unpressed mouse position before the next browser frame.
+    // Keep the regular move for the final coalesced position and limit the
+    // early path to one delivery per move, even at high hardware report rates.
+    const onPointerRawUpdate = (event: Event) => {
+      if (!(event instanceof PointerEvent)) return;
+      const e = event;
+      if (earlyHover || !e.isTrusted || e.pointerType !== "mouse" || e.buttons !== 0
+          || buttons !== 0 || activePointerId !== null || locked()) return;
+      if (updatePointer(e, "move", false)) {
+        earlyHover = { id: e.pointerId, at: e.timeStamp, x: e.clientX, y: e.clientY };
+      }
+    };
+    const clearEarlyHover = () => { earlyHover = null; };
     const onPointerMove = (e: PointerEvent) => {
+      const early = earlyHover;
+      clearEarlyHover();
       if (locked()) return;
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
       if (e.pointerType === "touch" && e.pointerId !== activePointerId) return;
+      if (early?.id === e.pointerId && e.isTrusted && e.buttons === 0 && buttons === 0
+          && activePointerId === null
+          && (e.timeStamp < early.at || (e.clientX === early.x && e.clientY === early.y))) return;
       updatePointer(e, "move", e.pointerId === activePointerId);
     };
     const onPointerDown = (e: PointerEvent) => {
@@ -300,6 +320,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       // One pointer owns a gesture. Another finger, pen, or hovering mouse
       // must not overwrite its position or clear its button snapshot.
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      clearEarlyHover();
       activePointerId = e.pointerId;
       lastPointerType = e.pointerType;
       e.preventDefault();
@@ -320,6 +341,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       activePointerId = null;
     };
     const releasePointer = () => {
+      clearEarlyHover();
       activePointerId = null;
       if (buttons === 0) return;
       buttons = 0;
@@ -408,6 +430,8 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     const onContextMenu = (e: Event) => e.preventDefault();
     canvas.addEventListener("pointerenter", onPointerEnter);
     canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerrawupdate", onPointerRawUpdate);
+    canvas.addEventListener("pointerleave", clearEarlyHover);
     canvas.addEventListener("pointerdown", onPointerDown);
     // Pointer capture routes up/cancel to the canvas even when the
     // pointer is released outside it, so button state clears without a
@@ -433,6 +457,8 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       setPointerLocked(false);
       canvas.removeEventListener("pointerenter", onPointerEnter);
       canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerrawupdate", onPointerRawUpdate);
+      canvas.removeEventListener("pointerleave", clearEarlyHover);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);

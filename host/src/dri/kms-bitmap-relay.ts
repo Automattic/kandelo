@@ -1,15 +1,19 @@
-/** Bounded device-only transport. No guest memory enters this relay. A single
- * capture or published bundle remains owned until its exact acknowledgement.
+import type { KmsCursorUpdate } from "./cursor-plane.js";
+
+/** Bounded device-only transport. No guest memory enters this relay. One
+ * primary bundle and one unchanged cursor image's motion may be in flight.
  * Retirement waits for native capture settlement and an ordered display fence. */
 export class KmsBitmapRelay {
   private retiring = false;
   private ready = false;
   private closed = false;
-  private active = 0;
-  private next = 0;
+  private active: number | 'capturing' = 0;
+  private captureHasCursor = false;
+  private pendingMove = 0;
   private published = 0;
-  private versions = [0, 0];
-  private sentVersions = [0, 0];
+  private version = 0;
+  private sentVersion = 0;
+  private sentCursor: KmsCursorUpdate | undefined;
   private captureInFlight: Promise<void> | undefined;
   private retirement: Promise<void> | undefined;
   private resolveRetirement: (() => void) | undefined;
@@ -20,20 +24,23 @@ export class KmsBitmapRelay {
   private failure: Error | undefined;
 
   constructor(private readonly port: MessagePort, private readonly fail: (error: Error) => void,
+    readonly hasCursor: boolean,
     private readonly captureImage: (source: OffscreenCanvas) => ImageBitmap | Promise<ImageBitmap>
       = source => createImageBitmap(source),
     private readonly retirementTimeoutMs = 3000) {
     port.onmessage = event => {
       if (this.closed) return;
       const value = event.data;
+      const active = this.active === 'capturing' ? 0 : this.active;
+      const nextAck = active && this.pendingMove ? Math.min(active, this.pendingMove) : active || this.pendingMove;
       if (value?.type === 'ready' && !this.ready) {
         this.ready = true;
         clearTimeout(this.initializationTimer);
-      } else if (value?.type === 'ack' && this.active !== 0 && value.sequence === this.active
-          && value.sequence === this.published) {
-        this.active = 0;
+      } else if (value?.type === 'ack' && nextAck !== 0 && value.sequence === nextAck) {
+        if (nextAck === active) this.active = 0;
+        else this.pendingMove = 0;
       } else if (value?.type === 'retired' && this.retiring && this.retireSent
-          && value.sequence === this.published && this.active === 0) {
+          && value.sequence === this.published && this.active === 0 && this.pendingMove === 0) {
         this.finish();
       } else {
         this.stop(new Error('Invalid KMS bitmap presentation acknowledgement'));
@@ -45,49 +52,85 @@ export class KmsBitmapRelay {
     }, this.retirementTimeoutMs);
     port.start();
   }
-  changed(plane: 0 | 1): void { if (!this.retiring) this.versions[plane]++; }
-  present(canvas: OffscreenCanvas, cursor?: OffscreenCanvas): void {
+  changed(): void { if (!this.retiring) this.version++; }
+
+  present(canvas: OffscreenCanvas, cursor?: KmsCursorUpdate): void {
     // [RUNTIME-WORKAROUND: FIREFOX-BITMAP-PORT-STARTUP] Suspected native
     // deserialization failure when images precede receiver initialization.
     // Keep dirty versions until the disposable display owns its contexts.
-    if (!this.ready || this.retiring || this.active) return;
-    const planes = (cursor ? [0, 1] : [0]).filter(plane => this.versions[plane] !== this.sentVersions[plane]);
-    if (!planes.length) return;
-    const versions = planes.map(plane => this.versions[plane]);
-    const sources = planes.map(plane => plane === 0 ? canvas : cursor!);
-    if (sources.some(source => !Number.isInteger(source.width) || source.width < 1 || source.width > 3840
-        || !Number.isInteger(source.height) || source.height < 1 || source.height > 2160)) {
+    if (!this.ready || this.retiring) return;
+    const primaryChanged = this.version !== this.sentVersion;
+    const last = this.sentCursor;
+    let cursorChanged = this.hasCursor && cursor && (!last || cursor.cursor.version !== last.cursor.version
+      || cursor.width !== last.width || cursor.height !== last.height
+      || cursor.composited !== last.composited);
+    // Both transfers share the ordered port. A move can use the image that
+    // was already sent, provided no capture owns an unsent cursor transition.
+    if (cursorChanged && cursor && last && (this.active !== 'capturing' || !this.captureHasCursor)
+        && !last.composited && !cursor.composited && last.width === cursor.width && last.height === cursor.height
+        && cursor.width === canvas.width && cursor.height === canvas.height
+        && last.cursor.pixels !== null && last.cursor.pixels === cursor.cursor.pixels
+        && last.cursor.width === cursor.cursor.width && last.cursor.height === cursor.cursor.height
+        && (last.cursor.x !== cursor.cursor.x || last.cursor.y !== cursor.cursor.y)) {
+      if (this.pendingMove === 0) {
+        const { version, x, y } = cursor.cursor;
+        const sequence = this.published + 1;
+        try {
+          this.port.postMessage({ type: 'frame', sequence, position: { version, x, y } });
+          this.published = this.pendingMove = sequence;
+          this.sentCursor = cursor;
+        } catch (error) {
+          this.stop(new Error('KMS cursor position transfer failed', { cause: error }));
+          return;
+        }
+      }
+      cursorChanged = false;
+    }
+    if (this.active || (!primaryChanged && !cursorChanged)) return;
+    if (primaryChanged && (!Number.isInteger(canvas.width) || canvas.width < 1 || canvas.width > 3840
+        || !Number.isInteger(canvas.height) || canvas.height < 1 || canvas.height > 2160)) {
       this.stop(new Error('KMS bitmap presentation exceeds its device extent'));
       return;
     }
-    this.active = ++this.next;
-    this.captureInFlight = this.capture(sources, planes, versions, this.active);
+    this.captureHasCursor = Boolean(cursorChanged);
+    this.active = 'capturing';
+    this.captureInFlight = this.publish(primaryChanged ? canvas : undefined,
+      cursorChanged ? cursor : undefined, this.version);
   }
-  private async capture(sources: OffscreenCanvas[], planes: number[], versions: number[], sequence: number): Promise<void> {
-    // Snapshot the producer's retained canvas. Consuming it would invalidate
-    // renderer caches and partial redraws that still own its previous pixels.
-    // allSettled also releases a successful sibling after another capture fails.
-    const results = await Promise.allSettled(sources.map(source => {
-      try { return this.captureImage(source); } catch (error) { return Promise.reject(error); }
-    }));
-    const frames: ImageBitmap[] = [];
-    let failure: unknown;
-    let failed = false;
-    for (const result of results) {
-      if (result.status === 'fulfilled') frames.push(result.value); else { failed = true; failure = result.reason; }
-    }
-    if (this.retiring || failed) {
-      for (const frame of frames) frame.close();
+
+  private async publish(canvas: OffscreenCanvas | undefined, update: KmsCursorUpdate | undefined,
+    version: number): Promise<void> {
+    let frame: ImageBitmap | undefined;
+    try {
+      // Snapshot the primary's retained canvas. Consuming it would invalidate
+      // renderer caches and partial redraws that still own its previous pixels.
+      if (canvas) frame = await this.captureImage(canvas);
+    } catch (error) {
       this.active = 0;
-      if (failed && !this.retiring) this.stop(new Error('KMS bitmap capture failed', { cause: failure }));
+      if (!this.retiring) this.stop(new Error('KMS bitmap capture failed', { cause: error }));
+      return;
+    }
+    if (this.retiring) {
+      frame?.close();
+      this.active = 0;
       return;
     }
     try {
-      this.port.postMessage({ type: 'frame', sequence, planes, frames }, frames);
-      this.published = sequence;
-      for (let i = 0; i < planes.length; i++) this.sentVersions[planes[i]] = versions[i];
+      let cursor: KmsCursorUpdate | undefined;
+      if (update) {
+        const { version, x, y, width, height, pixels } = update.cursor;
+        // Clone only the small cursor image. Its premultiplied form is local
+        // to the producer's gamma stage. No guest backing leaves that realm.
+        cursor = { width: update.width, height: update.height, composited: update.composited,
+          cursor: { version, x, y, width, height, pixels: update.composited ? null : pixels } };
+      }
+      const sequence = this.published + 1;
+      this.port.postMessage({ type: 'frame', sequence, frame, cursor }, frame ? [frame] : []);
+      this.published = this.active = sequence;
+      if (frame) this.sentVersion = version;
+      if (update) this.sentCursor = update;
     } catch (error) {
-      for (const frame of frames) frame.close();
+      frame?.close();
       this.active = 0;
       this.stop(new Error('KMS bitmap transfer failed', { cause: error }));
     }
@@ -109,6 +152,7 @@ export class KmsBitmapRelay {
     this.port.onmessage = null;
     this.port.onmessageerror = null;
     this.port.close();
+    this.sentCursor = undefined;
     if (this.failure) this.rejectRetirement?.(this.failure);
     else this.resolveRetirement?.();
     this.resolveRetirement = undefined;

@@ -197,7 +197,7 @@ async function workspaceButton(out: Output) {
     height: button.height * height / pixels.height };
 }
 
-async function nativeBarProcess(page: Page) {
+async function nativeBarClockPid(page: Page): Promise<number> {
   await releasePointer(page);
   await openSurface(page, "Internals");
   await page.getByRole("tab", { name: "Procs", exact: true }).click();
@@ -205,8 +205,14 @@ async function nativeBarProcess(page: Page) {
   await expect(commands.filter({ hasText: /^(?:\/\S*\/)?swaybar(?:\s|$)/ }))
     .toHaveCount(1, { timeout: 120_000 });
   await expect(commands.filter({ hasText: /^(?:\/\S*\/)?sfwbar(?:\s|$)/ })).toHaveCount(0);
+  const clock = commands.filter({ hasText: /^(?:\/\S*\/)?sway-status-clock(?:\s|$)/ });
+  await expect(clock).toHaveCount(1, { timeout: 120_000 });
+  const pidCell = clock.locator("..").locator("td:first-child");
+  const pid = Number((await pidCell.innerText()).match(/\d+/)?.[0]);
+  expect(pid).toBeGreaterThan(0);
   await openSurface(page, "Graphics");
   await canvasLocator(page).focus();
+  return pid;
 }
 
 /** Inspector clicks must not become relative captured guest pointer input. */
@@ -387,8 +393,9 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   let out = await output(page);
 
   // Gate 2.
+  const clockPid = await nativeBarClockPid(page);
   await expectClockTicks(page, out);
-  await nativeBarProcess(page);
+  expect(await nativeBarClockPid(page)).toBe(clockPid);
 
   // Gate 3. foot is lazy and large, so its first frame can take a while.
   await expect
@@ -460,6 +467,17 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await page.keyboard.press("Alt+Enter");
   await expect.poll(tiled, { timeout: 180_000, intervals: [2_000] }).toBe(true);
 
+  // Trusted mouse motion moves focus in both directions. Read each tile's
+  // title band so a repaint of the old focus cannot pass this check.
+  const box = (await canvas.boundingBox())!;
+  for (const tile of [0, 1]) {
+    await page.mouse.move(box.x + box.width * (tile ? 0.75 : 0.25), box.y + box.height / 3);
+    await expect.poll(async () => {
+      const band = await outputShot(out, tile * out.width / 2 + 10, 5, 2, 2);
+      return isBlue(await meanColor(page, band));
+    }).toBe(true);
+  }
+
   // Gate 6: real swaynag action, owner release, terminal return and exit0.
   await exitSway(page, out, "sway-exit");
 
@@ -480,8 +498,9 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
   await expect
     .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
     .toBe(true);
+  const pixmanClockPid = await nativeBarClockPid(page);
   await expectClockTicks(page, out);
-  await nativeBarProcess(page);
+  expect(await nativeBarClockPid(page)).toBe(pixmanClockPid);
   // This second foreground compositor must retire too; context closure is
   // not a substitute for its real exit or the display's authority release.
   await exitSway(page, out, "sway-pixman-exit");
@@ -498,7 +517,7 @@ test("Kandelo sway tiles foot terminals above its native workspace bar with wlro
     // The process owner briefly renders Loading; only an initialized
     // snapshot can prove every graphical process actually retired.
     return { initialized: rows.some(row => row.pid === 1),
-      graphical: rows.filter(row => /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/.test(row.command)).length };
+      graphical: rows.filter(row => /^(?:\/\S*\/)?(?:sway|swaybar|sway-status-clock|swaynag|swaybg|foot)(?:\s|$)/.test(row.command)).length };
   }, { timeout: 90_000 }).toEqual({ initialized: true, graphical: 0 });
   expect(await displayOwner(page)).toBe(0);
   expect(startupErrors).toEqual([]);
@@ -532,8 +551,9 @@ test("Sway gallery launch preserves the shell, tiles another Foot and exits clea
   await expect.poll(() => displayOwner(page), { timeout: 120_000 }).toBeGreaterThan(0);
   const compositorOwner = await displayOwner(page);
   const out = await output(page);
+  const clockPid = await nativeBarClockPid(page);
   await expectClockTicks(page, out);
-  await nativeBarProcess(page);
+  expect(await nativeBarClockPid(page)).toBe(clockPid);
   await expect.poll(async () => isFoot(await meanColor(page, await middle(out))),
     { timeout: 180_000, intervals: [2_000] }).toBe(true);
 
@@ -582,7 +602,7 @@ test("Sway gallery launch preserves the shell, tiles another Foot and exits clea
   await openSurface(page, "Internals");
   await page.getByRole("tab", { name: "Procs", exact: true }).click();
   await expect(page.locator(".ktable tbody tr > td:last-child").filter({
-    hasText: /^(?:\/\S*\/)?(?:sway|swaybar|swaynag|swaybg|foot)(?:\s|$)/,
+    hasText: /^(?:\/\S*\/)?(?:sway|swaybar|sway-status-clock|swaynag|swaybg|foot)(?:\s|$)/,
   })).toHaveCount(0, { timeout: 90_000 });
   expect(await displayOwner(page)).toBe(0);
   await page.getByRole("button", { name: "Library", exact: true }).click();

@@ -52,6 +52,7 @@ function fortranSmokeProbe(): string {
 /** A program each package installs, to prove it runs from the image. */
 const PROBES: Record<string, string> = {
   tmux: "tmux -V",
+  sway: "sway-status-clock | head -n 2",
   less: "less --version | head -n 1",
   fbdoom: "test -x /usr/bin/fbdoom && test -x /usr/bin/doom-launch && echo fbdoom-wrapper-ok",
   cargo: "cargo --version",
@@ -190,6 +191,9 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       expect(stdout).toContain('producer-shared-path');
       expect((await host.getMemoryGroupUsage())?.admission.tasks).toBe(0);
       if (manifest!.packages.includes("tmux")) expect(stdout).toMatch(/tmux \d/);
+      if (manifest!.packages.includes("sway")) {
+        expect(stdout.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/gm)).toHaveLength(2);
+      }
       if (manifest!.packages.includes("less")) expect(stdout).toMatch(/less \d+/);
       if (manifest!.packages.includes("fbdoom")) expect(stdout).toContain("fbdoom-wrapper-ok");
       if (manifest!.packages.includes("toybox")) {

@@ -1560,8 +1560,8 @@ export class BrowserKernel {
   private kmsBitmapWorkers = new Map<number, ReturnType<typeof startKmsBitmapDisplay>>();
 
   /** Opt-in browser presentation relay. Both attached canvases move into a
-   * disposable display Worker. The kernel renders into independent detached
-   * canvases and sends bounded device ImageBitmaps directly to that realm. */
+   * disposable display Worker. The kernel renders into an independent detached
+   * canvas and sends bounded device frames directly to that realm. */
   kmsAttachBitmapRelay(crtcId: number, canvas: OffscreenCanvas, stats?: SharedArrayBuffer,
     opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas }): void {
     if (!this.initialized || this.shuttingDown) throw new Error('Kernel is unavailable');
@@ -1571,11 +1571,11 @@ export class BrowserKernel {
       throw new Error('KMS bitmap display exceeds its device extent');
     }
     const display = new Worker(bitmapDisplayWorkerUrl, { type: 'module' });
-    const sources = canvases.map(c => new OffscreenCanvas(c.width, c.height));
+    const source = new OffscreenCanvas(canvas.width, canvas.height);
     const ownedDisplay = startKmsBitmapDisplay(display, canvases,
       () => this.initialized && !this.shuttingDown,
-      port => this.sendToKernel({type: 'kms_attach_canvas', crtcId, canvas: sources[0], stats,
-        opts: {mode: opts?.mode, cursorCanvas: sources[1], bitmapPort: port}}, [...sources, port]),
+      port => this.sendToKernel({type: 'kms_attach_canvas', crtcId, canvas: source, stats,
+        opts: {mode: opts?.mode, bitmapCursor: !!opts?.cursorCanvas, bitmapPort: port}}, [source, port]),
       error => this.options.onHostDiagnostic?.({pid: 0,
         source: 'kms-bitmap-display', message: error.message}));
     this.kmsBitmapWorkers.set(crtcId, ownedDisplay);
