@@ -1,0 +1,32 @@
+# Kandelo patch rationale (O37)
+#
+# The temporary Undici factory calls an actual native parser binding. Add
+# it to Node's normal build and builtin registration rather than secretly
+# dispatch through a replacement loader. The OS and a bridge-only
+# declaration cannot register an omitted native source. Retire this
+# companion together with the native factory when the original guest-Wasm
+# parser is qualified.
+#
+# Judgment: Supported. The explicit native parser factory needs a real
+# binding in the normal Node source and registration lists.
+#
+--- a/src/node_binding.cc
++++ b/src/node_binding.cc
+@@ -53,6 +53,7 @@
+ // land even from internal/test/binding module under --expose-internals.
+ #define NODE_BUILTIN_STANDARD_BINDINGS(V)                                      \
+   V(amaro)                                                                    \
++  V(undici_llhttp)                                                           \
+   V(async_context_frame)                                                       \
+   V(async_wrap)                                                                \
+   V(blob)                                                                      \
+--- a/node.gyp
++++ b/node.gyp
+@@ -118,6 +118,7 @@
+       'src/module_wrap.cc',
+       'src/node.cc',
+       'src/node_amaro.cc',
++      'src/node_undici_llhttp.cc',
+       'src/node_api.cc',
+       'src/node_binding.cc',
+       'src/node_blob.cc',

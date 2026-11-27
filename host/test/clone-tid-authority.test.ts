@@ -1,3 +1,5 @@
+import { groupMemoryLayout } from './support/group-memory-layout';
+import { processDataView, type ProcessMemorySource } from "../src/process-memory-views";
 import { describe, expect, it, vi } from "vitest";
 import { Worker } from "node:worker_threads";
 import { once } from "node:events";
@@ -33,13 +35,14 @@ interface TestChannel {
   readonly pid: number;
   readonly channelOffset: number;
   readonly memory: WebAssembly.Memory;
+  source: ProcessMemorySource;
   i32View: Int32Array;
   consecutiveSyscalls: number;
   handling?: boolean;
 }
 
 function writeCloneRequest(channel: TestChannel, args: readonly number[]): void {
-  const view = new DataView(channel.memory.buffer, channel.channelOffset);
+  const view = processDataView(channel.source, channel.channelOffset);
   view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
   view.setUint32(CH_DATA, 11, true);
   view.setUint32(CH_DATA + 4, 22, true);
@@ -54,7 +57,7 @@ function readCloneCompletion(channel: TestChannel): {
   readonly retVal: number;
   readonly errno: number;
 } {
-  const view = new DataView(channel.memory.buffer, channel.channelOffset);
+  const view = processDataView(channel.source, channel.channelOffset);
   return {
     status: view.getUint32(CH_STATUS, true),
     retVal: Number(view.getBigInt64(CH_RETURN, true)),
@@ -75,6 +78,7 @@ function makeCloneHarness(
     shared: true,
   });
   const channel: TestChannel = {
+    source: memory,
     pid: PID,
     channelOffset: CHANNEL_OFFSET,
     memory,
@@ -123,7 +127,7 @@ function makeCloneHarness(
       pid: PID,
       execGeneration: 0n,
       channels: [channel],
-      memory,
+      memory, source: memory,
       ptrWidth: pointerWidth,
       explicitMaxAddr: true,
     }]]),
@@ -178,6 +182,7 @@ function makeChannelOwnershipHarness() {
   });
   const mainChannelOffset = WASM_PAGE_SIZE;
   const mainChannel: TestChannel = {
+    source: memory,
     pid: PID,
     channelOffset: mainChannelOffset,
     memory,
@@ -215,7 +220,7 @@ function makeChannelOwnershipHarness() {
       [PID, {
         pid: PID,
         execGeneration: 0n,
-        memory,
+        memory, source: memory,
         channels: [mainChannel],
         explicitMaxAddr: true,
       }],
@@ -507,8 +512,8 @@ describe("thread channel ownership", () => {
     // A refused attempt consumes its exact attachment; it cannot later be
     // redirected after the apparent generation mismatch is removed.
     h.setGeneration(0n);
-    expectIngressFailureCause(() => h.worker.attachThreadChannel(attachment, firstThreadOffset),
-      "Unknown, expired, or already consumed thread attachment");
+    expect(() => h.worker.attachThreadChannel(attachment, firstThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
   });
 
   it("rejects a duplicate channel offset instead of remapping its TID", async () => {
@@ -534,7 +539,7 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
       .toBe(KERNEL_TID);
     expect((worker as any).threadForkContexts.get(`${PID}:${firstThreadOffset}`))
-      .toEqual({ fnPtr: 11, argPtr: 22 });
+      .toEqual({ fnPtr: 11, argPtr: 22, slot: { address: 0, byteLength: 4 * WASM_PAGE_SIZE } });
   });
 
   it("rejects assigning one kernel TID to a second channel", async () => {
@@ -605,15 +610,15 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${secondThreadOffset}`))
       .toBe(siblingTid);
     expect((worker as any).threadForkContexts.get(`${PID}:${secondThreadOffset}`))
-      .toEqual({ fnPtr: 33, argPtr: 44 });
+      .toEqual({ fnPtr: 33, argPtr: 44, slot: { address: WASM_PAGE_SIZE, byteLength: 4 * WASM_PAGE_SIZE } });
     expect((worker as any).addChannel).toBeUndefined();
 
-    // A failed public ingress poisons this deliberately conservative test
-    // generation, so make the one-shot replay assertion the final operation.
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(first, thirdThreadOffset),
-      "Unknown, expired, or already consumed thread attachment",
-    );
+    // Native identity refusal happens before kernel ingress and cannot poison
+    // a generation that still owns valid sibling channels.
+    expect(() => worker.attachThreadChannel(first, thirdThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
+    expect((worker as any).activeChannels).toHaveLength(3);
+    expect((worker as any).channelTids.size).toBe(2);
   });
 
   it("rejects a copied attachment with substituted identity", async () => {
@@ -624,12 +629,12 @@ describe("thread channel ownership", () => {
       tid: KERNEL_TID + 1,
     }) as typeof attachment;
 
-    expectIngressFailureCause(
-      () => worker.attachThreadChannel(forged, firstThreadOffset),
-      "Unknown, expired, or already consumed thread attachment",
-    );
-    expect((worker as any).channelTids.size).toBe(0);
-    expect((worker as any).threadForkContexts.size).toBe(0);
+    expect(() => worker.attachThreadChannel(forged, firstThreadOffset))
+      .toThrow("Unknown, expired, or already consumed thread attachment");
+    // Refusing a copied native identity does not consume the authentic proof.
+    worker.attachThreadChannel(attachment, firstThreadOffset);
+    expect((worker as any).channelTids.size).toBe(1);
+    expect((worker as any).threadForkContexts.size).toBe(1);
   });
 
   it("releases channel ownership on removal so a later clone can reuse the slot", async () => {
@@ -655,10 +660,49 @@ describe("thread channel ownership", () => {
     expect((worker as any).channelTids.get(`${PID}:${firstThreadOffset}`))
       .toBe(replacementTid);
     expect((worker as any).threadForkContexts.get(`${PID}:${firstThreadOffset}`))
-      .toEqual({ fnPtr: 33, argPtr: 44 });
+      .toEqual({ fnPtr: 33, argPtr: 44, slot: { address: 0, byteLength: 4 * WASM_PAGE_SIZE } });
   });
 });
 
+
+describe("clone transport with virtual images", () => {
+  function group(h: ReturnType<typeof makeCloneHarness>) {
+    const callbacks = (h.worker as any).callbacks;
+    callbacks.onGroupedClone = callbacks.onClone;
+    callbacks.onClone = vi.fn(() => { throw Error('Grouped clone reached the ordinary backend'); });
+    const task = { group: 7, pid: PID, tid: PID, serial: 1n, generation: 0n };
+    const fixture = groupMemoryLayout({ receipt: task, initialPages: 8 });
+    const { launch, source, handle: owner } = fixture;
+    const ptes = new Uint32Array(launch.envelope.memory.buffer, launch.expectation.root + 64, 16);
+    [ptes[1], ptes[6]] = [ptes[6], ptes[1]];
+    [ptes[2], ptes[5]] = [ptes[5], ptes[2]];
+    Object.assign(h.channel, { memory: launch.envelope.memory, source });
+    Object.assign((h.worker as any).processes.get(PID), { memory: launch.envelope.memory, source });
+    return { fixture, owner, source, memory: launch.envelope.memory };
+  }
+  const parentTidPointer = 4 * WASM_PAGE_SIZE + 256;
+  const args = () => [CLONE_ARGS[0] | 0x00100000, CLONE_ARGS[1], parentTidPointer, CLONE_ARGS[3], CLONE_ARGS[4], 0];
+
+  it.each([false, true])('refuses a raw virtual transport without an actual kernel group owner (callback=%s)', callback => {
+    const h = makeCloneHarness(async () => {}), { fixture, source } = group(h);
+    const grouped = vi.fn(async () => {});
+    (h.worker as any).callbacks.onGroupedClone = callback ? grouped : undefined;
+    processDataView(source).setInt32(parentTidPointer, 77, true);
+    try {
+      let failure: unknown;
+      try { h.dispatch(args()); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({
+        message: 'void kernel ingress syscall channel pid=47 failed',
+        cause: { message: 'Grouped channel lost its exact platform binding' },
+      });
+      expect(h.kernelHandleChannel).not.toHaveBeenCalled();
+      expect(grouped).not.toHaveBeenCalled();
+      expect((h.worker as any).callbacks.onClone).not.toHaveBeenCalled();
+      expect(processDataView(source).getInt32(parentTidPointer, true)).toBe(77);
+    } finally { fixture.close(); }
+  });
+
+});
 
 describe("clone teardown ownership", () => {
   const parentTidPointer = 0x6000;
@@ -725,7 +769,8 @@ describe("clone teardown ownership", () => {
       expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
       expect((h.worker as any).threadForkContexts.size).toBe(0);
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("real Worker construction failed"));
-      expectIngressFailureCause(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE), "Unknown, expired, or already consumed thread attachment");
+      expect(() => h.worker.attachThreadChannel(attachment, 3 * WASM_PAGE_SIZE))
+        .toThrow("Unknown, expired, or already consumed thread attachment");
     } finally { consoleError.mockRestore(); }
   });
 
@@ -889,12 +934,12 @@ describe("clone teardown ownership", () => {
       h.dispatch(cloneArgs()); await started.promise;
       const w = h.worker as any;
       const memory = new WebAssembly.Memory({initial: 16, maximum: 16, shared: true});
-      const replacement = {...h.channel, memory, i32View: new Int32Array(memory.buffer, h.channel.channelOffset)};
+      const replacement = {...h.channel, memory, source: memory, i32View: new Int32Array(memory.buffer, h.channel.channelOffset)};
       writeCloneRequest(replacement, cloneArgs());
       const view = new DataView(memory.buffer, replacement.channelOffset);
       view.setBigInt64(CH_RETURN, 987n, true); view.setUint32(CH_ERRNO, 77, true);
       new DataView(memory.buffer).setInt32(parentTidPointer, KERNEL_TID + 1, true);
-      const registration = {pid: PID, memory, channels: [replacement], ptrWidth: width, explicitMaxAddr: true};
+      const registration = {pid: PID, memory, source: memory, channels: [replacement], ptrWidth: width, explicitMaxAddr: true};
       w.processes.set(PID, registration); w.activeChannels = [replacement]; h.setGeneration(1n);
       launch.reject(new Error("old image launch failed"));
       await vi.waitFor(() => expect(h.notifyThreadExit).toHaveBeenCalledOnce());
@@ -952,7 +997,7 @@ describe("clone teardown ownership", () => {
     try {
       h.dispatch(cloneArgs());
       await vi.waitFor(() => expect(h.onExit).toHaveBeenCalledOnce());
-      expect(h.markProcessSignaled).toHaveBeenCalledExactlyOnceWith(PID, 11);
+      expect(h.markProcessSignaled).toHaveBeenCalledExactlyOnceWith(PID, 11, 0);
       expect(h.onExit).toHaveBeenCalledExactlyOnceWith(PID, 139);
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("FATAL could not roll back allocated tid"));
       // The dead caller is woken only with EINTR and the private SIGKILL

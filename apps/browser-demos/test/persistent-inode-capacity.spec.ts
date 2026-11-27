@@ -15,8 +15,8 @@ import type { OpfsImageIntegrity } from "../../../host/src/vfs/image-integrity";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const kernelPath = tryResolveBinary("kernel.wasm");
-const bashPath = tryResolveBinary("programs/wasm32/bash.wasm");
-const coreutilsPath = tryResolveBinary("programs/wasm32/coreutils.wasm");
+const bashPath = tryResolveBinary("programs/wasm32/bash/bash.wasm");
+const coreutilsPath = tryResolveBinary("programs/wasm32/coreutils/coreutils.wasm");
 const mappingPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 const script = readFileSync(join(repoRoot, "host/test/fixtures/persistent-inode-capacity.sh"), "utf8");
 

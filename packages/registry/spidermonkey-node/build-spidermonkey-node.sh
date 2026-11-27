@@ -1,65 +1,39 @@
 #!/usr/bin/env bash
-# Stage the SpiderMonkey shell's Node-compatible entry point as an explicit
-# Kandelo program package.
-
+# One package owns the engine adapter and the complete standard Node executable.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+: "${WASM_POSIX_DEP_WORK_DIR:?build through the normal resolver}"
+: "${WASM_POSIX_DEP_OUT_DIR:?build through the normal resolver}"
+if [ "${WASM_POSIX_DEP_NAME:?}" != spidermonkey-node ] || \
+   [ "${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}" != wasm32 ]; then
+    echo 'ERROR: unexpected Node package/architecture' >&2; exit 2
+fi
+if [ "$#" -gt 0 ]; then
+    # The unshipped native companion replaces main without changing Node flags.
+    [ "$#" = 1 ] && [ "$1" = --native-lifetime-test ] && \
+        [ -n "${KANDELO_NATIVE_TEST_DIR:-}" ] || { echo 'ERROR: unexpected internal build argument' >&2; exit 2; }
+fi
 source "$REPO_ROOT/sdk/activate.sh"
-
-ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
-PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-spidermonkey-node}"
-case "$PACKAGE_NAME" in
-    node|spidermonkey-node) ;;
-    *) echo "ERROR: unexpected Node-compatible package '$PACKAGE_NAME'." >&2; exit 1 ;;
-esac
-if [ "$ARCH" != "wasm32" ]; then
-    echo "ERROR: spidermonkey-node currently supports wasm32 only, got '$ARCH'." >&2
-    exit 1
-fi
-
-SPIDERMONKEY_PREFIX="${WASM_POSIX_DEP_SPIDERMONKEY_DIR:-}"
-if [ -z "$SPIDERMONKEY_PREFIX" ]; then
-    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        echo "ERROR: resolver did not provide the declared spidermonkey dependency." >&2
-        exit 1
-    fi
-    if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
-        echo "ERROR: rustc/cargo are unavailable for SpiderMonkey dependency resolution." >&2
-        exit 1
-    fi
-
-    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-    resolve_dep() {
-        local name="$1"
-        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
-    }
-
-    echo "==> Resolving spidermonkey via cargo xtask build-deps..."
-    SPIDERMONKEY_PREFIX="$(resolve_dep spidermonkey)"
-fi
-NODE_WASM="$SPIDERMONKEY_PREFIX/js.wasm"
-if [ ! -f "$NODE_WASM" ] || [ -L "$NODE_WASM" ]; then
-    echo "ERROR: spidermonkey dependency did not provide its declared js.wasm at $SPIDERMONKEY_PREFIX." >&2
-    exit 1
-fi
-
-if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    BIN_DIR="$WASM_POSIX_DEP_WORK_DIR/bin"
-else
-    BIN_DIR="$SCRIPT_DIR/bin"
-fi
-mkdir -p "$BIN_DIR"
-cp "$NODE_WASM" "$BIN_DIR/node.wasm"
-
-NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
-echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
-
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
-fi
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary "$PACKAGE_NAME" "$BIN_DIR/node.wasm" node.wasm
+export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot node-core "$REPO_ROOT/sysroot" \
+    libcxx libuv spidermonkey-core v8-tracing node-libffi kandelo-ffi-adapter)"
+NODE_SOURCE="$WASM_POSIX_DEP_WORK_DIR/node-source"
+kandelo_package_stage_source_dependency node-core-source "$NODE_SOURCE" "$WASM_POSIX_DEP_WORK_DIR"
+BRIDGE="$WASM_POSIX_DEP_WORK_DIR/node-engine-bridge"
+python3 "$SCRIPT_DIR/bridge/build-bridge.py" --repository "$REPO_ROOT" \
+    --work "$WASM_POSIX_DEP_WORK_DIR/native-bridge" --node-source "$NODE_SOURCE" \
+    --core "${WASM_POSIX_DEP_SPIDERMONKEY_CORE_DIR:?}" --libcxx "${WASM_POSIX_DEP_LIBCXX_DIR:?}" \
+    --libuv "${WASM_POSIX_DEP_LIBUV_DIR:?}" --tracing "${WASM_POSIX_DEP_V8_TRACING_DIR:?}" \
+    --output "$BRIDGE"
+# The adapter is this recipe's own build output, installed only in its private
+# sysroot. It is not a separate package or an independently exported SDK.
+cp -R "$BRIDGE/include/." "$WASM_POSIX_SYSROOT/include/"
+cp -R "$BRIDGE/lib/." "$WASM_POSIX_SYSROOT/lib/"
+export KANDELO_NODE_ENGINE_CONFIGURATION="$WASM_POSIX_DEP_WORK_DIR/node-engine-configuration"
+python3 "$SCRIPT_DIR/check-engine-sdk.py" \
+    --core "$WASM_POSIX_DEP_SPIDERMONKEY_CORE_DIR" --bridge "$BRIDGE" \
+    --tracing "$WASM_POSIX_DEP_V8_TRACING_DIR" --sysroot "$WASM_POSIX_SYSROOT" \
+    --output "$KANDELO_NODE_ENGINE_CONFIGURATION"
+bash "$SCRIPT_DIR/build-node-profile.sh"

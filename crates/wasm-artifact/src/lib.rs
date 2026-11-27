@@ -38,7 +38,12 @@
 
 extern crate alloc;
 
+mod abi_contract;
+pub use abi_contract::stamp as stamp_abi_contract;
+
 pub mod facts;
+#[cfg(feature = "grouped-memory")]
+pub mod grouped_memory;
 pub mod original_program;
 pub mod policy;
 pub mod policy_surface;

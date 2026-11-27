@@ -1,0 +1,335 @@
+# Kandelo patch rationale (S23)
+#
+# Native constructors need observations at the real allocation points,
+# including nested calls, derived construction and returned replacement
+# objects. A single callback at constructor return loses that distinction.
+# Keep those generic engine events and scopes. Constructor naming and the
+# weak history table now live in the bridge; this patch no longer chooses
+# Node-facing names or owns the table.
+#
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
+
+--- a/js/src/builtin/Object.cpp
++++ b/js/src/builtin/Object.cpp
+@@ -74,7 +74,11 @@
+   if (args.isConstructing() &&
+       (&args.newTarget().toObject() != &args.callee())) {
+     RootedObject newTarget(cx, &args.newTarget().toObject());
+-    obj = CreateThis(cx, newTarget);
++    RootedObject created(cx, CreateThis(cx, newTarget));
++    if (!created || !RecordNativeConstructorResult(cx, created)) {
++      return false;
++    }
++    obj = created;
+   } else if (args.length() > 0 && !args[0].isNullOrUndefined()) {
+     obj = ToObject(cx, args[0]);
+   } else {
+--- a/js/src/builtin/intl/DisplayNames.cpp
++++ b/js/src/builtin/intl/DisplayNames.cpp
+@@ -295,6 +295,10 @@
+   Rooted<DisplayNamesObject*> displayNames(cx);
+   displayNames = NewObjectWithClassProto<DisplayNamesObject>(cx, proto);
+   if (!displayNames) {
++    return false;
++  }
++
++  if (!RecordNativeConstructorResult(cx, displayNames)) {
+     return false;
+   }
+
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -2022,7 +2022,11 @@
+     return nullptr;
+   }
+
+-  return NewObjectWithClassProto(cx, clasp, proto);
++  RootedObject obj(cx, NewObjectWithClassProto(cx, clasp, proto));
++  if (!obj || !RecordNativeConstructorResult(cx, obj)) {
++    return nullptr;
++  }
++  return obj;
+ }
+
+ JS_PUBLIC_API bool JS_IsNative(JSObject* obj) {
+--- a/js/src/vm/ArrayObject-inl.h
++++ b/js/src/vm/ArrayObject-inl.h
+@@ -57,6 +57,10 @@
+     return nullptr;
+   }
+
++  if (!RecordPendingConstructorIdentity(cx, aobj)) {
++    return nullptr;
++  }
++
+   MOZ_ASSERT(clasp->shouldDelayMetadataBuilder());
+   cx->realm()->setObjectPendingMetadata(aobj);
+
+--- a/js/src/vm/Interpreter.cpp
++++ b/js/src/vm/Interpreter.cpp
+@@ -407,6 +407,7 @@
+ #  pragma optimize("g", off)
+ #endif
+ bool js::RunScript(JSContext* cx, RunState& state) {
++  AutoSuppressConstructorOrigin constructionScope(cx);
+   AutoCheckRecursionLimit recursion(cx);
+   if (!recursion.check(cx)) {
+     return false;
+@@ -499,6 +500,7 @@
+   MOZ_ASSERT(!args.callee().is<ProxyObject>());
+
+   AutoRealm ar(cx, &args.callee());
++  AutoNativeConstructorOrigin constructionScope(cx, args);
+   bool ok = native(cx, args.length(), args.base());
+   if (ok) {
+     cx->check(args.rval());
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -127,6 +127,7 @@
+ };
+
+ class AutoLockScriptData;
++class AutoNativeConstructorOrigin;
+
+ /* Thread Local Storage slot for storing the context for a thread. */
+ extern MOZ_THREAD_LOCAL(JSContext*) TlsContext;
+@@ -238,6 +239,8 @@
+   mozilla::Atomic<bool, mozilla::ReleaseAcquire> isExecuting_;
+
+  public:
++  js::AutoNativeConstructorOrigin* nativeConstructorOrigin = nullptr;
++
+   // This is used by helper threads to change the runtime their context is
+   // currently operating on.
+   void setRuntime(JSRuntime* rt);
+--- a/js/src/vm/JSFunction.cpp
++++ b/js/src/vm/JSFunction.cpp
+@@ -1554,6 +1554,10 @@
+     return false;
+   }
+
++  if (!RecordNativeConstructorResult(cx, fun)) {
++    return false;
++  }
++
+   // Step 38.
+   args.rval().setObject(*fun);
+   return true;
+--- a/js/src/vm/JSObject.h
++++ b/js/src/vm/JSObject.h
+@@ -822,6 +822,39 @@
+
+ namespace js {
+
++// Actual native-call construction provenance. Nested native calls and script
++// entries mask their caller's pending allocation record.
++class MOZ_RAII AutoNativeConstructorOrigin {
++  JSContext* cx_;
++  AutoNativeConstructorOrigin* previous_;
++  JS::RootedObject constructor_;
++  const JSClass* pendingClass_ = nullptr;
++  bool direct_;
++
++ public:
++  AutoNativeConstructorOrigin(JSContext* cx, const CallArgs& args);
++  ~AutoNativeConstructorOrigin();
++  void note(const CallArgs& args, JSProtoKey key);
++  bool record(HandleObject obj);
++  bool recordPending(JSObject* obj);
++};
++
++class MOZ_RAII AutoSuppressConstructorOrigin {
++  JSContext* cx_;
++  AutoNativeConstructorOrigin* previous_;
++
++ public:
++  explicit AutoSuppressConstructorOrigin(JSContext* cx);
++  ~AutoSuppressConstructorOrigin();
++};
++
++void NoteBuiltinConstructorPrototype(JSContext* cx, const CallArgs& args,
++                                     JSProtoKey key);
++[[nodiscard]] bool RecordPendingConstructorIdentity(JSContext* cx,
++                                                   JSObject* obj);
++[[nodiscard]] bool RecordNativeConstructorResult(JSContext* cx,
++                                                 HandleObject obj);
++
+ // ES6 9.1.15 GetPrototypeFromConstructor.
+ extern bool GetPrototypeFromConstructor(JSContext* cx,
+                                         js::HandleObject newTarget,
+@@ -855,14 +888,18 @@
+       &args.newTarget().toObject() == &args.callee()) {
+     MOZ_ASSERT(args.callee().hasSameRealmAs(cx));
+     proto.set(nullptr);
++    NoteBuiltinConstructorPrototype(cx, args, intrinsicDefaultProto);
+     return true;
+   }
+
+   // We're calling this constructor from a derived class, retrieve the
+   // actual prototype from newTarget.
+   RootedObject newTarget(cx, &args.newTarget().toObject());
+-  return GetPrototypeFromConstructor(cx, newTarget, intrinsicDefaultProto,
+-                                     proto);
++  if (!GetPrototypeFromConstructor(cx, newTarget, intrinsicDefaultProto, proto)) {
++    return false;
++  }
++  NoteBuiltinConstructorPrototype(cx, args, intrinsicDefaultProto);
++  return true;
+ }
+
+ /* ES6 draft rev 32 (2015 Feb 2) 6.2.4.5 ToPropertyDescriptor(Obj) */
+--- a/js/src/vm/NativeObject-inl.h
++++ b/js/src/vm/NativeObject-inl.h
+@@ -504,6 +504,10 @@
+
+   if (slotSpan > 0) {
+     nobj->initSlots(nfixed, slotSpan);
++  }
++
++  if (!RecordPendingConstructorIdentity(cx, nobj)) {
++    return nullptr;
+   }
+
+   if (MOZ_UNLIKELY(cx->realm()->hasAllocationMetadataBuilder())) {
+--- a/js/src/vm/PlainObject-inl.h
++++ b/js/src/vm/PlainObject-inl.h
+@@ -82,8 +82,8 @@
+   MOZ_ASSERT(obj->nonCCWRealm() == callee->realm());
+   // Record the function that actually allocated this base receiver. Derived
+   // construction and returned replacement objects have distinct identities.
+-  if (callee == newTarget &&
+-      !ObjectRealm::get(obj).recordConstructorIdentity(cx, obj, callee)) {
++  if (!ObjectRealm::get(obj).recordConstructorIdentity(cx, obj, callee,
++                                                      callee == newTarget)) {
+     return false;
+   }
+   thisv.setObject(*obj);
+--- a/js/src/vm/PortableBaselineInterpret.cpp
++++ b/js/src/vm/PortableBaselineInterpret.cpp
+@@ -2388,6 +2388,8 @@
+             JSNative native = ignoresRv
+                                   ? callee->jitInfo()->ignoresReturnValueMethod
+                                   : callee->native();
++            CallArgs constructionArgs = CallArgsFromVp(argc, args);
++            AutoNativeConstructorOrigin constructionScope(cx, constructionArgs);
+             bool success = native(cx, argc, args);
+
+             ctx.stack.fp = trampolinePrevFP;
+--- a/js/src/vm/Realm.cpp
++++ b/js/src/vm/Realm.cpp
+@@ -20,6 +20,8 @@
+ #include "js/GCVariant.h"
+ #include "js/Proxy.h"
+ #include "js/RootingAPI.h"
++#include "js/String.h"
++#include "js/Symbol.h"
+ #include "js/Wrapper.h"
+ #include "util/DefaultLocale.h"
+ #include "util/RandomSeed.h"
+@@ -27,11 +29,14 @@
+ #include "vm/DateTime.h"
+ #include "vm/Iteration.h"
+ #include "vm/JSContext.h"
++#include "vm/JSFunction.h"
++#include "vm/ProxyObject.h"
+ #include "wasm/WasmInstance.h"
+
+ #include "gc/Marking-inl.h"
+ #include "gc/WeakMap-inl.h"
+ #include "vm/JSObject-inl.h"
++#include "vm/NativeObject-inl.h"
+
+ using namespace js;
+
+@@ -257,12 +262,76 @@
+ }
+
+ bool ObjectRealm::recordConstructorIdentity(JSContext* cx, HandleObject obj,
+-                                            HandleObject constructor) {
++                                            HandleObject constructor,
++                                            bool direct) {
+   if (auto observer = cx->embedderConstructionObserver) {
+-    return observer(cx, obj, constructor, true);
++    return observer(cx, obj, constructor, direct);
+   }
+   return true;
+ }
++
++AutoNativeConstructorOrigin::AutoNativeConstructorOrigin(JSContext* cx,
++                                                         const CallArgs& args)
++    : cx_(cx), previous_(cx->nativeConstructorOrigin),
++      constructor_(cx, &args.callee()),
++      direct_(!args.isConstructing() ||
++              &args.newTarget().toObject() == constructor_) {
++  cx_->nativeConstructorOrigin = this;
++}
++
++AutoNativeConstructorOrigin::~AutoNativeConstructorOrigin() {
++  MOZ_ASSERT(cx_->nativeConstructorOrigin == this);
++  cx_->nativeConstructorOrigin = previous_;
++}
++
++void AutoNativeConstructorOrigin::note(const CallArgs& args, JSProtoKey key) {
++  MOZ_ASSERT(&args.callee() == constructor_);
++  pendingClass_ = key == JSProto_Null ? nullptr : ProtoKeyToClass(key);
++}
++
++bool AutoNativeConstructorOrigin::record(HandleObject obj) {
++  pendingClass_ = nullptr;
++  return ObjectRealm::get(obj).recordConstructorIdentity(cx_, obj, constructor_,
++                                                        direct_);
++}
++
++bool AutoNativeConstructorOrigin::recordPending(JSObject* obj) {
++  if (!pendingClass_ || obj->getClass() != pendingClass_) {
++    return true;
++  }
++  // Insertion allocates native table storage only. The receiver's class
++  // initialization may still be in progress, so never permit a GC here.
++  JS::AutoCheckCannotGC nogc(cx_);
++  RootedObject rooted(cx_, obj);
++  return record(rooted);
++}
++
++AutoSuppressConstructorOrigin::AutoSuppressConstructorOrigin(JSContext* cx)
++    : cx_(cx), previous_(cx->nativeConstructorOrigin) {
++  cx_->nativeConstructorOrigin = nullptr;
++}
++
++AutoSuppressConstructorOrigin::~AutoSuppressConstructorOrigin() {
++  MOZ_ASSERT(!cx_->nativeConstructorOrigin);
++  cx_->nativeConstructorOrigin = previous_;
++}
++
++void js::NoteBuiltinConstructorPrototype(JSContext* cx, const CallArgs& args,
++                                         JSProtoKey key) {
++  if (cx->nativeConstructorOrigin) {
++    cx->nativeConstructorOrigin->note(args, key);
++  }
++}
++
++bool js::RecordPendingConstructorIdentity(JSContext* cx, JSObject* obj) {
++  return !cx->nativeConstructorOrigin ||
++         cx->nativeConstructorOrigin->recordPending(obj);
++}
++
++bool js::RecordNativeConstructorResult(JSContext* cx, HandleObject obj) {
++  return !cx->nativeConstructorOrigin || cx->nativeConstructorOrigin->record(obj);
++}
++
+
+ void ObjectRealm::trace(JSTracer* trc) {
+   if (embeddingMetadata_) embeddingMetadata_->trace(trc);
+--- a/js/src/vm/Realm.h
++++ b/js/src/vm/Realm.h
+@@ -285,7 +285,8 @@
+
+
+   [[nodiscard]] bool recordConstructorIdentity(JSContext* cx, HandleObject obj,
+-                                             HandleObject constructor);
++                                               HandleObject constructor,
++                                               bool direct = true);
+
+   ObjectRealm(const ObjectRealm&) = delete;
+   void operator=(const ObjectRealm&) = delete;

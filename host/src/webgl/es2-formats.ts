@@ -14,7 +14,7 @@ import { glesExtensionAdvertised } from "./capabilities.js";
  * any checked storage request, because it must also know the bytes per pixel
  * of every admitted upload. This copy is the host's defence for records that
  * did not come through that encoder. GL_EXT_texture_format_BGRA8888 is a
- * client extension: the encoder validates BGRA and sends RGBA, so BGRA never
+ * client extension: the encoder validates BGRA and uses RGBA metadata, so BGRA never
  * reaches this table.
  */
 

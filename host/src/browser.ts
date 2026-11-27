@@ -1,3 +1,5 @@
+export type { MemoryGroupUsage, MemoryGroupBackingUsage } from './memory-group-usage';
+export type { MemoryGroupSnapshot } from './memory-group-protocol';
 // Browser-compatible exports (zero Node.js dependencies)
 export { WasmPosixKernel } from "./kernel";
 export type { KernelCallbacks } from "./kernel";

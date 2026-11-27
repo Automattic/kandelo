@@ -1,0 +1,39 @@
+# Kandelo patch rationale (S03)
+# Judgment: Supported. Keep the guard because native return-address stack
+# walking has no working equivalent for guest Wasm execution.
+#
+# Mozilla's assertion diagnostics request native return addresses, which
+# the current guest Wasm toolchain cannot supply through these builtins.
+# Return no address and omit that native stack dump rather than invent one.
+# JavaScript error stacks use a separate engine facility and remain
+# required. Neither the OS nor the bridge can implement a missing compiler
+# builtin; review this guard if a supported Wasm native-stack facility
+# becomes available.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/mfbt/Assertions.h
++++ b/mfbt/Assertions.h
+@@ -14,7 +14,7 @@
+ #endif
+
+ #if (defined(MOZ_HAS_MOZGLUE) || defined(MOZILLA_INTERNAL_API)) && \
+-    !defined(__wasi__)
++    !defined(__wasi__) && !defined(__wasm32__)
+ #  define MOZ_DUMP_ASSERTION_STACK
+ #endif
+ #if defined(XP_WIN) && (defined(DEBUG) || defined(FUZZING))
+--- a/mozglue/misc/StackWalk.h
++++ b/mozglue/misc/StackWalk.h
+@@ -29,7 +29,11 @@
+  * to skip to MozStackWalk or MozWalkTheStack, which fell short in more cases
+  * (inlining of intermediaries, tail call optimization).
+  */
++#if defined(__wasm32__) && !defined(__EMSCRIPTEN__)
++#  define CallerPC() ((void*)0)
++#else
+ #define CallerPC() __builtin_extract_return_addr(__builtin_return_address(0))
++#endif
+
+ /**
+  * The callback for MozStackWalk and MozStackWalkThread.

@@ -1,3 +1,4 @@
+import { GROUPED_WORKER_EXTENSIONS } from './program-extensions';
 /**
  * Kernel worker entry points.
  *
@@ -155,7 +156,11 @@ import {
   STAT_CACHE_IMPORT,
   STAT_CACHE_MODULE,
 } from "./generated/program-extensions";
-import { waitForChannelCompletion } from "./channel-completion-wait";
+import { GroupedWorkerRuntime, assertDeferredGroupedStart } from "./grouped-worker-runtime";
+import { WorkerChannelIPC, type GroupedWorkerWait32 } from "./worker-channel-ipc";
+import { ProcessAtomicI32, ProcessAtomicU64 } from "./process-atomic-word";
+import { processDataView, processMemoryByteLength, readProcessBytes, writeProcessBytes, checkProcessWriteRange,
+  type ProcessMemorySource, type ProcessDataView } from "./process-memory-views";
 import {
   ForkImportedGlobalCapture,
   ForkImportedGlobalPlanner,
@@ -173,6 +178,7 @@ import {
 // native channel-syscall binaries (mariadbd, dinit, dash, coreutils,
 // everything compiled by wasm32-posix) never trigger.
 import { isWasiModule, wasiModuleDefinesMemory } from "./wasi-detect";
+import { observeWasmIndirectCallTrap } from "./trap-signals";
 import { synchronizeReceivedSharedWasmMemory } from "./shared-wasm-memory-growth";
 import { noteProcessMemoryInstance } from "./wasm-instance-retention";
 import {
@@ -207,25 +213,25 @@ export function isWasmUnreachableTrap(error: unknown): boolean {
 
 function isExecRetirementTrap(
   error: unknown,
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
 ): boolean {
   return error instanceof WebAssembly.RuntimeError
-    && isExecRetirementMarker(new DataView(memory.buffer), channelOffset);
+    && isExecRetirementMarker(processDataView(memory), channelOffset);
 }
 
 function isExitedWorkerRetirement(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
 ): boolean {
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   return view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL
     && view.getUint32(channelOffset + CH_SIG_SI_CODE, true) === EXIT_RETIRE_SIGNAL_CODE;
 }
 
 /** @internal Exported so the teardown decision is tested without a live channel. */
 export function isProcessTeardownInterrupt(
-  view: DataView,
+  view: ProcessDataView,
   channelOffset: number,
   errno: number,
 ): boolean {
@@ -234,17 +240,17 @@ export function isProcessTeardownInterrupt(
 }
 
 function clearWorkerRetirementMarker(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
 ): void {
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   view.setUint32(channelOffset + CH_SIG_SIGNUM, 0, true);
   view.setUint32(channelOffset + CH_SIG_SI_CODE, 0, true);
 }
 
 /** @internal Exported so ABI-generated retirement-marker decoding is tested. */
 export function isExecRetirementMarker(
-  view: DataView,
+  view: ProcessDataView,
   channelOffset: number,
 ): boolean {
   return view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL
@@ -253,7 +259,7 @@ export function isExecRetirementMarker(
 }
 
 function markDeferredSignalDelivery(
-  view: DataView,
+  view: ProcessDataView,
   channelOffset: number,
 ): void {
   view.setUint32(
@@ -264,20 +270,22 @@ function markDeferredSignalDelivery(
 }
 
 function clearDeferredSignalDelivery(
-  view: DataView,
+  view: ProcessDataView,
   channelOffset: number,
 ): void {
   view.setUint32(channelOffset + CH_REQUEST_FLAGS, 0, true);
 }
 
 function continuationMmap(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
   size: number,
   label: string,
+  groupedWait32?: GroupedWorkerWait32,
 ): number {
+  const channel = new WorkerChannelIPC(memory, channelOffset, groupedWait32);
   const base = channelOffset;
-  let view = new DataView(memory.buffer);
+  let view = channel.view();
   view.setInt32(base + CH_SYSCALL, SYS_MMAP_NR, true);
   view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, 0n, true);
   view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(size), true);
@@ -294,17 +302,13 @@ function continuationMmap(
   view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, -1n, true);
   view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
   markDeferredSignalDelivery(view, base);
-  let i32 = new Int32Array(memory.buffer);
-  Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-  Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-  waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
+  channel.publishAndWait();
 
-  view = new DataView(memory.buffer);
-  i32 = new Int32Array(memory.buffer);
+  view = channel.view();
   const result = Number(view.getBigInt64(base + CH_RETURN, true));
   const err = view.getUint32(base + CH_ERRNO, true);
   clearDeferredSignalDelivery(view, base);
-  Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+  channel.resetStatus();
   if (err || result < 0) {
     const errno = err || -result;
     throw new ContinuationAllocationError(
@@ -317,14 +321,16 @@ function continuationMmap(
 }
 
 function continuationMunmap(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
   addr: number,
   size: number,
   label: string,
+  groupedWait32?: GroupedWorkerWait32,
 ): void {
+  const channel = new WorkerChannelIPC(memory, channelOffset, groupedWait32);
   const base = channelOffset;
-  const view = new DataView(memory.buffer);
+  const view = channel.view();
   view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Munmap, true);
   view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(addr), true);
   view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(size), true);
@@ -332,16 +338,12 @@ function continuationMunmap(
     view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
   }
   markDeferredSignalDelivery(view, base);
-  const i32 = new Int32Array(memory.buffer);
-  Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-  Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-  waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
-  const resultView = new DataView(memory.buffer);
-  const resultI32 = new Int32Array(memory.buffer);
+  channel.publishAndWait();
+  const resultView = channel.view();
   const result = Number(resultView.getBigInt64(base + CH_RETURN, true));
   const err = resultView.getUint32(base + CH_ERRNO, true);
   clearDeferredSignalDelivery(resultView, base);
-  Atomics.store(resultI32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+  channel.resetStatus();
   // Teardown interrupts every channel, including this host-side call. The
   // address space dies with the process, and the queued SIGKILL stays in place
   // for the guest's post-syscall exit.
@@ -445,14 +447,16 @@ function encodeStartupMetadata(
 }
 
 function buildKernelImports(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
   ptrWidth: 4 | 8,
   argv: string[] | undefined,
   envVars: string[] | undefined,
   secureExec: boolean,
   onKernelExit?: (status: number) => void,
+  groupedWait32?: GroupedWorkerWait32,
 ): KernelImports {
+  const channel = new WorkerChannelIPC(memory, channelOffset, groupedWait32);
   const metadata = encodeStartupMetadata(argv ?? [], envVars ?? [], ptrWidth);
   // The legacy clone payload remains a fixed wasm32 pair in CH_DATA.
   const n = (value: number | bigint): number =>
@@ -491,12 +495,11 @@ function buildKernelImports(
         ptrWidth,
         label,
       );
+      // Own the launch snapshot; grouped writes preflight every mapped page.
+      writeProcessBytes(memory, range.offset, encoded);
     } catch {
       return -STARTUP_EFAULT;
     }
-    // The encoded source is an immutable launch snapshot, and this direct
-    // import has no await or callback between the range proof and full copy.
-    new Uint8Array(memory.buffer, range.offset, range.length).set(encoded);
     return encoded.byteLength;
   };
 
@@ -541,7 +544,7 @@ function buildKernelImports(
 
     // Exit dispatches through channel (SYS_EXIT)
     kernel_exit: (status: number): void => {
-      const view = new DataView(memory.buffer);
+      const view = processDataView(memory);
       const base = channelOffset;
       if (isExecRetirementMarker(view, base) || isExitedWorkerRetirement(memory, base)) {
         // Rust already committed exec or exit. Unwind without another
@@ -556,12 +559,10 @@ function buildKernelImports(
       // Exit is a fresh raw request, never that prior opaque record or
       // cancellation point; inheriting those flags can reject the exit.
       view.setUint32(base + CH_REQUEST_FLAGS, 0, true);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+
       // Wait until the reusable kernel transaction returns and the host has
       // committed the exit before terminating this disposable process Worker.
-      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
+      channel.publishAndWait();
       onKernelExit?.(status);
       // Execute unreachable inside Wasm: a RuntimeError thrown by JavaScript
       // is catchable by guest noexcept handlers, which can issue writev on
@@ -583,7 +584,7 @@ function buildKernelImports(
       ctidPtr: number | bigint,
     ): number => {
       const SYS_CLONE_NR = ABI_SYSCALLS.Clone;
-      const view = new DataView(memory.buffer);
+      const view = processDataView(memory);
       const base = channelOffset;
       view.setInt32(base + CH_SYSCALL, SYS_CLONE_NR, true);
       view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(flags), true);
@@ -601,15 +602,13 @@ function buildKernelImports(
       view.setUint32(base + CH_DATA + 4, n(arg), true);
 
       markDeferredSignalDelivery(view, base);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
+
+      channel.publishAndWait();
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
       clearDeferredSignalDelivery(view, base);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+      channel.resetStatus();
 
       if (err) return -err;
       return result;
@@ -619,7 +618,7 @@ function buildKernelImports(
     kernel_fork: (rawMode: number): number => {
       const mode = processForkMode(rawMode);
       if (mode === null) return -STARTUP_EINVAL;
-      const view = new DataView(memory.buffer);
+      const view = processDataView(memory);
       const base = channelOffset;
       view.setInt32(
         base + CH_SYSCALL,
@@ -630,15 +629,13 @@ function buildKernelImports(
         view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
 
       markDeferredSignalDelivery(view, base);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
+
+      channel.publishAndWait();
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
       clearDeferredSignalDelivery(view, base);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+      channel.resetStatus();
 
       if (err) return -err;
       return result;
@@ -648,12 +645,13 @@ function buildKernelImports(
 
 /** @internal Exported for focused startup import contract tests. */
 export function buildKernelImportsForTest(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
   ptrWidth: 4 | 8,
   argv: string[] = [],
   env: string[] = [],
   secureExec: boolean = false,
+  groupedWait32?: GroupedWorkerWait32,
 ): Record<string, WebAssembly.ExportValue> {
   return buildKernelImports(
     memory,
@@ -662,6 +660,8 @@ export function buildKernelImportsForTest(
     argv,
     env,
     secureExec,
+    undefined,
+    groupedWait32,
   );
 }
 
@@ -702,7 +702,8 @@ export interface DlopenSupport {
 }
 
 interface ProcessDylinkActivationOwnerOptions {
-  readonly memory: WebAssembly.Memory;
+  readonly memory: ProcessMemorySource;
+  readonly groupedWait32?: GroupedWorkerWait32;
   readonly ptrWidth: 4 | 8;
   readonly channelOffset: number;
   readonly forkUnwindTag: WebAssembly.Tag | undefined;
@@ -822,6 +823,7 @@ function createProcessDylinkActivationOwner(
             options.channelOffset,
             size,
             `${options.label}: ${request.name} continuation`,
+            options.groupedWait32,
           ),
         (addr, size) =>
           continuationMunmap(
@@ -830,6 +832,7 @@ function createProcessDylinkActivationOwner(
             addr,
             size,
             `${options.label}: ${request.name} continuation`,
+            options.groupedWait32,
           ),
         `${options.label}: ${request.name}`,
       );
@@ -1020,8 +1023,9 @@ function createProcessDylinkActivationOwner(
             }
             // WHY: this Worker needs fresh instance-local element functions,
             // but process linear memory and constructors are already live.
-            // The thread helper initializes only tables and drops data
-            // segments; the parent bootstrap would re-run side effects.
+            // The thread helper initializes tables and proven instance-local
+            // PIC address globals and drops active data segments. Shared
+            // memory and original-start effects remain process-owned.
             threadBootstrap();
           }
         },
@@ -1108,7 +1112,7 @@ function checkedWasmByteLength(
 }
 
 function checkedWasmMemoryRange(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   pointer: WasmGuestPointer,
   lengthValue: number | bigint,
   ptrWidth: 4 | 8,
@@ -1116,7 +1120,7 @@ function checkedWasmMemoryRange(
 ): { offset: number; length: number } {
   const offset = checkedWasmGuestPointerOffset(pointer, ptrWidth, context);
   const length = checkedWasmByteLength(lengthValue, context);
-  const memoryLength = memory.buffer.byteLength;
+  const memoryLength = processMemoryByteLength(memory);
   if (offset > memoryLength || length > memoryLength - offset) {
     throw new RangeError(
       `${context}: memory range [${offset}, ${offset + length}) exceeds ${memoryLength} bytes`,
@@ -1141,7 +1145,7 @@ function checkedWasmMemoryRange(
  */
 /** @internal Exported so the pointer-width host import contract can be tested directly. */
 export function buildDlopenImports(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
   archiveControlAddr: number,
   getTable: () => WebAssembly.Table | undefined,
@@ -1164,6 +1168,7 @@ export function buildDlopenImports(
   forkSideModuleContract?: ForkSideModuleContract,
   stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
   statLeaseBinding?: StatLeaseBinding,
+  groupedWait32?: GroupedWorkerWait32,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1192,7 +1197,12 @@ export function buildDlopenImports(
   };
   const extensionImports: WebAssembly.Imports = {
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
-    [STAT_CACHE_MODULE]: { [STAT_CACHE_IMPORT]: makeStatLeaseImport(memory, ptrWidth, statLeaseBinding) },
+    [STAT_CACHE_MODULE]: {
+      // Grouped address spaces use their normal syscall path for stat.
+      [STAT_CACHE_IMPORT]: memory instanceof WebAssembly.Memory
+        ? makeStatLeaseImport(memory, ptrWidth, statLeaseBinding)
+        : () => 0,
+    },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
         [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,
@@ -1200,6 +1210,7 @@ export function buildDlopenImports(
       },
     }),
   };
+  const channel = new WorkerChannelIPC(memory, channelOffset, groupedWait32);
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number =>
@@ -1224,69 +1235,39 @@ export function buildDlopenImports(
   const ownerOffset =
     ptrWidth === 8 ? DLOPEN_OWNER_OFFSET_WASM64 : DLOPEN_OWNER_OFFSET_WASM32;
   const headSlot = archiveControlAddr - headOffset;
-  const archiveLock = new Int32Array(
-    memory.buffer,
-    archiveControlAddr - lockOffset,
-    1,
-  );
-  const loaderOwner = new Int32Array(
-    memory.buffer,
-    archiveControlAddr - ownerOffset,
-    1,
-  );
+  const archiveLock = new ProcessAtomicI32(memory, archiveControlAddr - lockOffset, groupedWait32);
+  const loaderOwner = new ProcessAtomicI32(memory, archiveControlAddr - ownerOffset, groupedWait32);
   const generationSlot = archiveControlAddr - generationOffset;
+  const generationWord = new ProcessAtomicU64(memory, generationSlot);
+  const headWord = ptrWidth === 8
+    ? new ProcessAtomicU64(memory, headSlot)
+    : new ProcessAtomicI32(memory, headSlot, groupedWait32);
   const readGenerationFence = (): number => {
-    const value =
-      typeof SharedArrayBuffer !== "undefined" &&
-      memory.buffer instanceof SharedArrayBuffer
-        ? Atomics.load(new BigUint64Array(memory.buffer, generationSlot, 1), 0)
-        : new DataView(memory.buffer).getBigUint64(generationSlot, true);
+    const value = generationWord.load();
     if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new RangeError(
-        "dlopen process generation exceeds exact host integers",
-      );
+      throw new RangeError("dlopen process generation exceeds exact host integers");
     }
     return Number(value);
   };
   const writeGenerationFence = (generation: number): void => {
     requireOwnedMemory("publish a dynamic-loader generation");
     if (!Number.isSafeInteger(generation) || generation <= 0) {
-      throw new RangeError(
-        `invalid dlopen process generation ${String(generation)}`,
-      );
+      throw new RangeError(`invalid dlopen process generation ${String(generation)}`);
     }
-    if (
-      typeof SharedArrayBuffer !== "undefined" &&
-      memory.buffer instanceof SharedArrayBuffer
-    ) {
-      Atomics.store(
-        new BigUint64Array(memory.buffer, generationSlot, 1),
-        0,
-        BigInt(generation),
-      );
-    } else {
-      new DataView(memory.buffer).setBigUint64(
-        generationSlot,
-        BigInt(generation),
-        true,
-      );
-    }
+    generationWord.store(BigInt(generation));
   };
-  const readArchiveHead = (): number =>
-    ptrWidth === 8
-      ? Number(Atomics.load(new BigUint64Array(memory.buffer, headSlot, 1), 0))
-      : Atomics.load(new Uint32Array(memory.buffer, headSlot, 1), 0);
+  const readArchiveHead = (): number => {
+    const value = headWord.load();
+    if (typeof value === "number") return value >>> 0;
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new RangeError("dlopen archive head exceeds exact host integers");
+    }
+    return Number(value);
+  };
   const writeArchiveHead = (value: number): void => {
     requireOwnedMemory("replace the dynamic-loader archive");
-    if (ptrWidth === 8) {
-      Atomics.store(
-        new BigUint64Array(memory.buffer, headSlot, 1),
-        0,
-        BigInt(value),
-      );
-    } else {
-      Atomics.store(new Uint32Array(memory.buffer, headSlot, 1), 0, value);
-    }
+    if (headWord instanceof ProcessAtomicU64) headWord.store(BigInt(value));
+    else headWord.store(value);
   };
   const linkerAllocations = new Map<
     number,
@@ -1315,16 +1296,13 @@ export function buildDlopenImports(
     }
   };
   const foreignLoaderOwner = (): number => {
-    const owner = Atomics.load(loaderOwner, 0);
+    const owner = loaderOwner.load();
     return owner !== DLOPEN_OWNER_IDLE && owner !== workerIdentity
       ? owner
       : DLOPEN_OWNER_IDLE;
   };
   const releaseRawWriterLock = (): void => {
-    const owner = Atomics.compareExchange(
-      archiveLock,
-      0,
-      DLOPEN_LOCK_WRITER,
+    const owner = archiveLock.compareExchange(DLOPEN_LOCK_WRITER,
       DLOPEN_LOCK_IDLE,
     );
     if (owner !== DLOPEN_LOCK_WRITER) {
@@ -1332,16 +1310,13 @@ export function buildDlopenImports(
         `dlopen process lock lost writer ownership (state=${owner})`,
       );
     }
-    Atomics.notify(archiveLock, 0);
+    archiveLock.notify();
   };
   const claimLoaderOwnership = (): void => {
     if (mainDlopenDepth <= 0) {
       throw new Error("dynamic-loader ownership requires the archive writer");
     }
-    const owner = Atomics.compareExchange(
-      loaderOwner,
-      0,
-      DLOPEN_OWNER_IDLE,
+    const owner = loaderOwner.compareExchange(DLOPEN_OWNER_IDLE,
       workerIdentity,
     );
     if (owner !== DLOPEN_OWNER_IDLE && owner !== workerIdentity) {
@@ -1350,16 +1325,13 @@ export function buildDlopenImports(
   };
   const releaseLoaderOwnershipIfIdle = (): void => {
     if (ownedDlopenTransactions.size !== 0) return;
-    const owner = Atomics.compareExchange(
-      loaderOwner,
-      0,
-      workerIdentity,
+    const owner = loaderOwner.compareExchange(workerIdentity,
       DLOPEN_OWNER_IDLE,
     );
     if (owner !== workerIdentity && owner !== DLOPEN_OWNER_IDLE) {
       throw new Error(`dynamic-loader ownership changed to Worker ${owner}`);
     }
-    Atomics.notify(loaderOwner, 0);
+    loaderOwner.notify();
   };
   const acquireMainDlopenLock = (): boolean => {
     // POSIX loader serialization is blocking. Imports run in process Workers,
@@ -1399,23 +1371,20 @@ export function buildDlopenImports(
     for (;;) {
       const transactionOwner = foreignLoaderOwner();
       if (transactionOwner !== DLOPEN_OWNER_IDLE) {
-        Atomics.wait(loaderOwner, 0, transactionOwner);
+        loaderOwner.wait(transactionOwner);
         continue;
       }
-      const owner = Atomics.compareExchange(
-        archiveLock,
-        0,
-        DLOPEN_LOCK_IDLE,
+      const owner = archiveLock.compareExchange(DLOPEN_LOCK_IDLE,
         DLOPEN_LOCK_WRITER,
       );
       if (owner === DLOPEN_LOCK_IDLE) {
         const racedTransactionOwner = foreignLoaderOwner();
         if (racedTransactionOwner === DLOPEN_OWNER_IDLE) break;
         releaseRawWriterLock();
-        Atomics.wait(loaderOwner, 0, racedTransactionOwner);
+        loaderOwner.wait(racedTransactionOwner);
         continue;
       }
-      Atomics.wait(archiveLock, 0, owner);
+      archiveLock.wait(owner);
     }
     finishFreshWriterAcquisition();
   };
@@ -1432,18 +1401,18 @@ export function buildDlopenImports(
         // POSIX fork preserves only its calling thread. Waiting here prevents
         // a child from inheriting another thread's half-executed constructor,
         // whose Wasm continuation cannot exist in the child.
-        Atomics.wait(loaderOwner, 0, transactionOwner);
+        loaderOwner.wait(transactionOwner);
         continue;
       }
-      const owner = Atomics.load(archiveLock, 0);
+      const owner = archiveLock.load();
       if (owner < 0) {
-        Atomics.wait(archiveLock, 0, owner);
+        archiveLock.wait(owner);
         continue;
       }
       if (owner >= DLOPEN_LOCK_MAX_READERS) {
         throw new RangeError("dlopen process archive reader count exhausted");
       }
-      if (Atomics.compareExchange(archiveLock, 0, owner, owner + 1) !== owner) {
+      if (archiveLock.compareExchange(owner, owner + 1) !== owner) {
         continue;
       }
       mainArchiveReaderDepth++;
@@ -1457,17 +1426,17 @@ export function buildDlopenImports(
       );
     }
     for (;;) {
-      const owner = Atomics.load(archiveLock, 0);
+      const owner = archiveLock.load();
       if (owner <= DLOPEN_LOCK_IDLE) {
         throw new Error(
           `dlopen process archive reader lost ownership (state=${owner})`,
         );
       }
-      if (Atomics.compareExchange(archiveLock, 0, owner, owner - 1) !== owner) {
+      if (archiveLock.compareExchange(owner, owner - 1) !== owner) {
         continue;
       }
       mainArchiveReaderDepth--;
-      if (owner === 1) Atomics.notify(archiveLock, 0);
+      if (owner === 1) archiveLock.notify();
       return;
     }
   };
@@ -1495,7 +1464,7 @@ export function buildDlopenImports(
     syscall: number,
     args: readonly (number | bigint)[],
   ): { result: number; errno: number } => {
-    const view = new DataView(memory.buffer);
+    const view = processDataView(memory);
     const base = channelOffset;
     view.setInt32(base + CH_SYSCALL, syscall, true);
     for (let i = 0; i < 6; i++) {
@@ -1506,14 +1475,11 @@ export function buildDlopenImports(
       );
     }
     markDeferredSignalDelivery(view, base);
-    const i32 = new Int32Array(memory.buffer);
-    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
+    channel.publishAndWait();
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const errno = view.getUint32(base + CH_ERRNO, true);
     clearDeferredSignalDelivery(view, base);
-    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+    channel.resetStatus();
     return { result, errno };
   };
 
@@ -1522,7 +1488,7 @@ export function buildDlopenImports(
   const allocateMemory = (size: number, align: number): number => {
     requireOwnedMemory("allocate dynamic-loader memory");
     const requested = size + Math.max(align, 1) - 1;
-    const view = new DataView(memory.buffer);
+    const view = processDataView(memory);
     const base = channelOffset;
     view.setInt32(base + CH_SYSCALL, SYS_MMAP_NR, true);
     view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, 0n, true);
@@ -1541,15 +1507,12 @@ export function buildDlopenImports(
     view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
     markDeferredSignalDelivery(view, base);
-    const i32 = new Int32Array(memory.buffer);
-    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
+    channel.publishAndWait();
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
     clearDeferredSignalDelivery(view, base);
-    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+    channel.resetStatus();
 
     if (err || result < 0) {
       throw new Error(
@@ -1580,11 +1543,11 @@ export function buildDlopenImports(
       rawAddr <= 0 ||
       !Number.isSafeInteger(length) ||
       length <= 0 ||
-      rawAddr > memory.buffer.byteLength - length
+      rawAddr > processMemoryByteLength(memory) - length
     ) {
       throw new Error("dlopen archive release names an invalid copied mapping");
     }
-    const view = new DataView(memory.buffer);
+    const view = processDataView(memory);
     const base = channelOffset;
     view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Munmap, true);
     view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(rawAddr), true);
@@ -1594,15 +1557,12 @@ export function buildDlopenImports(
     }
 
     markDeferredSignalDelivery(view, base);
-    const i32 = new Int32Array(memory.buffer);
-    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
+    channel.publishAndWait();
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
     clearDeferredSignalDelivery(view, base);
-    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+    channel.resetStatus();
     if (err || result < 0) {
       throw new Error(`dlopen rollback: munmap failed errno=${err || -result}`);
     }
@@ -1661,7 +1621,7 @@ export function buildDlopenImports(
       allocation.address + allocation.size >
         allocation.mappingAddress + allocation.mappingSize ||
       allocation.mappingAddress >
-        memory.buffer.byteLength - allocation.mappingSize
+        processMemoryByteLength(memory) - allocation.mappingSize
     ) {
       throw new RangeError("dlopen replay: invalid copied mmap ownership");
     }
@@ -1701,7 +1661,7 @@ export function buildDlopenImports(
     let openResult: { result: number; errno: number } | undefined;
     let pathFailure: unknown;
     try {
-      new Uint8Array(memory.buffer, pathAddr, pathBytes.length).set(pathBytes);
+      writeProcessBytes(memory, pathAddr, pathBytes);
       openResult = invokeChannelSyscall(ABI_SYSCALLS.Openat, [
         -100,
         pathAddr,
@@ -1772,7 +1732,7 @@ export function buildDlopenImports(
           );
         }
         chunks.push(
-          new Uint8Array(new Uint8Array(memory.buffer, chunkAddr, read.result)),
+          readProcessBytes(memory, chunkAddr, read.result),
         );
       }
     } catch (error) {
@@ -1986,15 +1946,15 @@ export function buildDlopenImports(
 
   const resetForkChildLock = (): void => {
     requireOwnedMemory("reset the parent's dynamic-loader lock");
-    Atomics.store(archiveLock, 0, 0);
-    Atomics.notify(archiveLock, 0);
-    const copiedOwner = Atomics.load(loaderOwner, 0);
+    archiveLock.store(0);
+    archiveLock.notify();
+    const copiedOwner = loaderOwner.load();
     if (copiedOwner !== DLOPEN_OWNER_IDLE) {
       // The loader continuation belongs to the one thread that survived fork.
       // Rebind its copied process lease to the child's new Worker coordinate.
-      Atomics.store(loaderOwner, 0, workerIdentity);
+      loaderOwner.store(workerIdentity);
     }
-    Atomics.notify(loaderOwner, 0);
+    loaderOwner.notify();
   };
 
   const readDlopenRequest = (
@@ -2017,16 +1977,8 @@ export function buildDlopenImports(
       ptrWidth,
       "__wasm_dlopen_prepare name",
     );
-    const bytes = new Uint8Array(
-      memory.buffer,
-      bytesRange.offset,
-      bytesRange.length,
-    );
-    const nameBytes = new Uint8Array(
-      memory.buffer,
-      nameRange.offset,
-      nameRange.length,
-    );
+    const bytes = readProcessBytes(memory, bytesRange.offset, bytesRange.length);
+    const nameBytes = readProcessBytes(memory, nameRange.offset, nameRange.length);
     // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // The copy also guards against memory grow/detach, so it stays even if the engine is fixed.
     // WHY: compilation may grow/detach memory, and Firefox/Chrome reject
@@ -2104,7 +2056,7 @@ export function buildDlopenImports(
         const linker = getLinker();
         if (
           !ownedDlopenTransactions.has(transaction) &&
-          Atomics.load(loaderOwner, 0) === workerIdentity &&
+          loaderOwner.load() === workerIdentity &&
           linker.hasPendingDlopen(transaction)
         ) {
           // A fresh fork child reconstructed this token from the copied
@@ -2132,8 +2084,9 @@ export function buildDlopenImports(
           ptrWidth,
           "__wasm_dlopen_next handle",
         );
+        checkProcessWriteRange(memory, handleRange.offset, handleRange.length);
         const { entry, handle } = linker.advanceDlopenSync(transaction);
-        new DataView(memory.buffer).setInt32(handleRange.offset, handle, true);
+        processDataView(memory).setInt32(handleRange.offset, handle, true);
         if (entry > 0) {
           // Publish the exact provisional activation/stage before libc can
           // enter it. A fork from that table call can therefore reconstruct
@@ -2225,11 +2178,7 @@ export function buildDlopenImports(
           return getLinker().dlopenMain();
         }
 
-        const bytes = new Uint8Array(
-          memory.buffer,
-          bytesRange.offset,
-          bytesRange.length,
-        );
+        const bytes = readProcessBytes(memory, bytesRange.offset, bytesRange.length);
         // Copy bytes since memory.buffer may detach during Wasm instantiation
         const bytesCopy = new Uint8Array(bytes);
         // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
@@ -2237,11 +2186,7 @@ export function buildDlopenImports(
         // in Firefox (and recent Chrome), so copy the name bytes through
         // a non-shared Uint8Array before decoding. Same shape as
         // bytesCopy above.
-        const nameBytesView = new Uint8Array(
-          memory.buffer,
-          nameRange.offset,
-          nameRange.length,
-        );
+        const nameBytesView = readProcessBytes(memory, nameRange.offset, nameRange.length);
         const nameBytesCopy = new Uint8Array(nameBytesView);
         const name = decoder.decode(nameBytesCopy);
         const lk = getLinker();
@@ -2283,11 +2228,7 @@ export function buildDlopenImports(
           ptrWidth,
           "__wasm_dlsym name",
         );
-        const nameBytesView = new Uint8Array(
-          memory.buffer,
-          nameRange.offset,
-          nameRange.length,
-        );
+        const nameBytesView = readProcessBytes(memory, nameRange.offset, nameRange.length);
         const nameBytesCopy = new Uint8Array(nameBytesView);
         const name = decoder.decode(nameBytesCopy);
         const result = getLinker().dlsym(handle, name);
@@ -2337,9 +2278,7 @@ export function buildDlopenImports(
         ptrWidth,
         "__wasm_dlerror buffer",
       );
-      new Uint8Array(memory.buffer, range.offset, range.length).set(
-        encoded.subarray(0, range.length),
-      );
+      writeProcessBytes(memory, range.offset, encoded.subarray(0, range.length));
       return range.length;
     },
   };
@@ -2630,12 +2569,12 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
  * when the save fit within the buffer.
  */
 export function forkSaveBufferOverrun(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   forkBufAddr: number,
   ptrWidth: 4 | 8,
   forkBufSize: number,
 ): number {
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   const currentPos =
     ptrWidth === 8
       ? Number(view.getBigUint64(forkBufAddr, true))
@@ -3046,11 +2985,13 @@ let abiMissingWarned = false;
 export async function centralizedWorkerMain(
   port: MessagePort,
   initData: CentralizedWorkerInitMessage,
+  grouped?: GroupedWorkerRuntime,
 ): Promise<void> {
   let processHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
   let kernelExitStatus: number | null = null;
   try {
-    const { memory, programBytes, channelOffset, pid } = initData;
+    const { memory: physicalMemory, programBytes, channelOffset, pid } = initData;
+    const memory = grouped?.source ?? physicalMemory;
     // WHY: the kernel keeps its own copy of the program bytes, and a running
     // process never reads them again. Detaching frees them at once: an idle
     // process worker waits in Atomics.wait and rarely collects garbage.
@@ -3065,6 +3006,7 @@ export async function centralizedWorkerMain(
     const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: initData.kernelAbiVersion,
       expectedAbiContractDigest: initData.kernelAbiContractDigest,
+      supportedProgramExtensions: grouped ? GROUPED_WORKER_EXTENSIONS : undefined,
     });
     if (artifactFailures.length > 0) {
       throw new Error(
@@ -3073,14 +3015,17 @@ export async function centralizedWorkerMain(
       );
     }
     // Use pre-compiled module if provided (avoids recompilation in workers)
-    const module = initData.programModule
+    const module = !grouped && initData.programModule
       ? initData.programModule
       : await WebAssembly.compile(programBytes);
     registerWasmModuleReflection(module, programBytes);
     retainProgramBytes = wasmModuleImports(module)
       .some((entry) => entry.module === STACK_MODULE);
+    grouped?.validate(module, programBytes, pid, pid);
+    if (grouped && ptrWidth !== 4) throw new Error("Grouped execution requires memory32");
     // --- WASI module detection and handling ---
     if (isWasiModule(module)) {
+      if (grouped) throw new Error("Grouped WASI execution is unsupported");
       if (wasiModuleDefinesMemory(module)) {
         throw new Error(
           "WASI module defines its own memory. Only modules that import memory " +
@@ -3094,7 +3039,7 @@ export async function centralizedWorkerMain(
       const { WasiShim, WasiExit } = await import("./wasi-shim");
 
       const wasiShim = new WasiShim(
-        memory,
+        physicalMemory,
         channelOffset,
         initData.argv || [],
         initData.env || [],
@@ -3107,7 +3052,7 @@ export async function centralizedWorkerMain(
           string,
           WebAssembly.ExportValue
         >,
-        env: { memory },
+        env: { memory: physicalMemory },
       };
 
       // Stub any additional env imports the module needs
@@ -3171,6 +3116,7 @@ export async function centralizedWorkerMain(
       (status) => {
         kernelExitStatus = status;
       },
+      grouped?.wait32,
     );
 
     // Check if the module has complete wpk_fork_* instrumentation exports,
@@ -3196,6 +3142,9 @@ export async function centralizedWorkerMain(
       ? (initData.forkMemoryOwnership ?? "copied")
       : "copied";
     const borrowedForkChild = forkMemoryOwnership === "borrowed";
+    if (grouped && (borrowedForkChild || forkMode === PROCESS_FORK_MODE_VFORK)) {
+      throw new Error("Grouped vfork replay is unsupported");
+    }
     if (borrowedForkChild && forkMode !== PROCESS_FORK_MODE_VFORK) {
       throw new Error(`pid=${pid}: only a vfork child may borrow process memory`);
     }
@@ -3234,7 +3183,7 @@ export async function centralizedWorkerMain(
       : channelOffset - FORK_BUF_SIZE;
     const borrowedWorkspace = borrowedForkChild
       ? new BorrowedVforkWorkspace(
-          memory,
+          physicalMemory,
           ptrWidth,
           {
             prefixAddress: requiredBorrowedNumber(
@@ -3278,9 +3227,9 @@ export async function centralizedWorkerMain(
       const forkContinuation = new LinkedForkContinuation(
         memory,
         linkedFrameFormat,
-        (size) => continuationMmap(memory, channelOffset, size, `pid=${pid}`),
+        (size) => continuationMmap(memory, channelOffset, size, `pid=${pid}`, grouped?.wait32),
         (addr, size) =>
-          continuationMunmap(memory, channelOffset, addr, size, `pid=${pid}`),
+          continuationMunmap(memory, channelOffset, addr, size, `pid=${pid}`, grouped?.wait32),
         `pid=${pid}`,
       );
       let processInstance: WebAssembly.Instance | null = null;
@@ -3301,6 +3250,7 @@ export async function centralizedWorkerMain(
               channelOffset,
               size,
               `pid=${pid}: module state`,
+              grouped?.wait32,
             );
             if (borrowedForkChild) borrowedOwnArenaMappings.add(address);
             return address;
@@ -3319,6 +3269,7 @@ export async function centralizedWorkerMain(
               addr,
               size,
               `pid=${pid}: module state`,
+              grouped?.wait32,
             );
           },
           `pid=${pid}`,
@@ -3371,6 +3322,7 @@ export async function centralizedWorkerMain(
               channelOffset,
               size,
               `pid=${pid}: reference scratch`,
+              grouped?.wait32,
             ),
         (addr, size) => {
           if (borrowedWorkspace?.ownsScratch(addr)) {
@@ -3383,6 +3335,7 @@ export async function centralizedWorkerMain(
             addr,
             size,
             `pid=${pid}: reference scratch`,
+            grouped?.wait32,
           );
         },
       );
@@ -3505,7 +3458,7 @@ export async function centralizedWorkerMain(
 
       const readProcessLaunchRoot = (): number => {
         if (borrowedForkChild) return forkBufAddr;
-        const view = new DataView(memory.buffer);
+        const view = processDataView(memory);
         return ptrWidth === 8
           ? Number(view.getBigUint64(dlopenArchiveControlAddr, true))
           : view.getUint32(dlopenArchiveControlAddr, true);
@@ -3647,6 +3600,7 @@ export async function centralizedWorkerMain(
           channelOffset,
           forkMode,
           borrowedReplay,
+          grouped?.wait32,
         );
         forkResult = childPid;
         if (childPid < 0) {
@@ -3675,7 +3629,7 @@ export async function centralizedWorkerMain(
           }
           if (initData.isForkChild) {
             const gate = initData.forkReplayGate;
-            if (!gate) {
+            if (!grouped && !gate) {
               throw new Error(
                 `pid=${pid}: fork child is missing its replay commit gate`,
               );
@@ -3687,7 +3641,8 @@ export async function centralizedWorkerMain(
               type: "fork_replay_ready",
               pid,
             } satisfies WorkerToHostMessage);
-            waitForForkReplayCommit(gate, `pid=${pid}`);
+            if (grouped) grouped.waitForForkReplay();
+            else waitForForkReplayCommit(gate!, `pid=${pid}`);
           }
           return forkResult;
         }
@@ -3748,6 +3703,7 @@ export async function centralizedWorkerMain(
       const dylinkForkActivationOwner = hasDylinkForkRole
         ? createProcessDylinkActivationOwner({
             memory,
+            groupedWait32: grouped?.wait32,
             ptrWidth,
             channelOffset,
             forkUnwindTag: processForkUnwindTag,
@@ -3806,6 +3762,7 @@ export async function centralizedWorkerMain(
         readForkSideModuleContract(module),
         programBytes,
         initData.statLeaseBinding,
+        grouped?.wait32,
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3892,6 +3849,7 @@ export async function centralizedWorkerMain(
                 channelOffset,
                 size,
                 `pid=${pid}: early reference scratch`,
+                grouped?.wait32,
               ),
           deallocateScratch: (addr, size) => {
             if (borrowedWorkspace) {
@@ -3904,6 +3862,7 @@ export async function centralizedWorkerMain(
               addr,
               size,
               `pid=${pid}: early reference scratch`,
+              grouped?.wait32,
             );
           },
           label: `pid=${pid}: early child references`,
@@ -3971,7 +3930,7 @@ export async function centralizedWorkerMain(
       };
       const importObject = buildImportObject(
         module,
-        memory,
+        physicalMemory,
         kernelImports,
         channelOffset,
         dlopenSupport.imports,
@@ -3995,12 +3954,13 @@ export async function centralizedWorkerMain(
         programBytes,
         importObject,
       );
+      const guardedMainImports = grouped ? grouped.imports(routedImportObject, channelOffset) : routedImportObject;
       const reconstructedMainImports = importedStatePlanner
         ? importedStatePlanner.importsForActivation(
             0,
-            routedImportObject as unknown as ForkWasmImports,
+            guardedMainImports as unknown as ForkWasmImports,
           )
-        : routedImportObject;
+        : guardedMainImports;
       // WHY: reconstruction supplies copied identities; capture wraps that
       // resolved view so this child can safely become the parent of another
       // fresh instance without retaining the previous fork arena.
@@ -4032,6 +3992,7 @@ export async function centralizedWorkerMain(
         throw error;
       }
       processInstance = instance;
+      grouped?.bind(instance, initData.isForkChild ? 0 : 1);
       mainImportedStatePreparation?.complete(instance);
       mainExceptionProvider = forkExceptionProviderFromInstance(0, instance);
       const mainTypedReferenceProvider = forkGcCodecProviderFromInstance(
@@ -4363,10 +4324,11 @@ export async function centralizedWorkerMain(
         readForkSideModuleContract(module),
         programBytes,
         initData.statLeaseBinding,
+        grouped?.wait32,
       );
       const importObject = buildImportObject(
         module,
-        memory,
+        physicalMemory,
         kernelImports,
         channelOffset,
         dlopenSupport.imports,
@@ -4386,8 +4348,9 @@ export async function centralizedWorkerMain(
         undefined,
         dlopenSupport.extensionImports,
       );
-      const instance = await WebAssembly.instantiate(module, importObject);
+      const instance = await WebAssembly.instantiate(module, grouped ? grouped.imports(importObject, channelOffset) : importObject);
       processInstance = instance;
+      grouped?.bind(instance, initData.isForkChild ? 0 : 1);
       verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
 
       setupChannelBase(
@@ -4432,51 +4395,59 @@ export async function centralizedWorkerMain(
       } satisfies WorkerToHostMessage);
     }
   } catch (err) {
-    processHostImportRuntime?.clear();
-    if (isExitedWorkerRetirement(initData.memory, initData.channelOffset)) {
-      // A deferred-signal JS import may throw EINTR before re-entering Wasm.
-      // Rust has already recorded exit: publish only the wrapper's fence.
-      clearWorkerRetirementMarker(initData.memory, initData.channelOffset);
-      return;
-    }
-    if (isExecRetirementTrap(err, initData.memory, initData.channelOffset)) {
-      clearWorkerRetirementMarker(initData.memory, initData.channelOffset);
+    try {
+      processHostImportRuntime?.clear();
+      if (grouped?.stopRequested) return;
+      if (isExitedWorkerRetirement(grouped?.source ?? initData.memory, initData.channelOffset)) {
+        // A deferred-signal JS import may throw EINTR before re-entering Wasm.
+        // Rust has already recorded exit: publish only the wrapper's fence.
+        clearWorkerRetirementMarker(grouped?.source ?? initData.memory, initData.channelOffset);
+        return;
+      }
+      if (isExecRetirementTrap(err, grouped?.source ?? initData.memory, initData.channelOffset)) {
+        clearWorkerRetirementMarker(grouped?.source ?? initData.memory, initData.channelOffset);
+        port.postMessage({
+          type: "exec_retired",
+          pid: initData.pid,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
+      if (kernelExitStatus !== null && isWasmUnreachableTrap(err)) {
+        // Rust already committed exit. Guest cleanup can no longer use its
+        // channel; the disposable realm releases its remaining local state.
+        port.postMessage({
+          type: "exit",
+          pid: initData.pid,
+          status: kernelExitStatus,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
+      let errMsg: string;
+      if (err instanceof Error) {
+        errMsg = `${err.message}\n${err.stack}`;
+      } else if (
+        (WebAssembly as any).Exception &&
+        err instanceof (WebAssembly as any).Exception
+      ) {
+        // WebAssembly.Exception isn't an Error subclass in V8, so String(err)
+        // produces the useless "[object WebAssembly.Exception]". Surface
+        // anything we can read off it for build-time debugging.
+        const wex = err as { message?: string; stack?: string };
+        errMsg = `WebAssembly.Exception: ${wex.message ?? "<no message>"}\n${wex.stack ?? "<no stack>"}`;
+      } else {
+        errMsg = String(err);
+      }
       port.postMessage({
-        type: "exec_retired",
+        type: "error",
         pid: initData.pid,
+        message: `Kernel worker failed: ${errMsg}`,
+        wasmIndirectCallTrap: observeWasmIndirectCallTrap(err),
       } satisfies WorkerToHostMessage);
-      return;
+    } catch (retirementError) {
+      // A sibling may request stop between the first RUN check and a marker
+      // read. Revoked grouped storage cannot be read for ordinary markers.
+      if (!grouped?.stopRequested) throw retirementError;
     }
-    if (kernelExitStatus !== null && isWasmUnreachableTrap(err)) {
-      // Rust already committed exit. Guest cleanup can no longer use its
-      // channel; the disposable realm releases its remaining local state.
-      port.postMessage({
-        type: "exit",
-        pid: initData.pid,
-        status: kernelExitStatus,
-      } satisfies WorkerToHostMessage);
-      return;
-    }
-    let errMsg: string;
-    if (err instanceof Error) {
-      errMsg = `${err.message}\n${err.stack}`;
-    } else if (
-      (WebAssembly as any).Exception &&
-      err instanceof (WebAssembly as any).Exception
-    ) {
-      // WebAssembly.Exception isn't an Error subclass in V8, so String(err)
-      // produces the useless "[object WebAssembly.Exception]". Surface
-      // anything we can read off it for build-time debugging.
-      const wex = err as { message?: string; stack?: string };
-      errMsg = `WebAssembly.Exception: ${wex.message ?? "<no message>"}\n${wex.stack ?? "<no stack>"}`;
-    } else {
-      errMsg = String(err);
-    }
-    port.postMessage({
-      type: "error",
-      pid: initData.pid,
-      message: `Kernel worker failed: ${errMsg}`,
-    } satisfies WorkerToHostMessage);
   }
 }
 
@@ -4701,7 +4672,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
 function setupChannelBase(
   instance: WebAssembly.Instance,
   module: WebAssembly.Module,
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
   programBytes?: ArrayBuffer,
   ptrWidth: 4 | 8 = 4,
@@ -4722,7 +4693,7 @@ function setupChannelBase(
 
   // Legacy TLS-based approach: write channelOffset into the TLS slot.
   const tlsBase = instance.exports.__tls_base as WebAssembly.Global | undefined;
-  const view = new DataView(memory.buffer);
+  const view = processDataView(memory);
   const tlsAddr = tlsBase ? Number(tlsBase.value) : 0;
 
   if (tlsAddr > 0) {
@@ -4781,12 +4752,14 @@ function readForkBoundaries(module: WebAssembly.Module, pid: number): Map<number
 }
 
 function sendForkSyscall(
-  memory: WebAssembly.Memory,
+  memory: ProcessMemorySource,
   channelOffset: number,
   mode: ProcessForkMode,
   borrowedReplay?: ForkBorrowedReplayWorkspaceRequirements,
+  groupedWait32?: GroupedWorkerWait32,
 ): number {
-  const view = new DataView(memory.buffer);
+  const channel = new WorkerChannelIPC(memory, channelOffset, groupedWait32);
+  const view = channel.view();
   view.setInt32(
     channelOffset + CH_SYSCALL,
     processForkSyscall(mode),
@@ -4812,18 +4785,31 @@ function sendForkSyscall(
   }
 
   markDeferredSignalDelivery(view, channelOffset);
-  const i32 = new Int32Array(memory.buffer);
-  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-  Atomics.notify(i32, (channelOffset + CH_STATUS) / 4, 1);
-  waitForChannelCompletion(i32, (channelOffset + CH_STATUS) / 4);
+  channel.publishAndWait();
 
   const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
   clearDeferredSignalDelivery(view, channelOffset);
-  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+  channel.resetStatus();
 
   if (err) return -err;
   return result;
+}
+
+/** Complete the normal-return pthread exit handshake. The kernel owns the
+ * completed channel afterward: no status reset or other post-exit store.
+ */
+function sendThreadExit(
+  memory: ProcessMemorySource,
+  channelOffset: number,
+  status: number,
+  groupedWait32?: GroupedWorkerWait32,
+): void {
+  const channel = new WorkerChannelIPC(memory, channelOffset, groupedWait32);
+  const view = channel.view();
+  view.setInt32(channelOffset + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+  view.setBigInt64(channelOffset + CH_ARGS, BigInt(status), true);
+  channel.publishAndWait();
 }
 
 /**
@@ -5286,9 +5272,10 @@ function buildThreadEntryArgs(
 export async function centralizedThreadWorkerMain(
   port: MessagePort,
   initData: CentralizedThreadInitMessage,
+  grouped?: GroupedWorkerRuntime,
 ): Promise<void> {
   const {
-    memory,
+    memory: physicalMemory,
     processChannelOffset,
     channelOffset,
     pid,
@@ -5299,12 +5286,13 @@ export async function centralizedThreadWorkerMain(
     tlsPtr,
     ctidPtr,
   } = initData;
+  const memory = grouped?.source ?? physicalMemory;
   const { offset: tlsOffset, byteLength: tlsByteLength } = initData.tls;
   const ptrWidth = initData.ptrWidth ?? 4;
 
   // WHY: synchronize the received memory before this isolate binds any view
   // or Wasm instance to a possibly stale fixed-length view of its backing.
-  synchronizeReceivedSharedWasmMemory(memory, ptrWidth);
+  synchronizeReceivedSharedWasmMemory(physicalMemory, ptrWidth);
 
   let threadInstance: WebAssembly.Instance | undefined;
   let threadProcessContinuation: ForkProcessContinuationCoordinator | null =
@@ -5312,8 +5300,8 @@ export async function centralizedThreadWorkerMain(
   let threadTableReplication: ProcessTableReplicationOwner | null = null;
   let threadHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
   let threadExternrefTokens: ForkExternrefTokenCache | null = null;
-  let processDlopenLock: Int32Array | undefined;
-  let processDlopenOwner: Int32Array | undefined;
+  let processDlopenLock: ProcessAtomicI32 | undefined;
+  let processDlopenOwner: ProcessAtomicI32 | undefined;
   let pthreadForkLockHeld = false;
   let kernelThreadExitStatus: number | null = null;
   const acquirePthreadForkLock = (): boolean => {
@@ -5326,18 +5314,18 @@ export async function centralizedThreadWorkerMain(
       throw new Error(`pid=${pid} tid=${tid}: pthread fork lock already held`);
     }
     for (;;) {
-      const transactionOwner = Atomics.load(processDlopenOwner, 0);
+      const transactionOwner = processDlopenOwner.load();
       if (transactionOwner !== DLOPEN_OWNER_IDLE && transactionOwner !== tid) {
-        Atomics.wait(processDlopenOwner, 0, transactionOwner);
+        processDlopenOwner.wait(transactionOwner);
         continue;
       }
-      const owner = Atomics.load(processDlopenLock, 0);
+      const owner = processDlopenLock.load();
       if (owner < DLOPEN_LOCK_IDLE) {
         // dlopen is finite and publishes the archive generation before
         // releasing this writer token. Waiting preserves ordinary pthread
         // fork/dlopen semantics instead of exposing a scheduler race as
         // ENOTSUP.
-        Atomics.wait(processDlopenLock, 0, owner);
+        processDlopenLock.wait(owner);
         continue;
       }
       if (owner >= DLOPEN_LOCK_MAX_READERS) {
@@ -5346,7 +5334,7 @@ export async function centralizedThreadWorkerMain(
         );
       }
       if (
-        Atomics.compareExchange(processDlopenLock, 0, owner, owner + 1) ===
+        processDlopenLock.compareExchange(owner, owner + 1) ===
         owner
       ) {
         pthreadForkLockHeld = true;
@@ -5357,7 +5345,7 @@ export async function centralizedThreadWorkerMain(
   const releasePthreadForkLock = (): void => {
     if (!pthreadForkLockHeld || !processDlopenLock) return;
     for (;;) {
-      const owner = Atomics.load(processDlopenLock, 0);
+      const owner = processDlopenLock.load();
       if (owner <= DLOPEN_LOCK_IDLE) {
         pthreadForkLockHeld = false;
         throw new Error(
@@ -5366,25 +5354,26 @@ export async function centralizedThreadWorkerMain(
         );
       }
       if (
-        Atomics.compareExchange(processDlopenLock, 0, owner, owner - 1) ===
+        processDlopenLock.compareExchange(owner, owner - 1) ===
         owner
       ) {
         pthreadForkLockHeld = false;
-        if (owner === 1) Atomics.notify(processDlopenLock, 0);
+        if (owner === 1) processDlopenLock.notify();
         return;
       }
     }
   };
 
   try {
+    if (grouped) assertDeferredGroupedStart(initData.programBytes);
     // Strip the start section AND neuter the constructor function body to prevent
     // constructors from re-running. Thread instances share memory with the main
     // thread; re-running constructors would clobber global state.
     let programBytes: ArrayBuffer | null = null;
-    if (!initData.programModule) {
+    if (grouped || !initData.programModule) {
       programBytes = patchWasmForThread(initData.programBytes);
     }
-    const module = initData.programModule
+    const module = !grouped && initData.programModule
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
     registerWasmModuleReflection(
@@ -5392,6 +5381,8 @@ export async function centralizedThreadWorkerMain(
       programBytes ?? initData.programBytes,
     );
 
+    grouped?.validate(module, programBytes ?? initData.programBytes, pid, tid);
+    if (grouped && ptrWidth !== 4) throw new Error("Grouped threads require memory32");
     const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
     if (hasForkInstrumentation) {
       if (
@@ -5436,6 +5427,7 @@ export async function centralizedThreadWorkerMain(
               channelOffset,
               size,
               `pid=${pid} tid=${tid}`,
+              grouped?.wait32,
             ),
           (addr, size) =>
             continuationMunmap(
@@ -5444,6 +5436,7 @@ export async function centralizedThreadWorkerMain(
               addr,
               size,
               `pid=${pid} tid=${tid}`,
+              grouped?.wait32,
             ),
           `pid=${pid} tid=${tid}`,
         )
@@ -5461,6 +5454,7 @@ export async function centralizedThreadWorkerMain(
             channelOffset,
             size,
             `pid=${pid} tid=${tid}: module state`,
+            grouped?.wait32,
           ),
         (addr, size) =>
           continuationMunmap(
@@ -5469,6 +5463,7 @@ export async function centralizedThreadWorkerMain(
             addr,
             size,
             `pid=${pid} tid=${tid}: module state`,
+            grouped?.wait32,
           ),
         `pid=${pid} tid=${tid}`,
       );
@@ -5489,6 +5484,7 @@ export async function centralizedThreadWorkerMain(
               channelOffset,
               size,
               `pid=${pid} tid=${tid}: reference scratch`,
+              grouped?.wait32,
             ),
           (addr, size) =>
             continuationMunmap(
@@ -5497,6 +5493,7 @@ export async function centralizedThreadWorkerMain(
               addr,
               size,
               `pid=${pid} tid=${tid}: reference scratch`,
+              grouped?.wait32,
             ),
         )
       : null;
@@ -5538,7 +5535,7 @@ export async function centralizedThreadWorkerMain(
           forkBufAddr = address;
         },
         readProcessLaunchRoot: () => {
-          const view = new DataView(memory.buffer);
+          const view = processDataView(memory);
           return ptrWidth === 8
             ? Number(view.getBigUint64(forkAnchorAddr, true))
             : view.getUint32(forkAnchorAddr, true);
@@ -5560,29 +5557,21 @@ export async function centralizedThreadWorkerMain(
     if (
       !Number.isSafeInteger(processArchiveHeadAddr) ||
       processArchiveHeadAddr <= 0 ||
-      processArchiveHeadAddr + ptrWidth > memory.buffer.byteLength ||
+      processArchiveHeadAddr + ptrWidth > processMemoryByteLength(memory) ||
       !Number.isSafeInteger(processArchiveLockAddr) ||
       processArchiveLockAddr <= 0 ||
-      processArchiveLockAddr + 4 > memory.buffer.byteLength ||
+      processArchiveLockAddr + 4 > processMemoryByteLength(memory) ||
       !Number.isSafeInteger(processArchiveOwnerAddr) ||
       processArchiveOwnerAddr <= 0 ||
-      processArchiveOwnerAddr + 4 > memory.buffer.byteLength
+      processArchiveOwnerAddr + 4 > processMemoryByteLength(memory)
     ) {
       throw new Error(
         `pid=${pid} tid=${tid}: invalid process dlopen archive anchor ` +
           `${String(processArchiveHeadAddr)}`,
       );
     }
-    processDlopenLock = new Int32Array(
-      memory.buffer,
-      processArchiveLockAddr,
-      1,
-    );
-    processDlopenOwner = new Int32Array(
-      memory.buffer,
-      processArchiveOwnerAddr,
-      1,
-    );
+    processDlopenLock = new ProcessAtomicI32(memory, processArchiveLockAddr, grouped?.wait32);
+    processDlopenOwner = new ProcessAtomicI32(memory, processArchiveOwnerAddr, grouped?.wait32);
     const processArchiveControlAddr = processChannelOffset - FORK_BUF_SIZE;
     const processGenerationOffset =
       ptrWidth === 8
@@ -5627,6 +5616,7 @@ export async function centralizedThreadWorkerMain(
         channelOffset,
         forkMode,
         borrowedReplay,
+        grouped?.wait32,
       );
       forkResult = childPid;
       if (childPid < 0) {
@@ -5646,6 +5636,7 @@ export async function centralizedThreadWorkerMain(
       (status) => {
         kernelThreadExitStatus = status;
       },
+      grouped?.wait32,
     );
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (rawMode: number): number => {
@@ -5744,6 +5735,7 @@ export async function centralizedThreadWorkerMain(
       threadExceptionBroker
         ? createProcessDylinkActivationOwner({
             memory,
+            groupedWait32: grouped?.wait32,
             ptrWidth,
             channelOffset,
             forkUnwindTag: threadForkUnwindTag,
@@ -5794,6 +5786,8 @@ export async function centralizedThreadWorkerMain(
       undefined,
       readForkSideModuleContract(module),
       () => programBytes ?? patchWasmForThread(initData.programBytes),
+      undefined,
+      grouped?.wait32,
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
@@ -5849,7 +5843,7 @@ export async function centralizedThreadWorkerMain(
         : undefined;
     const importObject = buildImportObject(
       module,
-      memory,
+      physicalMemory,
       kernelImports,
       channelOffset,
       threadDlopenSupport.imports,
@@ -5875,17 +5869,19 @@ export async function centralizedThreadWorkerMain(
           importObject,
         )
       : importObject;
+    const guardedThreadImports = grouped ? grouped.imports(routedThreadImportObject, channelOffset) : routedThreadImportObject;
     const threadMainImportedState =
       threadImportedStateCapture?.prepareActivation(
         0,
         module,
-        routedThreadImportObject,
+        guardedThreadImports,
       );
     const threadInstanceImports = (threadMainImportedState?.imports ??
-      routedThreadImportObject) as WebAssembly.Imports;
+      guardedThreadImports) as WebAssembly.Imports;
     const instance = new WebAssembly.Instance(module, threadInstanceImports);
     noteProcessMemoryInstance(instance);
     threadInstance = instance;
+    grouped?.bind(instance, 2);
     threadMainImportedState?.complete(instance);
     if (
       hasForkInstrumentation &&
@@ -5957,7 +5953,7 @@ export async function centralizedThreadWorkerMain(
       const align = instance.exports.__tls_align;
       if (
         !Number.isSafeInteger(tlsOffset + tlsByteLength)
-        || tlsByteLength < 0 || tlsOffset + tlsByteLength > memory.buffer.byteLength
+        || tlsByteLength < 0 || tlsOffset + tlsByteLength > processMemoryByteLength(memory)
         || (size instanceof WebAssembly.Global && Number(size.value) > tlsByteLength)
         || (align instanceof WebAssembly.Global && tlsOffset % Number(align.value) !== 0)
       ) {
@@ -6029,6 +6025,10 @@ export async function centralizedThreadWorkerMain(
           "wpk_fork_resume_thread",
       );
     }
+    // WHY: clone success must not let the parent immediately exit while a
+    // published sibling is still asynchronously initializing its instance.
+    // This acknowledges TLS/table/channel setup, not terminal quiescence.
+    port.postMessage({ type: "thread_ready", pid, tid } satisfies WorkerToHostMessage);
     let result = 0;
     if (hasForkInstrumentation && threadProcessContinuation) {
       for (;;) {
@@ -6086,22 +6086,7 @@ export async function centralizedThreadWorkerMain(
     // parks this Worker forever; after slot reuse its stale atomic waiter can
     // steal the next pthread's first notify.
     if (kernelThreadExitStatus === null) {
-      const view = new DataView(memory.buffer);
-      const base = channelOffset;
-      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
-      view.setInt32(base + CH_ARGS, result ?? 0, true);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      // Wait for kernel to process the exit. The kernel completes the channel
-      // (CH_STATUS -> COMPLETE), which returns this Atomics.wait.
-      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
-      // Intentionally do NOT reset CH_STATUS back to IDLE here. A normal syscall
-      // resets to IDLE so the next syscall can set PENDING, but an exiting thread
-      // issues no further syscalls — the channel is torn down and the slot is
-      // re-zeroed when it is reclaimed for a future clone(). Writing here would be
-      // the thread's only post-exit touch of the channel, so omitting it removes
-      // any possibility of a late write landing on a reused slot's status word.
+      sendThreadExit(memory, channelOffset, result ?? 0, grouped?.wait32);
     }
 
     port.postMessage({
@@ -6110,49 +6095,61 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
-    if (isExitedWorkerRetirement(memory, channelOffset)) {
-      clearWorkerRetirementMarker(memory, channelOffset);
-      return;
-    }
-    if (isExecRetirementTrap(err, memory, channelOffset)) {
-      clearWorkerRetirementMarker(memory, channelOffset);
-      port.postMessage({
-        type: "exec_retired",
-        pid,
-        tid,
-      } satisfies WorkerToHostMessage);
-      return;
-    }
-    if (kernelThreadExitStatus !== null && isWasmUnreachableTrap(err)) {
-      // The process can outlive this pthread. Release host-side replication
-      // locks, but do not run guest deallocators on its closed syscall channel.
+    try {
+      if (grouped?.stopRequested) {
+        threadExternrefTokens?.clear();
+        threadHostImportRuntime?.clear();
+        return;
+      }
+      if (isExitedWorkerRetirement(memory, channelOffset)) {
+        clearWorkerRetirementMarker(memory, channelOffset);
+        return;
+      }
+      if (isExecRetirementTrap(err, memory, channelOffset)) {
+        clearWorkerRetirementMarker(memory, channelOffset);
+        port.postMessage({
+          type: "exec_retired",
+          pid,
+          tid,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
+      if (kernelThreadExitStatus !== null && isWasmUnreachableTrap(err)) {
+        // The process can outlive this pthread. Release host-side replication
+        // locks, but do not run guest deallocators on its closed syscall channel.
+        threadTableReplication?.abortActiveMutations();
+        releasePthreadForkLock();
+        threadExternrefTokens?.clear();
+        threadHostImportRuntime?.clear();
+        port.postMessage({
+          type: "thread_exit",
+          pid,
+          tid,
+        } satisfies WorkerToHostMessage);
+        return;
+      }
       threadTableReplication?.abortActiveMutations();
       releasePthreadForkLock();
+      try {
+        threadProcessContinuation?.clear();
+      } catch {
+        // Preserve the original worker failure after making transaction roots
+        // unreachable as far as the coordinator can.
+      }
       threadExternrefTokens?.clear();
       threadHostImportRuntime?.clear();
+      const message =
+        err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
       port.postMessage({
-        type: "thread_exit",
+        type: "error",
         pid,
-        tid,
+        message: `Thread worker failed: ${message}`,
+        wasmIndirectCallTrap: observeWasmIndirectCallTrap(err),
       } satisfies WorkerToHostMessage);
-      return;
+    } catch (retirementError) {
+      if (!grouped?.stopRequested) throw retirementError;
+      threadExternrefTokens?.clear();
+      threadHostImportRuntime?.clear();
     }
-    threadTableReplication?.abortActiveMutations();
-    releasePthreadForkLock();
-    try {
-      threadProcessContinuation?.clear();
-    } catch {
-      // Preserve the original worker failure after making transaction roots
-      // unreachable as far as the coordinator can.
-    }
-    threadExternrefTokens?.clear();
-    threadHostImportRuntime?.clear();
-    const message =
-      err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
-    port.postMessage({
-      type: "error",
-      pid,
-      message: `Thread worker failed: ${message}`,
-    } satisfies WorkerToHostMessage);
   }
 }

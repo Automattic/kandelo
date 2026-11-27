@@ -11,6 +11,35 @@ use std::{
 mod sections;
 pub(crate) use sections::copy_without_custom;
 
+#[cfg(target_os = "kandelo")]
+mod memfd;
+#[cfg(target_os = "kandelo")]
+pub use memfd::MemfdSpoolStorage;
+
+/// Storage for one instrumentation invocation, independent of global TMPDIR.
+///
+/// # Safety
+/// Each successful call must transfer a fresh, empty, seekable regular file
+/// opened for reading and writing. On Unix it must have no public pathname or
+/// other accessible writable handle/mapping. Neither the implementation nor
+/// another owner may retain or create an alias that can modify its contents.
+/// The artifact owner relies on this exclusivity when freezing a read-only
+/// mapping and closing the last writable handle.
+pub unsafe trait SpoolStorage {
+    fn create(&self) -> std::io::Result<File>;
+}
+
+/// The existing CLI/library default: private temporary files.
+pub struct TemporarySpoolStorage;
+
+// SAFETY: tempfile transfers its sole handle. Unix files are already unlinked;
+// other platforms freeze through a separate anonymous mapping below.
+unsafe impl SpoolStorage for TemporarySpoolStorage {
+    fn create(&self) -> std::io::Result<File> {
+        tempfile::tempfile()
+    }
+}
+
 pub struct MappedArtifact {
     mapping: Option<Mmap>,
 }
@@ -80,8 +109,13 @@ pub struct ArtifactSpool {
 }
 impl ArtifactSpool {
     pub fn new(limit: u64) -> Result<Self> {
+        Self::with_storage(limit, &TemporarySpoolStorage)
+    }
+    pub fn with_storage(limit: u64, storage: &dyn SpoolStorage) -> Result<Self> {
         Ok(Self {
-            file: tempfile::tempfile().context("creating private artifact spool")?,
+            file: storage
+                .create()
+                .context("creating private artifact spool")?,
             length: 0,
             limit,
         })
@@ -114,8 +148,8 @@ impl Write for ArtifactSpool {
 
 #[cfg(unix)]
 fn freeze(file: File, length: usize) -> Result<Mmap> {
-    // SAFETY: tempfile() creates a private, unlinked file on Unix. No handle
-    // or path escaped the append-only owner. All writes are complete and its
+    // SAFETY: SpoolStorage transfers an exclusive private file. No writable
+    // alias escaped the append-only owner. All writes are complete and its
     // last file handle is closed before returning. Never map a caller's file.
     unsafe { MmapOptions::new().len(length).map(&file) }
         .context("mapping immutable private artifact")

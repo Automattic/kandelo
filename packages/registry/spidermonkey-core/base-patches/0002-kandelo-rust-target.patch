@@ -1,0 +1,52 @@
+# Kandelo patch rationale (S01)
+# Judgment: Supported. Keep the target mapping because Mozilla configure
+# cannot otherwise select Kandelo’s current Rust target without
+# misidentifying the platform.
+#
+# SpiderMonkey's build must pair Kandelo C/C++ code with its current
+# wasm32-unknown-unknown Rust libraries. Mozilla selects Rust targets by OS
+# name and does not otherwise recognize this pairing. This build-time
+# mapping cannot live in the runtime bridge. A unified Kandelo Rust target
+# could replace it after SDK qualification; do not report a false
+# Linux/WASI target.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/build/moz.configure/rust.configure
++++ b/build/moz.configure/rust.configure
+@@ -264,14 +264,16 @@
+         try:
+             info = split_triplet(t, allow_wasi=True)
+         except ValueError:
+-            if t.startswith("thumb"):
++            if t == "wasm32-unknown-unknown":
++                info = split_triplet("wasm32-unknown-kandelo", allow_wasi=True)
++            elif t.startswith("thumb"):
+                 cpu, rest = t.split("-", 1)
+                 retry = "-".join(("arm", rest))
++                try:
++                    info = split_triplet(retry, allow_wasi=True)
++                except ValueError:
++                    continue
+             else:
+-                continue
+-            try:
+-                info = split_triplet(retry, allow_wasi=True)
+-            except ValueError:
+                 continue
+         key = (info.cpu, info.endianness, info.os)
+         data.setdefault(key, []).append(namespace(rust_target=t, target=info))
+@@ -385,6 +387,13 @@
+                         return c.rust_target
+                 return matches[0].rust_target
+
++        # The engine Rust code uses the pinned standard Wasm target. The
++        # C/C++ SDK, not that Rust target, owns Kandelo's syscall boundary.
++        if host_or_target.cpu == "wasm32" and host_or_target.kernel == "Kandelo":
++            narrowed = [c for c in candidates if c.rust_target == "wasm32-unknown-unknown"]
++            if len(narrowed) == 1:
++                return narrowed[0].rust_target
++
+         # See if we can narrow down on the exact alias.
+         # We use the sub_configure_alias to keep support mingw32 triplets as input.
+         narrowed = [

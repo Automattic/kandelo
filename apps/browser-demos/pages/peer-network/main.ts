@@ -8,7 +8,7 @@ import { createBuildFsWithEtc, finalizeKernelOwnedImage } from "../../lib/kernel
 import kernelUrl from "@kernel-wasm?url";
 import ncUrl from "@binaries/programs/wasm32/netcat/nc.wasm?url";
 import phpUrl from "@binaries/programs/wasm32/php/php.wasm?url";
-import curlUrl from "@binaries/programs/wasm32/curl.wasm?url";
+import curlUrl from "@binaries/programs/wasm32/curl/curl.wasm?url";
 
 const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 const status = document.getElementById("status")!;

@@ -349,13 +349,13 @@ async function main(): Promise<void> {
       : resolveBinary("programs/mariadb/mysqltest.wasm"))),
     bash: new Uint8Array(readFileSync(bashRoot
       ? join(bashRoot, "bash.wasm")
-      : resolveBinary("programs/bash.wasm"))),
+      : resolveBinary("programs/bash/bash.wasm"))),
     dash: new Uint8Array(readFileSync(dashRoot
       ? join(dashRoot, "dash.wasm")
       : resolveBinary("programs/dash.wasm"))),
     coreutils: new Uint8Array(readFileSync(coreutilsRoot
       ? join(coreutilsRoot, "coreutils.wasm")
-      : resolveBinary("programs/coreutils.wasm"))),
+      : resolveBinary("programs/coreutils/coreutils.wasm"))),
     dinit: {
       dinit: new Uint8Array(readFileSync(dinitPath)),
       dinitctl: new Uint8Array(readFileSync(dinitctlPath)),

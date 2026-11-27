@@ -185,7 +185,7 @@ test("compares a saved package shell before and after shared KIFS upgrade", asyn
     await page.route(url("/capacity.wasm"), route => route.fulfill({ body: inputs.guest }));
     await page.route(url("/capacity-kernel.wasm"), route => route.fulfill({ body: inputs.kernel }));
     await page.goto(url("/trap-signal-test.html"));
-    const result = await page.evaluate(async ({ identity, hostUrl, lazyAssetDirectory, workloadUrl, warmStatUrl, entries, observerUrl, measureTmpfs, profileReads, reverseOrder }) => {
+    const result = await page.evaluate(async ({ identity, hostUrl, lazyAssetDirectory, workloadUrl, warmStatUrl, entries, observerUrl, measureTmpfs, profileReads, reverseOrder, measureWatchers }) => {
       const { BrowserKernel } = await import(hostUrl);
       const { compareSavedShell, savedShellComputer } = await import(workloadUrl) as typeof import("../../../host/test/fixtures/kifs-saved-shell-workload");
       const root = await navigator.storage.getDirectory();
@@ -229,7 +229,7 @@ test("compares a saved package shell before and after shared KIFS upgrade", asyn
             if (filename.startsWith(stateName(phase) + ".")) total += (await (await overlay.getFileHandle(filename)).getFile()).size;
           }
           return total;
-        }, entries, undefined, observerUrl ? stateName : undefined, measureTmpfs, profileReads, reverseOrder);
+        }, entries, undefined, observerUrl ? stateName : undefined, measureTmpfs, profileReads, reverseOrder, measureWatchers);
         return { rounds };
       } finally {
         window.Worker = NativeWorker;
@@ -240,6 +240,7 @@ test("compares a saved package shell before and after shared KIFS upgrade", asyn
         if (warmStatUrl) await root.removeEntry(controlName);
       }
     }, { identity: checked.identity, entries, reverseOrder: process.env.KANDELO_KIFS_V3_FIRST === "1", profileReads: process.env.KANDELO_KIFS_PROFILE_READS === "1", measureTmpfs: process.env.KANDELO_KIFS_TMPFS_CONTROL === "1",
+      measureWatchers: process.env.KANDELO_KIFS_COMPARE_WATCHES === "1",
       observerUrl: process.env.KANDELO_KIFS_IO_PROFILE === "1" ? url("/@fs/" + resolve(import.meta.dirname, "fixtures/kifs-io-profile-worker.ts") + "?worker_file&type=module") : undefined,
       hostUrl: url("/@fs/" + resolve(import.meta.dirname, "../../../host/src/browser-kernel-host.ts")),
       lazyAssetDirectory: url(DEV_LAZY_ASSET_ROUTE),

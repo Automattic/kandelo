@@ -107,6 +107,12 @@ pub(super) struct Cli {
     #[arg(long, hide = true, conflicts_with = "output")]
     pub(super) sink_report: bool,
 
+    /// Diagnosis with `--sink-report`: after the report, print the shortest
+    /// call chain that makes FUNCTION instrumented, one
+    /// `W\t<function>\t<step>\t<name>\t<edge to next>` row per step.
+    #[arg(long, hide = true, value_name = "FUNCTION", requires = "sink_report")]
+    pub(super) explain: Vec<String>,
+
     /// wasm-opt level to run over an instrumented output, or `none`.
     ///
     /// Runs only when instrumentation changed the module; a module outside

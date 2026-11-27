@@ -18,6 +18,7 @@ import {
   SPAWN_SCRATCH_LARGE_WIRE_BYTES,
 } from "./spawn-scratch-evidence.js";
 import type { BenchmarkArtifacts } from "./types.js";
+import { BinaryNotFoundError } from "../host/src/binary-resolver.js";
 import { resolveRootfsArtifact } from "../host/src/node-kernel-host.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,8 +27,8 @@ test("Node selection follows the kernel resolver and rootfs fallback order", () 
   const rootfsRequests: string[] = [];
   const rootfs = resolveRootfsArtifact((request) => {
     rootfsRequests.push(request);
-    if (request === "rootfs.vfs") throw new Error("canonical rootfs absent");
-    if (request === "programs/rootfs.vfs") return "/selected/package-rootfs.vfs";
+    if (request === "programs/rootfs.vfs.zst") throw new BinaryNotFoundError("package rootfs absent");
+    if (request === "rootfs.vfs.zst") return "/selected/rootfs.vfs.zst";
     throw new Error(`unexpected request: ${request}`);
   });
   const kernelRequests: string[] = [];
@@ -41,13 +42,13 @@ test("Node selection follows the kernel resolver and rootfs fallback order", () 
 
   assert.deepEqual(kernelRequests, ["kernel.wasm"]);
   assert.deepEqual(rootfsRequests, [
-    "rootfs.vfs",
-    "programs/rootfs.vfs",
+    "programs/rootfs.vfs.zst",
+    "rootfs.vfs.zst",
   ]);
   assert.equal(selections.kernel.selectedPath, "/selected/fetched-kernel.wasm");
   assert.equal(selections.kernel.resolverRequest, "kernel.wasm");
-  assert.equal(selections.rootfs?.selectedPath, "/selected/package-rootfs.vfs");
-  assert.equal(selections.rootfs?.resolverRequest, "programs/rootfs.vfs");
+  assert.equal(selections.rootfs?.selectedPath, "/selected/rootfs.vfs.zst");
+  assert.equal(selections.rootfs?.resolverRequest, "rootfs.vfs.zst");
 });
 
 test("browser selection uses the same policy-aware kernel resolver as Vite", () => {

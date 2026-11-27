@@ -264,6 +264,9 @@ pub(crate) fn dir_entries(
             entries.try_push((crate::IoBuffer::copy_from(b"kandelo")?, DT_DIR, devfs_ino(b"/dev/kandelo")))?;
         }
         DevfsEntry::KandeloDir => {
+            if cfg!(feature = "vfs-events") {
+                entries.try_push((crate::IoBuffer::copy_from(b"fs-events")?, DT_CHR, devfs_ino(b"/dev/kandelo/fs-events")))?;
+            }
             // /dev/kandelo/clipboard — host clipboard text for the guest's
             // clipboard agent (crate::clipboard).
             entries.try_push((
@@ -527,7 +530,11 @@ mod tests {
         assert!(root.iter().any(|(n, t, _)| n.as_slice() == b"kandelo" && *t == DT_DIR));
         let entries = dir_entries(&proc, &DevfsEntry::KandeloDir).unwrap();
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
-        assert_eq!(names, [b"clipboard".as_slice()]);
+        if cfg!(feature = "vfs-events") {
+            assert_eq!(names, [b"fs-events".as_slice(), b"clipboard"]);
+        } else {
+            assert_eq!(names, [b"clipboard".as_slice()]);
+        }
         assert_eq!(entries[0].1, DT_CHR);
         let st = match_devfs_stat(b"/dev/kandelo", 0, 0).unwrap();
         assert_eq!(st.st_mode & 0o170000, S_IFDIR);

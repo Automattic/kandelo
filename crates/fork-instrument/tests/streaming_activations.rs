@@ -6,6 +6,60 @@ use wasm_encoder::{ExportKind, ValType, reencode::Reencode};
 mod harness;
 use harness::ActivationModule;
 
+#[test]
+fn large_simple_support_catalog_fits_its_metadata_budget() {
+    // Large C++ tools have many simple callees. Their shared signatures and
+    // compact helper records must fit without treating each as a 2 KiB object.
+    const FUNCTIONS: u32 = 10_000;
+    let input = wat::parse_str(format!(
+        "(module (memory 1) {})",
+        "(func)".repeat(FUNCTIONS as usize)
+    ))
+    .unwrap();
+    let scan = scan(&input).unwrap();
+    let mut runtime = NativeRuntime::plan(&scan, Default::default(), 1 << 24).unwrap();
+    let environment = FrameEnvironment::discover(&scan, &mut runtime, 1 << 24).unwrap();
+    let first_type = scan.types.as_ref().core_type_count_in_module()
+        + runtime.function_declarations().type_count();
+    let first_function = runtime.imports_plan().helper_function_base() + 7;
+    let mut catalog = ActivationSupportCatalog::new(
+        environment,
+        runtime.indices(),
+        runtime.frames_start_offset(),
+        first_type,
+        first_function,
+        1 << 24,
+    )
+    .unwrap();
+    for function in 0..FUNCTIONS {
+        let target = ActivationCallTarget::Direct(runtime.function_index(function).unwrap());
+        let helper = catalog.transport(target, &[], &[]).unwrap();
+        assert_eq!(helper, first_function + function + 1);
+        assert_eq!(catalog.transport(target, &[], &[]).unwrap(), helper);
+    }
+    let frozen = catalog.freeze().unwrap();
+    assert_eq!(frozen.declarations().function_count(), FUNCTIONS + 1);
+    assert_eq!(frozen.declarations().type_count(), 2);
+
+    // The same guard must still reject a request that cannot fit, without
+    // consuming an index or leaving a half-interned declaration behind.
+    let mut bounded = ActivationSupportCatalog::new(
+        environment,
+        runtime.indices(),
+        runtime.frames_start_offset(),
+        first_type,
+        first_function,
+        2048,
+    )
+    .unwrap();
+    assert!(
+        bounded
+            .transport(ActivationCallTarget::Direct(0), &[], &[])
+            .is_err()
+    );
+    assert_eq!(bounded.freeze().unwrap().declarations().function_count(), 1);
+}
+
 fn artifact(wide: bool, shared: bool) -> (Vec<u8>, Vec<u32>) {
     let pointer = if wide { "i64" } else { "i32" };
     let memory = if wide { "i64" } else { "" };

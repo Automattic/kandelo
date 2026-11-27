@@ -15,7 +15,7 @@ import {
 } from "./support/kandelo-machine";
 
 function imageReady(image: string): boolean {
-  return [image, "programs/wasm32/bash.wasm"].every((path) => {
+  return [image, "programs/wasm32/bash/bash.wasm"].every((path) => {
     try {
       return tryResolveBinary(path) !== null;
     } catch {

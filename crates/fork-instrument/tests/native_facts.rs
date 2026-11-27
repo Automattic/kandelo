@@ -78,14 +78,10 @@ fn production_facts_options_and_selected_sets_preserve_expected_results() {
 }
 
 #[test]
-fn unreadable_or_stale_facts_use_native_baselines_and_can_be_ignored() {
+fn unsupported_or_stale_facts_use_native_baselines_and_can_be_ignored() {
     let plain = wat::parse_str(include_str!("fixtures/typed_dispatch.wat")).unwrap();
     let text = include_str!("fixtures/typed_dispatch.calltypes");
-    for input in [
-        linked(text, None),
-        linked(text, Some([0; 32])),
-        linked("malformed facts", Some(facts::code_sha256(&plain).unwrap())),
-    ] {
+    for input in [linked(text, None), linked(text, Some([0; 32]))] {
         let decision = compare(&input, &Options::default());
         assert_eq!(decision.source, PlanSource::Builtin);
         assert!(decision.facts_error.is_some());
@@ -98,6 +94,16 @@ fn unreadable_or_stale_facts_use_native_baselines_and_can_be_ignored() {
         );
         assert!(ignored.facts_error.is_none());
     }
+    let unsupported = linked(
+        "#kandelo-calltypes\t0\n",
+        Some(facts::code_sha256(&plain).unwrap()),
+    );
+    let analysis = native::analyze(&unsupported, &Options::default(), Default::default()).unwrap();
+    assert_eq!(analysis.decision.source, PlanSource::Builtin);
+    assert_eq!(
+        analysis.decision.facts_error.as_deref(),
+        Some("unsupported facts format")
+    );
 }
 
 #[test]
@@ -133,6 +139,78 @@ fn dynamic_facts_preserve_the_explicit_side_module_contract() {
             .contains("mode\tassume-all-entries-fork-returning")
     );
     compare(&input, &Options::default());
+}
+
+#[test]
+fn malformed_bound_facts_and_storage_exhaustion_are_errors() {
+    let plain = wat::parse_str(include_str!("fixtures/typed_dispatch.wat")).unwrap();
+    let hash = Some(facts::code_sha256(&plain).unwrap());
+    let malformed = linked("malformed facts", hash);
+    let err = native::analyze(&malformed, &Options::default(), Default::default())
+        .err()
+        .unwrap();
+    assert!(format!("{err:#}").contains("does not start with a chunk header"));
+
+    let input = linked(include_str!("fixtures/typed_dispatch.calltypes"), hash);
+    let mut limits = native::AnalysisLimits::default();
+    limits.storage.disk_bytes = 4096;
+    let err = native::analyze(&input, &Options::default(), limits)
+        .err()
+        .unwrap();
+    assert!(format!("{err:#}").contains("database or disk is full"));
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_fails_if_writes_to_the_facts_database_fail() {
+    use std::{fmt::Write as _, os::unix::process::CommandExt, process::Command};
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.wasm");
+    let output = dir.path().join("output.wasm");
+    let plain = wat::parse_str(include_str!("fixtures/typed_dispatch.wat")).unwrap();
+    let mut text = include_str!("fixtures/typed_dispatch.calltypes").to_owned();
+    for i in 0..10_000 {
+        writeln!(text, "Q\tfunction_{i}\ttype_{i}").unwrap();
+    }
+    let bytes = linked(&text, Some(facts::code_sha256(&plain).unwrap()));
+    std::fs::write(&input, &bytes).unwrap();
+    std::fs::write(&output, b"previous output").unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"));
+    command
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .args(["--post-optimize", "none"])
+        .env("TMPDIR", dir.path());
+    // Allow the input snapshot and builtin DB to fit. Interning thousands
+    // of names and indexing their relations exceeds the per-file limit.
+    let size = 512 * 1024;
+    assert!(bytes.len() < size);
+    unsafe {
+        command.pre_exec(move || {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let limit = libc::rlimit {
+                rlim_cur: size as libc::rlim_t,
+                rlim_max: size as libc::rlim_t,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let result = command.output().unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(!result.status.success(), "{stderr}");
+    assert!(stderr.contains("analyzing compiler facts"), "{stderr}");
+    assert!(stderr.contains(dir.path().to_str().unwrap()), "{stderr}");
+    assert!(
+        stderr.contains("disk I/O error") || stderr.contains("database or disk is full"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read(&output).unwrap(), b"previous output");
 }
 
 /// Facts-planned activations of a fixture, with the contract mode it chose.

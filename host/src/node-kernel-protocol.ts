@@ -1,3 +1,4 @@
+import type { TrustedMemoryGroupOptions } from './grouped-session-runtime';
 import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
@@ -14,6 +15,7 @@ export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -59,6 +61,7 @@ import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetMemoryGroupUsageRequestMessage,
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
@@ -139,6 +142,7 @@ export interface InitMessage {
   remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   config: {
+    experimentalMemoryGroup?: TrustedMemoryGroupOptions;
     maxWorkers: number;
     maxPages?: number;
     kernelMaxPages?: number;
@@ -216,6 +220,8 @@ export interface OwnedJobMessage {
 }
 
 export interface SpawnMessage {
+  /** Explicit SDK variant selection; descendants inherit kernel group membership. */
+  executionBackend?: "ordinary" | "memory-group";
   type: "spawn";
   requestId: number;
   /** Own this process and its descendants as one cancellable command family. */
@@ -382,6 +388,7 @@ export type MainToKernelMessage =
   | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetMemoryGroupUsageRequestMessage
   | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
   | SignalProcessMessage

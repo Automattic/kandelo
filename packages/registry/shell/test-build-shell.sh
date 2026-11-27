@@ -140,8 +140,7 @@ out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --rootfs|--ca-bundle|--bash|--fbdoom|--modeset|--demo-config|\
-        --demo-profile-overlay|--dependency-contract|--wldesktop|\
-        --omarchydesktop|--omarchy-theme-hook|--desktop-data|\
+        --demo-profile-overlay|--dependency-contract|--eager-budget|--desktop-data|\
         --libinput-quirks|--xkeyboard-config|--espeak-ng-data)
             [ -f "${2:-}" ] || { echo "missing input for $1" >&2; exit 85; }
             shift 2
@@ -176,9 +175,8 @@ make_fixture() {
         mkdir "$root/dependencies/$dependency"
     done
     local runtime_file
-    for runtime_file in wldesktop omarchydesktop omarchy-theme-changed \
-        kandelo-desktop-data.zip libinput-quirks.zip xkeyboard-config.zip; do
-        printf 'desktop runtime\n' >"$root/dependencies/wayland-demo/$runtime_file"
+    for runtime_file in kandelo-desktop-data.zip libinput-quirks.zip xkeyboard-config.zip; do
+        printf 'desktop runtime\n' >"$root/dependencies/desktop-data/$runtime_file"
     done
     printf 'speech data\n' >"$root/dependencies/espeak-ng/espeak-ng-data.zip"
     printf 'CA bundle\n' >"$root/dependencies/ca-certificates/ca-certificates.zip"
@@ -243,11 +241,11 @@ grep -Fq -- \
     "$FAKE_LOG" || fail "wrapper omitted canonical demo profile overlay"
 
 grep -Fq -- \
-    "--xkeyboard-config $TMP_ROOT/parallel-one/dependencies/wayland-demo/xkeyboard-config.zip" \
+    "--xkeyboard-config $TMP_ROOT/parallel-one/dependencies/desktop-data/xkeyboard-config.zip" \
     "$FAKE_LOG" || fail "wrapper omitted xkeyboard-config dependency output"
 
 make_fixture missing-xkeyboard-config
-rm "$TMP_ROOT/missing-xkeyboard-config/dependencies/wayland-demo/xkeyboard-config.zip"
+rm "$TMP_ROOT/missing-xkeyboard-config/dependencies/desktop-data/xkeyboard-config.zip"
 expect_failure "xkeyboard-config dependency output" run_fixture missing-xkeyboard-config
 
 make_fixture failed
@@ -263,7 +261,7 @@ expect_failure "supports only wasm32" env \
     WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/wrong-arch/work" \
     WASM_POSIX_DEP_ROOTFS_DIR="$TMP_ROOT/wrong-arch/rootfs" \
     WASM_POSIX_DEP_BASH_DIR="$TMP_ROOT/wrong-arch/bash" \
-    WASM_POSIX_DEP_WAYLAND_DEMO_DIR="$TMP_ROOT/wrong-arch/dependencies/wayland-demo" \
+    WASM_POSIX_DEP_DESKTOP_DATA_DIR="$TMP_ROOT/wrong-arch/dependencies/desktop-data" \
     WASM_POSIX_DEP_ESPEAK_NG_DIR="$TMP_ROOT/wrong-arch/dependencies/espeak-ng" \
     WASM_POSIX_DEP_FBDOOM_DIR="$TMP_ROOT/wrong-arch/fbdoom" \
     WASM_POSIX_DEP_MODESET_DIR="$TMP_ROOT/wrong-arch/modeset" \

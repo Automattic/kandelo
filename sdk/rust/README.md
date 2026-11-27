@@ -83,6 +83,30 @@ all work. See `programs/rust/std-hello/`.
 
 ## Porting Rust dependencies
 
+### Optional unwinding profile for native guest libraries
+
+The default target remains `panic = "abort"`. A private sysroot build may set
+`CARGO_PROFILE_RELEASE_PANIC=unwind`; the sysroot builder fingerprints that choice,
+selects the matching original Rust panic runtime, and records the strategy in its
+private target specification. Use a separate `KANDELO_RUST_DIR` for that profile.
+The abort test harness keeps its existing subprocess isolation; the unwinding
+profile uses the normal Rust test harness.
+
+Kandelo selects Rust's original Wasm unwinder instead of an external Unix
+`libunwind`. The unwinding profile also needs the explicit exception-handling
+target feature and modern Wasm EH lowering. PIC flags must apply to std and its
+consumer alike and remain part of their build identity. A linked library must
+expose its intended C ABI and retain its real C-runtime imports in the executable;
+the SDK honors `--no-export-dynamic` and keeps the real `fork` service for `-ldl`
+programs so normal instrumentation can provide the loader's activation owner.
+This does not relax side-module admission or select a broader fork profile.
+
+A standalone shared-library diagnostic has caught an intentional Rust panic,
+run its stack destructor, unloaded and exited on Node, Chromium, Firefox and
+WebKit separately. The ordinary Rust std suite also passes with abort-on-panic.
+These checks do not qualify arbitrary Rust libraries, worker TLS retirement,
+fork replicas, allocation failures or a JavaScript consumer's error mapping.
+
 Compiling `std` does not make every crate recognize a new operating system.
 Separate target-selection failures from missing runtime behavior before
 changing a dependency. The full target reports `target_os = "kandelo"`,
@@ -196,3 +220,22 @@ Exercise delayed work too. Rust's timed parking uses absolute
 `FUTEX_WAIT_BITSET` deadlines, while musl commonly uses relative `FUTEX_WAIT`
 timeouts. A working mutex or first message does not prove either timed
 parking or subsequent timer-driven file chunks work.
+
+### Linking Rust static libraries with an embedded Rust runtime
+
+The Kandelo std port marks Rust's existing Wasm `rust_eh_personality` abort
+helper as a weak fallback. This permits a guest executable to link a Kandelo
+Rust static library alongside an embedded engine built with Rust's standard
+Wasm target, without two strong definitions of that same compiler helper.
+The original helper body remains unchanged. Rust's actual Wasm exception
+handling uses `__gxx_wasm_personality_v0`, which this change does not alter.
+Panic strategy, allocation, syscall and exception behavior remain governed by
+the selected original runtimes; this is not a general license to combine
+incompatible Rust ABIs.
+
+The Node-port cleanup keeps that annotation provisionally. A single shared
+Rust standard-library/panic owner has not been established for the engine's
+standard Wasm target and the Kandelo adapter target. Link success does not
+qualify that combination. Retiring the annotation requires a concrete shared
+SDK runtime design, exact panic/exception/allocator ownership and qualification;
+changing the target/sysroot or panic ABI requires separate review.

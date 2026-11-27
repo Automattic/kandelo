@@ -10,6 +10,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { BrowserKernel, BrowserKernelBootOptions } from "@host/browser-kernel-host";
 import type { TerminalLinkContext } from "../../../web-libs/kandelo-session/src/terminal-links";
 import { registerTerminalLinks } from "./terminal-links";
+import { loadTerminalBaseFont, TerminalFontWriter } from "./terminal-fonts";
 
 const encoder = new TextEncoder();
 
@@ -28,7 +29,10 @@ export interface PtyTerminalOptions extends ITerminalOptions {
 export class PtyTerminal {
   readonly terminal: Terminal;
   private fitAddon: FitAddon;
-  private pid: number = -1;
+  private pid = -1;
+  private readonly ready: Promise<void>;
+  private output?: TerminalFontWriter;
+  private disposed = false;
   private kernel: BrowserKernel;
   private disposables: Array<{ dispose(): void }> = [];
   private resizeObserver: ResizeObserver | null = null;
@@ -53,17 +57,29 @@ export class PtyTerminal {
 
     this.fitAddon = new FitAddon();
     this.terminal.loadAddon(this.fitAddon);
-    this.terminal.open(container);
-    this.fitAddon.fit();
-    this.linksDisposable = registerTerminalLinks(
-      this.terminal,
-      linkContext ?? (() => ({ pageUrl: window.location.href, machine: null })),
-    );
-
-    // Auto-fit on container resize
-    if (autoFit !== false) {
-      this.resizeObserver = new ResizeObserver(() => this.fit());
-      this.resizeObserver.observe(container);
+    const open = () => {
+      if (this.disposed) return;
+      this.terminal.open(container);
+      this.fitAddon.fit();
+      this.linksDisposable = registerTerminalLinks(
+        this.terminal,
+        linkContext ?? (() => ({ pageUrl: window.location.href, machine: null })),
+      );
+      if (autoFit !== false) {
+        this.resizeObserver = new ResizeObserver(() => this.fit());
+        this.resizeObserver.observe(container);
+      }
+    };
+    if (termOptions.fontFamily) {
+      open();
+      this.ready = Promise.resolve();
+    } else {
+      this.ready = loadTerminalBaseFont(container.ownerDocument).then(family => {
+        if (this.disposed) return;
+        this.terminal.options.fontFamily = family;
+        this.output = new TerminalFontWriter(this.terminal, container.ownerDocument);
+        open();
+      });
     }
   }
 
@@ -76,6 +92,7 @@ export class PtyTerminal {
     argv: string[],
     options?: { env?: string[]; cwd?: string; uid?: number; gid?: number },
   ): Promise<number> {
+    await this.waitUntilOpen();
     // Spawn with PTY enabled. Pass cols/rows pre-spawn so the very first
     // TIOCGWINSZ from the program returns the real width instead of the
     // kernel's 80x24 default — TUI renderers that latch onto width on
@@ -99,9 +116,7 @@ export class PtyTerminal {
     this.pid = pid;
 
     // Connect PTY output → xterm.js
-    this.kernel.onPtyOutput(pid, (data: Uint8Array) => {
-      this.terminal.write(data);
-    });
+    this.kernel.onPtyOutput(pid, this.onPtyOutput);
 
     // Connect xterm.js input → PTY master
     const dataDisposable = this.terminal.onData((data: string) => {
@@ -134,12 +149,11 @@ export class PtyTerminal {
    * drained when the handler attaches.
    */
   async boot(options: Omit<BrowserKernelBootOptions, "pty">): Promise<number> {
+    await this.waitUntilOpen();
     const { pid, exit } = await this.kernel.boot({ ...options, pty: true });
     this.pid = pid;
 
-    this.kernel.onPtyOutput(pid, (data: Uint8Array) => {
-      this.terminal.write(data);
-    });
+    this.kernel.onPtyOutput(pid, this.onPtyOutput);
 
     const dataDisposable = this.terminal.onData((data: string) => {
       if (this.pid < 0) return;
@@ -170,15 +184,14 @@ export class PtyTerminal {
     argv: string[],
     options?: { env?: string[]; cwd?: string; uid?: number; gid?: number },
   ): Promise<number> {
+    await this.waitUntilOpen();
     const { pid, exit } = await this.kernel.spawnFromVfs(programPath, argv, {
       ...options,
       pty: true,
     });
     this.pid = pid;
 
-    this.kernel.onPtyOutput(pid, (data: Uint8Array) => {
-      this.terminal.write(data);
-    });
+    this.kernel.onPtyOutput(pid, this.onPtyOutput);
 
     const dataDisposable = this.terminal.onData((data: string) => {
       if (this.pid < 0) return;
@@ -195,6 +208,15 @@ export class PtyTerminal {
     this.kernel.ptyResize(pid, this.terminal.rows, this.terminal.cols);
 
     return exit;
+  }
+
+  private readonly onPtyOutput = (data: Uint8Array): void => {
+    if (!this.disposed) (this.output ?? this.terminal).write(data);
+  };
+
+  private async waitUntilOpen(): Promise<void> {
+    await this.ready;
+    if (this.disposed) throw new Error("Terminal is disposed");
   }
 
   /** Write data to the PTY (for injecting input programmatically). */
@@ -214,6 +236,8 @@ export class PtyTerminal {
 
   /** Dispose the terminal and all event listeners. */
   dispose(): void {
+    this.disposed = true;
+    this.output?.dispose();
     this.pid = -1;
     for (const d of this.disposables) {
       d.dispose();

@@ -261,7 +261,7 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → cage → sway → tmux + DOS → WordPress
+- Four Doom → Quake → Freeciv → LÖVE → Cage → Sway → Sway/SFWBar → tmux + DOS → WordPress
   cycles in each of
   Chromium, Firefox, and WebKit, in one page per engine with the constrained
   memory profile. Games must render and reach running audio through trusted
@@ -531,7 +531,12 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Evidence lifecycle:** keep evidence until it has been reviewed, then use
   `scripts/agent-job release <job-id|playwright-run-uuid>`. Bulk job output
   lives in `.scratch/agent-jobs/<job-id>`; Playwright scratch and reports also
-  stay in the worktree. `cleanup` closes the current tree to new runs and
+  stay in the worktree. For a routine job whose entire success log and scratch
+  are disposable, `start --discard-on-success` opts into automatic retirement
+  on a later start or `tidy`, after all writers exit. Failed and unmarked runs
+  remain; do not opt in for required qualification logs or source experiments.
+  Exit status and bounded summaries remain after retirement.
+  `cleanup` closes the current tree to new runs and
   refuses active writers. Use `reopen` if work will continue after cleanup.
   `gc --dry-run` previews reconciliation of removed worktrees and recovery
   of interrupted releases. UUID ownership prevents a reused worktree path
@@ -692,7 +697,7 @@ part of the task. Build what is missing:
    images. `setup --all` source-builds the supported graph declared in
    `packages/sets/local-supported.toml` into `local-binaries/source-only-v1/`.
    It does not build excluded packages or dormant standalone images such as
-   `mariadb-vfs` and `perl-vfs`. If a selected test loads one, resolve that
+   `perl-vfs`. If a selected test loads one, resolve that
    recipe through the normal package resolver for its declared architecture.
    There is no separate fetch step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
    local-first; do not look for it. A single package can be resolved on demand

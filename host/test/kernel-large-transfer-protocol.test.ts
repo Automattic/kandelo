@@ -64,6 +64,7 @@ afterEach(() => {
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -109,6 +110,7 @@ function makeChannel(pid: number): TestChannel {
   return {
     pid,
     memory,
+    source: memory,
     channelOffset: 0,
     i32View: new Int32Array(memory.buffer),
     consecutiveSyscalls: 0,
@@ -236,6 +238,7 @@ function makeTransferHarness(
     processes: new Map([[channel.pid, {
       pid: channel.pid,
       memory: channel.memory,
+      source: channel.source,
       channels: [channel],
       ptrWidth: pointerWidth,
       explicitMaxAddr: true,
@@ -418,6 +421,7 @@ function addChannel(
   harness.worker.processes.set(channel.pid, {
     pid: channel.pid,
     memory: channel.memory,
+    source: channel.source,
     channels: [channel],
     ptrWidth: pointerWidth,
   });

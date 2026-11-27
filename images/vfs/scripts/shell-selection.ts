@@ -16,6 +16,7 @@
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { readLockedPackageManifestDependencies } from "../../../scripts/source-rootfs-shell-dependency-contract.mjs";
 import {
   resolveDemoRequires,
   validateKandeloDemoConfig,
@@ -36,7 +37,7 @@ export function partialShellSelection(packages: Iterable<string>): ShellSelectio
 
 /** Whether `pkg`'s files belong in an image composed for `selection`. */
 export function selectionIncludes(selection: ShellSelection, pkg: string): boolean {
-  return selection.kind === "canonical" || selection.packages.has(pkg);
+  return selection.kind === "canonical" ? canonicalPackageNames.has(pkg) : selection.packages.has(pkg);
 }
 
 /** A profile left out of a partial image, and the packages it lacked. */
@@ -129,3 +130,12 @@ export function requireProfileRequirementsDeclared(
     }
   }
 }
+
+// Base files retain rootfs ownership; optional shell files must be declared in
+// the shell contract. Retired packages are not admitted by either contract.
+const canonicalPackageNames = new Set([
+  ...readShellContractPackageNames(),
+  ...readLockedPackageManifestDependencies(fileURLToPath(
+    new URL("../../../packages/registry/rootfs/package.toml", import.meta.url),
+  )).map(({ name }: { name: string }) => name),
+]);

@@ -7728,9 +7728,8 @@ mod tests {
     }
 
     /// Stage 4 gap enumeration: every `build_*_vfs` function `run.sh` defines
-    /// must be accounted for as either (a) folded into a declared
-    /// `[[products]]` id (or, for `mariadb-test`, a declared bare package —
-    /// see its comment below) that `xtask bootstrap <id>` can already select,
+    /// must be accounted for as either (a) folded into a declared product
+    /// or package target that `xtask bootstrap <id>` can already select,
     /// or (b) left as a bash builder because its underlying package/product
     /// is a documented, pre-existing exclusion/dormant entry that predates
     /// this fold and is out of scope to reactivate here. If a future edit
@@ -7764,7 +7763,10 @@ mod tests {
             /// (`[[products]]`) or bare package name already selectable by
             /// `select_graph_dependencies`.
             FoldedProduct(&'static str),
-            FoldedPackage(&'static str),
+            FoldedPackage {
+                name: &'static str,
+                target: &'static str,
+            },
             /// Left as bash: `<excluded_name>` is the registry package or
             /// product id a pre-existing `[[exclusions]]`/`[[dormant_products]]`
             /// entry in `local-supported.toml` already keeps out of the
@@ -7786,12 +7788,7 @@ mod tests {
                 "build_nginx_php_vfs",
                 Expectation::FoldedProduct("browser-nginx-php"),
             ),
-    // mariadb-test has no `[[products]]` entry (matching the
-            // sibling test-support manifests test-php.toml/test-sqlite.toml,
-            // which are also manifest-only with no active product) but its
-            // package is already declared and bootstraps the identical
-            // build-mariadb-test.sh the bash builder called directly.
-            ("build_mariadb_test_vfs", Expectation::FoldedPackage("mariadb-test")),
+            // MariaDB test images are packages without active browser products.
             // NOTE: keep this table's folded (fn, id) pairs and the
             // `run_sh_folded_dispatch_matches_this_table` loop below in sync
             // — the second loop reads run.sh itself and asserts that each
@@ -7799,8 +7796,27 @@ mod tests {
             // `bootstrap_target <id>` with the SAME id listed here, so a
             // routing typo/regression (wrong product, or a revert to inline
             // bash) fails even though local-supported.toml is untouched.
-            ("build_mariadb_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
-            ("build_mariadb64_vfs", Expectation::DormantOrExcluded("mariadb-vfs")),
+            (
+                "build_mariadb_test_vfs",
+                Expectation::FoldedPackage {
+                    name: "mariadb-test",
+                    target: "mariadb-test",
+                },
+            ),
+            (
+                "build_mariadb_vfs",
+                Expectation::FoldedPackage {
+                    name: "mariadb-vfs",
+                    target: "mariadb-vfs",
+                },
+            ),
+            (
+                "build_mariadb64_vfs",
+                Expectation::FoldedPackage {
+                    name: "mariadb-vfs",
+                    target: "mariadb-vfs64",
+                },
+            ),
             ("build_erlang_vfs", Expectation::DormantOrExcluded("erlang-vfs")),
             ("build_python_vfs", Expectation::DormantOrExcluded("python-vfs")),
             ("build_perl_vfs", Expectation::DormantOrExcluded("perl-vfs")),
@@ -7828,13 +7844,13 @@ mod tests {
                     // passing. Read run.sh itself to close that gap.
                     assert_run_sh_folded_dispatch(&run_sh_source, function, id);
                 }
-                Expectation::FoldedPackage(name) => {
+                Expectation::FoldedPackage { name, target } => {
                     assert!(
                         package_names.contains(name),
                         "{function} expects declared package {name:?}; \
                          packages = {package_names:?}",
                     );
-                    assert_run_sh_folded_dispatch(&run_sh_source, function, name);
+                    assert_run_sh_folded_dispatch(&run_sh_source, function, target);
                 }
                 Expectation::DormantOrExcluded(name) => assert!(
                     dormant_products.contains(name) || excluded.contains(name),
@@ -9726,6 +9742,7 @@ materialization = "lazy"
                         guest_path: None,
                         mode: None,
                     }],
+                    fictions: Vec::new(),
                 },
             )]),
         };

@@ -24,6 +24,7 @@ import { writeVfsFile } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { collectSpawnScratchEvidence } from "../../../../benchmarks/spawn-scratch-evidence";
 import { readImageFileBytes } from "../../../../benchmarks/read-image-file";
+import { SHELL_DERIVED_IMAGE_WRITER_IO_BUDGET_BYTES } from "../../../../web-libs/kandelo-session/src/vfs-capacity";
 
 // Micro-benchmark wasm URLs (always built by scripts/build-programs.sh)
 import pipeWasmUrl from "../../../../benchmarks/wasm/pipe-throughput.wasm?url";
@@ -470,17 +471,18 @@ async function runWordPress(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
   log("  Fetching WordPress VFS image...");
+  const buildHint = "./run.sh build wp-vfs";
   const wpVfsUrl = await loadOptionalUrlFrom([
     "../../public/wordpress.vfs.zst",
     "../../../../local-binaries/programs/wasm32/wordpress.vfs.zst",
     "../../../../binaries/programs/wasm32/wordpress.vfs.zst",
-  ], "WordPress VFS image", "bash images/vfs/scripts/build-wp-vfs-image.sh");
+  ], "WordPress VFS image", buildHint);
 
   const vfsResp = await fetch(wpVfsUrl);
   if (!vfsResp.ok) {
     throw new Error(
       `WordPress VFS image could not be fetched: ${wpVfsUrl} ` +
-      `(HTTP ${vfsResp.status}). Build: bash images/vfs/scripts/build-wp-vfs-image.sh`,
+      `(HTTP ${vfsResp.status}). Build: ${buildHint}`,
     );
   }
   const [kernelBytes, vfsImageBuf] = await Promise.all([
@@ -494,6 +496,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
+  buildFs.setIoBudgetBytes(SHELL_DERIVED_IMAGE_WRITER_IO_BUDGET_BYTES);
   writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
   writeVfsFile(buildFs, "/srv/www/html/wp-config.php", WP_CONFIG_PHP);
   writeVfsFile(buildFs, "/srv/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
@@ -613,8 +616,8 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   const results: Record<string, number> = {};
   const suiteSuffix = arch === "wasm64" ? "-64" : "";
   const buildHint = arch === "wasm64"
-    ? "bash images/vfs/scripts/build-mariadb-vfs-image.sh --wasm64"
-    : "bash images/vfs/scripts/build-mariadb-vfs-image.sh";
+    ? "./run.sh build mariadb64-vfs"
+    : "./run.sh build mariadb-vfs";
 
   const engineArgs = [`--default-storage-engine=${engine}`];
   if (engine === "InnoDB") {

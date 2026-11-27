@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Explicit native build-machine post-link tool for the opt-in trusted memory group.
+set -euo pipefail
+: "${KANDELO_DEV_SHELL_TOOL_PATH:?run through scripts/dev-shell.sh}"
+if [ "$#" -ne 3 ] || [ "$2" != -o ]; then
+    echo 'usage: wasm32posix-shared-memory INPUT.wasm -o OUTPUT.wasm' >&2
+    exit 2
+fi
+self="$0"
+while [ -L "$self" ]; do
+    link="$(readlink "$self")"
+    case "$link" in
+        /*) self="$link" ;;
+        *) self="$(dirname "$self")/$link" ;;
+    esac
+done
+repo="$(cd "$(dirname "$self")/../.." && pwd)"
+input="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+output="$(cd "$(dirname "$3")" && pwd)/$(basename "$3")"
+if [ "$input" = "$output" ] || { [ -e "$output" ] && [ "$input" -ef "$output" ]; }; then
+    echo 'ERROR: input and output must be distinct; retain the ordinary executable.' >&2
+    exit 2
+fi
+source "$repo/scripts/wasm-artifact-guards.sh"
+# A cache-warm checkout may have programs without an installed native decoder.
+# Ensure the current decoder before ABI inspection; the generic WABT fallback
+# cannot inspect every feature accepted by the SDK's executable validator.
+bash "$repo/scripts/run-wasm-fork-instrument.sh" --artifact-identity "$input" >/dev/null
+current="$(wasm_current_abi_version "$repo")"
+actual="$(wasm_extract_abi_version "$input")"
+if [ "$actual" != "$current" ]; then
+    echo "ERROR: expected program ABI $current, found ${actual:-none}; rebuild the input." >&2
+    exit 1
+fi
+host_target="$(rustc -vV | sed -n 's/^host: //p')"
+# Cargo checks the complete translator/helper source closure on each call. Its
+# independent target avoids nesting in a package resolver's workspace lock.
+target="$repo/sdk/.build/shared-memory"
+cargo build --locked --profile instrumenter -p shared-memory-instrument --manifest-path "$repo/Cargo.toml" \
+    --target "$host_target" --target-dir "$target" >&2
+translator="$target/$host_target/instrumenter/wasm-shared-memory-instrument"
+digest="$(cd "$repo" && cargo run --locked --quiet -p xtask --target "$host_target" -- abi-program-digest)"
+stage="$(mktemp -d "$(dirname "$output")/.common-memory.XXXXXXXX")"
+trap 'rm -rf "$stage"' EXIT
+cp "$input" "$stage/program.wasm"
+chmod u+w "$stage/program.wasm"
+# Normal SDK links carry the version global; package installation normally adds
+# the digest. Stamp only the staged copy, using the standard mismatch refusal.
+(cd "$repo" && cargo run --locked --quiet -p xtask --target "$host_target" -- stamp-abi-contract "$stage/program.wasm") >&2
+if wasm_imports_kernel_fork "$stage/program.wasm" && ! wasm_has_complete_fork_instrumentation "$stage/program.wasm"; then
+    "$repo/scripts/run-wasm-fork-instrument.sh" "$stage/program.wasm" -o "$stage/fork.wasm" >&2
+    mv "$stage/fork.wasm" "$stage/program.wasm"
+fi
+wasm_require_fork_instrumentation_if_needed "$stage/program.wasm"
+(cd "$repo" && bash scripts/build-shared-memory-helpers.sh "$stage") >&2
+"$translator" "$stage/program.wasm" --helpers "$stage/helpers.wasm" --abi-digest "$digest" -o "$stage/virtual.wasm" > "$stage/report.json"
+# The translator validates its final bytes with the pinned wasmparser before
+# returning. Keep that single executable validator; the helper-only WABT check
+# does not define the SDK executable's exception/table feature set.
+chmod 755 "$stage/virtual.wasm"
+mv "$stage/virtual.wasm" "$output"
+cat "$stage/report.json"

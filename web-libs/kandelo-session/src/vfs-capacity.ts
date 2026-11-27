@@ -5,6 +5,9 @@ export const MAIN_SHELL_VFS_MIN_FREE_INODES = 32 * 1024;
 // The shell-derived byte profile also has to fit its bundled application data.
 export const SHELL_DERIVED_VFS_PROFILE_MAX_BYTES =
   768 * 1024 * 1024;
+// Re-exporting a shell-derived image can exceed the default writer budget.
+// This allowance applies to the transient image writer before boot.
+export const SHELL_DERIVED_IMAGE_WRITER_IO_BUDGET_BYTES = 48 * 1024 * 1024;
 // Product images need space for ordinary runtime state after their immutable
 // build contents have been written. Build-time save helpers enforce both
 // dimensions because free blocks cannot compensate for an exhausted inode

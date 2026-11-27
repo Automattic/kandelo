@@ -67,13 +67,13 @@ it("keeps kernel memory flat as entropy reads grow and repeat", async () => {
 }, 120_000);
 
 it("copies large random blocks with canonical shell dd as uid 1000", async () => {
-  const coreutils = new Uint8Array(readFileSync(resolveBinary("programs/wasm32/coreutils.wasm")));
+  const coreutils = new Uint8Array(readFileSync(resolveBinary("programs/wasm32/coreutils/coreutils.wasm")));
   let output = "";
   const host = new NodeKernelHost({
     rootfsImage: new Uint8Array(readFileSync(resolveBinary("programs/wasm32/shell.vfs.zst"))),
     rootfsLazyUrlBase: "https://kandelo.invalid/",
     rootfsLazyAssets: [{
-      url: "https://kandelo.invalid/binaries/programs/wasm32/coreutils.wasm",
+      url: "https://kandelo.invalid/binaries/programs/wasm32/coreutils/coreutils.wasm",
       sha256: createHash("sha256").update(coreutils).digest("hex"),
       size: coreutils.byteLength,
       bytes: coreutils,

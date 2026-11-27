@@ -138,6 +138,7 @@ impl GlQueryRequest {
                 self.owner.pid,
                 self.output_address,
                 self.output.len(),
+                wasm_posix_shared::ProcessMemoryAccess::Write,
             )?;
         }
         crate::syscalls::write_dri_bytes(

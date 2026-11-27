@@ -21,8 +21,9 @@ async function launch(page: Page, title: string, profile: string): Promise<void>
   await configureNewComputer(page, profile);
   await page.getByLabel("Computer name", { exact: true }).fill(title);
   await page.getByRole("button", { name: "Create and boot", exact: true }).click();
-  // Why: the retired temporary computer can disappear while its old URL is
-  // still visible. Observe the newly created ID before reading its metadata.
+  // Observe this boot before accepting a URL or status from the old machine.
+  // Desktop profiles are normal shell computers with the same storage policy.
+  await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
   await expect.poll(() => {
     const id = new URL(page.url()).searchParams.get("computer");
     return id !== previousId && /^[0-9a-f-]{36}$/.test(id ?? "");
@@ -72,7 +73,7 @@ async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void
   // must release them through normal host teardown in this same page realm.
 }
 
-test("@slow games, Freeciv, LÖVE, cage, sway, labwc, DOS, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+test("@slow games, Freeciv, LÖVE, cage, sway, SFWBar, DOS, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
   test.setTimeout(1_200_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
@@ -173,7 +174,7 @@ test("@slow games, Freeciv, LÖVE, cage, sway, labwc, DOS, tmux and WordPress su
     }, { timeout: 180_000 }).toBe(true);
     // Leave sway, foot and the status-command/bar children alive too, so the
     // next switch must retire the whole session in the same browser realm.
-    await launch(page, "labwc stacking desktop", "labwc");
+    await launch(page, "Sway with SFWBar", "sway-sfwbar");
     await expect(page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first())
       .toBeVisible({ timeout: 180_000 });
     await expect.poll(() => page.locator(".kdemo-surface-controls").allTextContents()
@@ -190,12 +191,12 @@ test("@slow games, Freeciv, LÖVE, cage, sway, labwc, DOS, tmux and WordPress su
     );
     // Only execution in the real terminal paints the ANSI red background;
     // echoing the typed command or a blinking cursor cannot satisfy this.
-    await typePhysicalText(page, `printf '\\033[48;2;220;30;30mLABWC_MEMORY_${cycle}\\033[0m\\n'\n`, { delay: 20 });
+    await typePhysicalText(page, `printf '\\033[48;2;220;30;30mSFWBAR_MEMORY_${cycle}\\033[0m\\n'\n`, { delay: 20 });
     await expect.poll(async () => {
       const frame = await footFrame(page);
       return frame.ink > 200 && frame.red > 200;
     }, { timeout: 60_000 }).toBe(true);
-    // Retire the live stacking compositor and its real terminal as well.
+    // Retire the live compositor, GTK panel and real terminal as well.
     // Keep all cycles in this same page realm and the existing memory budget.
     await launch(page, "Bare shell", "shell");
     await leaveDetachedTmuxSession(page, cycle);

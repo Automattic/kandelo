@@ -5,6 +5,8 @@ import { setInternalsOpen } from "./support/dock";
 import { typePhysicalText } from "./support/physical-typing";
 import { footFrame, menuChange, panelStart, type Frame, type Rect } from "./support/labwc-frame";
 
+test.skip(true, "Labwc desktop is explicitly retired from the supported gallery and default build; package sources and historical tests are retained");
+
 // These real-rendering checks must never claim the user's desktop focus.
 test.use({ headless: true });
 

@@ -14,7 +14,8 @@ mod metadata;
 pub(crate) mod reports;
 pub use analysis::analyze;
 pub use instrument::{
-    Artifact, Limits, instrument, instrument_with_debug, instrument_with_optional_debug, validate,
+    Artifact, Limits, instrument, instrument_side_module_with_storage, instrument_with_debug,
+    instrument_with_optional_debug, validate,
 };
 
 #[derive(Clone, Copy, Debug, Default)]

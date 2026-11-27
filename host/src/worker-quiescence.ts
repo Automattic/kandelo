@@ -1,3 +1,4 @@
+import type { MemoryGroupTaskReceipt } from "./memory-group-protocol";
 import { createWorkerAbsence, type WorkerAbsence } from "./deferred-worker-handle";
 import type { WorkerHandle } from "./worker-adapter";
 
@@ -14,6 +15,7 @@ export interface WorkerQuiescence {
 export interface ProcessWorkerIdentity {
   readonly pid: number;
   readonly tid?: number;
+  readonly memoryGroup?: MemoryGroupTaskReceipt;
 }
 
 export interface ProcessWorkerTerminalPort {
@@ -49,6 +51,7 @@ export async function runWithProcessWorkerQuiescence(
         type: "memory_quiescent",
         pid: identity.pid,
         ...(identity.tid === undefined ? {} : { tid: identity.tid }),
+        ...(identity.memoryGroup === undefined ? {} : { memoryGroup: identity.memoryGroup }),
       });
     } finally {
       // The message listener/port is otherwise a permanent event-loop root.
@@ -184,4 +187,17 @@ export async function waitForProcessWorkerRetirement(
   return requireExecRetirement
     ? waitForExecRetirement(generation.execRetirement, generation.workerQuiescence, timeoutMs)
     : waitForWorkerQuiescence(generation.workerQuiescence, timeoutMs);
+}
+
+/** The clone owner must observe initialization before returning success.
+ * Readiness is deliberately distinct from terminal Memory ownership. */
+export function createThreadWorkerReadiness() {
+  let settled = false;
+  let complete!: (started: boolean) => void;
+  const promise = new Promise<boolean>((resolve) => { complete = resolve; });
+  return {
+    promise,
+    ready() { if (!settled) { settled = true; complete(true); } },
+    retire() { if (!settled) { settled = true; complete(false); } },
+  };
 }

@@ -16,7 +16,7 @@ const imageModulePath = [
 const fixturePath = resolve(repoRoot, "local-binaries/test-fixtures/wasm32/persistence-boot-counter.wasm");
 const programPath = existsSync(fixturePath) ? fixturePath : null;
 const fullBrowserProductsReady = [
-  "programs/wasm32/bash.wasm",
+  "programs/wasm32/bash/bash.wasm",
   "programs/wasm32/shell.vfs.zst",
 ].every((path) => {
   try {

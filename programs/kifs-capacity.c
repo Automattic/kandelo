@@ -278,6 +278,70 @@ static void profile_io(const char *mode)
     printf("profile-ns %" PRIu64 "\n", monotonic_ns() - start);
 }
 
+static void expect_watch_event(int watcher, unsigned kind, const char *name)
+{
+    if (watcher < 0) return;
+    unsigned char event[256];
+    size_t length = strlen(name);
+    require(read(watcher, event, sizeof(event)) == (ssize_t)(length + 1) &&
+        event[0] == kind && !memcmp(&event[1], name, length), "read directory watch event");
+}
+
+static void watch_io(int watched)
+{
+    char path[32];
+    enum { entries = 512, edits = 128 };
+    for (unsigned i = 0; i < entries; ++i) {
+        name(path, i);
+        int fd = create(path);
+        require(fd >= 0 && close(fd) == 0, "seed watched directory");
+    }
+    int watcher = -1;
+    if (watched) {
+        int directory = open(".", O_DIRECTORY | O_RDONLY);
+        watcher = open("/dev/kandelo/fs-events", O_RDWR | O_NONBLOCK);
+        require(directory >= 0 && watcher >= 0, "open directory watch");
+        unsigned char selector[] = { directory, directory >> 8, directory >> 16, directory >> 24 };
+        require(write(watcher, selector, sizeof(selector)) == sizeof(selector) && close(directory) == 0,
+            "bind directory watch");
+    }
+    uint64_t start = monotonic_ns();
+    int first = open("entry-00000000", O_RDWR);
+    require(first >= 0 && write(first, "a", 1) == 1 && close(first) == 0, "first watched write");
+    expect_watch_event(watcher, 2, "entry-00000000");
+    uint64_t cold = monotonic_ns();
+    for (unsigned i = 0; i < entries; ++i) {
+        name(path, i);
+        int fd = open(path, O_RDWR);
+        require(fd >= 0 && write(fd, "b", 1) == 1 && close(fd) == 0, "write existing entry");
+        expect_watch_event(watcher, 2, path);
+    }
+    uint64_t written = monotonic_ns();
+    for (unsigned i = 0; i < edits; ++i) {
+        int fd = create("new");
+        require(fd >= 0, "create watched entry");
+        expect_watch_event(watcher, 1, "new");
+        require(write(fd, "c", 1) == 1, "write new entry");
+        expect_watch_event(watcher, 2, "new");
+        require(rename("new", "renamed") == 0, "rename watched entry");
+        expect_watch_event(watcher, 1, "new");
+        expect_watch_event(watcher, 1, "renamed");
+        require(unlink("renamed") == 0 && close(fd) == 0, "delete watched entry");
+        expect_watch_event(watcher, 1, "renamed");
+    }
+    uint64_t changed = monotonic_ns();
+    if (watcher >= 0) {
+        unsigned char empty[256];
+        require(read(watcher, empty, sizeof(empty)) < 0 && errno == EAGAIN && close(watcher) == 0,
+            "drain directory watch");
+    }
+    for (unsigned i = 0; i < entries; ++i) {
+        name(path, i);
+        require(unlink(path) == 0, "remove watch fixture");
+    }
+    printf("guest-watch-ns %" PRIu64 " %" PRIu64 " %" PRIu64 "\n", cold - start, written - cold, changed - written);
+}
+
 static void compare_io(void)
 {
     enum { files = 512, lookups = 2048, chunks = 32 };
@@ -367,7 +431,10 @@ int main(int argc, char **argv)
         return 0;
     }
     require(mkdir("capacity-test", 0700) == 0 && chdir("capacity-test") == 0, "create workload directory");
-    if (argc == 3 && (!strcmp(argv[1], "compare") || !strcmp(argv[1], "compare-tmpfs"))) {
+    if (argc == 3 && (!strcmp(argv[1], "compare-watched") || !strcmp(argv[1], "compare-unwatched"))) {
+        watch_io(!strcmp(argv[1], "compare-watched"));
+        require(chdir("..") == 0 && rmdir("capacity-test") == 0, "release watch directory");
+    } else if (argc == 3 && (!strcmp(argv[1], "compare") || !strcmp(argv[1], "compare-tmpfs"))) {
         if (!strcmp(argv[1], "compare-tmpfs")) require(usage().f_type == 0x01021994, "verify tmpfs control");
         compare_io();
         require(chdir("..") == 0 && rmdir("capacity-test") == 0, "release comparison directory");

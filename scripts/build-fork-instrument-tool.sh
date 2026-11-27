@@ -12,7 +12,11 @@ STAMP="$BIN.input-hash"
 source "$REPO_ROOT/scripts/fork-instrument-tool-input-hash.sh"
 
 echo "==> Building wasm-fork-instrument for $HOST_TARGET..."
-cargo build \
+# This is a native build even when a guest recipe invokes it.
+# Keep guest compiler flags out of cc-rs dependencies such as bundled SQLite.
+env -u CC -u CXX -u AR -u RANLIB \
+    -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+    CARGO_TARGET_DIR="$TARGET_DIR" cargo build \
     --manifest-path "$REPO_ROOT/Cargo.toml" \
     --profile instrumenter \
     -p fork-instrument \

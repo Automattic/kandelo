@@ -32,6 +32,14 @@ function signatures(
   const i32 = "i32" as const;
   const i64 = "i64" as const;
   return {
+    kernel_memory_group_storage_create: { parameters: [i32, i32], result: i32 },
+    kernel_memory_group_storage_drop: { parameters: [i32], result: i32 },
+    kernel_memory_group_storage_prepare: { parameters: [pointer, i32, i32, i32, i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_action: { parameters: [pointer, i32, i32, i64, i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_fork: { parameters: [pointer, i32, pointer, i32, i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_mapping: { parameters: [pointer, i32, i32, i64, i32, i64, i32], result: i32 },
+    kernel_memory_group_storage_snapshot: { parameters: [i32, pointer, i32], result: i32 },
+    kernel_memory_group_storage_sweep: { parameters: [i32], result: i32 },
     kernel_alloc_scratch: {
       parameters: [i32],
       result: pointer,
@@ -82,6 +90,10 @@ function signatures(
     },
     kernel_exec_target_admit: {
       parameters: [i32, i32, i32, pointer, pointer],
+      result: i32,
+    },
+    kernel_initial_group_exec_target_admit: {
+      parameters: [i32, i32, i32, pointer, pointer, i32],
       result: i32,
     },
     kernel_exec_target_cancel: {
@@ -203,6 +215,10 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
+    kernel_get_process_exit_published: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_get_process_exit_status: {
       parameters: [i32],
       result: i32,
@@ -226,6 +242,41 @@ function signatures(
     kernel_get_process_exec_generation: {
       parameters: [i32, pointer, i32],
       result: i32,
+    },
+    kernel_group_memory_thread_control_reuse: { parameters: [i32, i32, i32], result: i64 },
+    kernel_group_memory_thread_control_release: { parameters: [i32, i32, i32, i32, i32, i32, i32], result: i32 },
+    kernel_group_memory_change_prepare: { parameters: [i32, i32, pointer, i32, pointer, i32], result: i32 },
+    kernel_group_owned_mapping_prepare: { parameters: [i32, i32, i32, pointer, i32, pointer, i32], result: i32 },
+    kernel_group_owned_mapping_validate: { parameters: [i32, i32, i32, i64, pointer, i32], result: i32 },
+    kernel_group_memory_change_read: { parameters: [i32, i32, i32, i32, i32, i32, pointer, i32], result: i32 },
+    kernel_group_memory_layout_install: { parameters: [pointer, i32], result: i32 },
+    kernel_group_memory_exec_prepare: { parameters: [i32, i32, i32, pointer, i32], result: i32 },
+    kernel_group_memory_exec_layout: { parameters: [pointer, i32], result: i32 },
+    kernel_group_memory_exec_action: { parameters: [pointer, i32, i32], result: i32 },
+    kernel_group_memory_break: { parameters: [i32, i32], result: i64 },
+    kernel_group_memory_fork: { parameters: [i32, i32, i32, i32, i32, i32, i32, i32], result: i32 },
+    kernel_group_memory_change_validate: { parameters: [i32, i32, i32, i32, pointer, i32], result: i32 },
+    kernel_group_memory_change_commit: { parameters: [i32, i32, i32, i32], result: i32 },
+    kernel_group_memory_change_cancel: { parameters: [i32, i32, i32, i32], result: i32 },
+    kernel_memory_group_protocol_version: { parameters: [], result: i32 },
+    kernel_memory_group_capabilities: { parameters: [], result: i32 },
+    kernel_memory_group_configure: { parameters: [i32, i32], result: i32 },
+    kernel_memory_group_create: { parameters: [i32, i32, i32], result: i32 },
+    kernel_memory_group_seal: { parameters: [i32], result: i32 },
+    kernel_memory_group_remove: { parameters: [i32], result: i32 },
+    kernel_memory_group_prepare_process: { parameters: [i32, i32, i32, i32], result: i32 },
+    kernel_memory_group_retire_image: { parameters: [i32, i32, i32], result: i32 },
+    kernel_memory_group_snapshot: {
+      parameters: [i32,pointer,i32],
+      result:i32,
+    },
+    kernel_memory_group_task_receipt: {
+      parameters: [i32,i32,pointer,i32],
+      result:i32,
+    },
+    kernel_memory_group_task_action: {
+      parameters: [pointer,i32,i32],
+      result:i32,
     },
     kernel_get_process_state: {
       parameters: [i32],
@@ -400,7 +451,7 @@ function signatures(
       result: i32,
     },
     kernel_mark_process_signaled: {
-      parameters: [i32, i32],
+      parameters: [i32, i32, i32],
       result: i32,
     },
     kernel_kms_commit_count: {
@@ -522,6 +573,10 @@ function signatures(
     kernel_reserve_host_region_at: {
       parameters: [i32, pointer, pointer],
       result: pointer,
+    },
+    kernel_rootfs_rename_file: {
+      parameters: [pointer, i32, pointer, i32],
+      result: i32,
     },
     kernel_reap_exited_child: {
       parameters: [i32, i32],

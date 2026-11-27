@@ -1,7 +1,7 @@
 kind = "program"
 name = "curl"
 version = "8.11.1"
-kernel_abi = 7
+kernel_abi = 56
 # curl and libcurl come from the same upstream build graph, but they are
 # separate resolver packages. This transaction delegates to
 # build-libcurl.sh in `curl` package mode and publishes only curl.wasm. Keep
@@ -59,3 +59,10 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 [[outputs]]
 name = "curl"
 wasm = "curl.wasm"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "curl-shared"
+wasm = "curl-shared.zip"
+shared_memory_from = "curl"
+fork_instrumentation = "disabled"

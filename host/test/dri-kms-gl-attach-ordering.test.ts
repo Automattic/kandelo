@@ -23,9 +23,10 @@ function harness(callbacks: Record<string, unknown>): {
   memory: WebAssembly.Memory;
 } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const processMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const kernel = createWasmPosixKernelTestHarness({
     io: {} as any,
-    callbacks: callbacks as any,
+    callbacks: { getProcessMemory: (pid: number) => pid === PID ? processMemory : undefined, ...callbacks } as any,
     memory,
     pointerWidth: 4,
     instance: createKernelScratchTestInstance(

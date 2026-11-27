@@ -1,0 +1,28 @@
+# Kandelo patch rationale (S38)
+# Judgment: Supported. Keep the target guard because Mozilla’s abort
+# override would replace the guest libc’s required process and signal
+# behavior.
+#
+# Mozilla's allocator can override libc abort when statically linked. Node
+# and OpenSSL need Kandelo libc's real abort and SIGABRT/process behavior.
+# Stop that override at its engine build source; a bridge wrapper cannot
+# undo it reliably for every library, and libc already owns the desired
+# operation. Prefer a supported granular build option if one removes only
+# this override.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/memory/mozalloc/mozalloc_abort.cpp
++++ b/memory/mozalloc/mozalloc_abort.cpp
+@@ -54,6 +54,9 @@
+ }
+ #endif
+
++// Embedded Kandelo libraries retain the guest libc abort contract. Explicit
++// mozalloc_abort calls keep their original engine crash behavior.
++#if !defined(__kandelo__)
+ #if defined(XP_UNIX) && !defined(MOZ_ASAN) && !defined(MOZ_TSAN) &&    \
+     !defined(MOZ_UBSAN) && !defined(LIBFUZZER) && !defined(AFLFUZZ) && \
+     !defined(FUZZING_JS_FUZZILLI)
+@@ -95,0 +99 @@
++#endif  // !defined(__kandelo__)

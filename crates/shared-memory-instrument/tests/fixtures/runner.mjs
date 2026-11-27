@@ -1,0 +1,120 @@
+import * as G from '../../../../host/src/generated/program-extensions.ts';
+// Run only in a disposable Worker; return copied results, never guest storage.
+function memoryImports(memory, grow = () => { throw Error('Unexpected kernel growth in translation fixture'); }) {
+  return { [G.MEMORY_GROUP_MODULE]: { memory }, [G.MEMORY_GROUP_GROWTH_MODULE]: { [G.MEMORY_GROUP_GROWTH_IMPORT]: grow } };
+}
+export async function check(bytes) {
+  const checks=[];
+  function check(name, condition) {if(!condition)throw Error(name);checks.push(name);}
+  function trap(name,fn){let trapped=false;try{fn();}catch(e){trapped=e instanceof WebAssembly.RuntimeError;}check(name,trapped);}
+  const P=65536,root=P,scratch=2*P;
+  function replica(memory,address,root) {
+    const control=new Uint32Array(memory.buffer,address,G.MEMORY_GROUP_REPLICA_BYTES/4);
+    control.fill(0);control[G.MEMORY_GROUP_REPLICA_RUN/4]=1;
+    control[G.MEMORY_GROUP_REPLICA_ROOT/4]=root;
+    control[G.MEMORY_GROUP_REPLICA_MAGIC_OFFSET/4]=G.MEMORY_GROUP_REPLICA_MAGIC;
+    return address;
+  }
+  // Independent snapshot oracle for copies larger than the admitted scratch.
+  // Every case owns its mappings and has no concurrent guest or mapping edit.
+  {
+    const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
+    const words=new Uint32Array(memory.buffer),payload=new Uint8Array(memory.buffer);
+    const e=(await WebAssembly.instantiate(bytes,memoryImports(memory))).instance.exports;
+    words[root/4]=8;words[root/4+1]=64;words[root/4+2]=P;words[root/4+14]=1;
+    const pte=root/4+16,ordinary=[4,6,7,8,9,10,11,12];
+    ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
+    e.__vm_root.value=root;e.__vm_scratch.value=scratch;
+    e.__vm_replica.value=replica(memory,3*P,root);e.__vm_initialize(1);
+    const cases=[
+      ['large fragmented self-copy',0,0,2*P,ordinary],
+      ['large fragmented forward overlap',0,P,2*P,ordinary],
+      ['large fragmented backward overlap',P,0,2*P,ordinary],
+      ['large disjoint fragmented copy',2*P,0,2*P,ordinary],
+      ['large physical alias cycle',2*P,0,2*P,[4,6,6,4,9,10,11,12]],
+      ['large repeated destination alias',2*P,0,2*P,[4,6,7,7,9,10,11,12]],
+      ['large unaligned physical aliases',2*P+7,1,2*P-13,[4,6,4,6,9,10,11,12]],
+      ['large sparse physical alias graph',16*P+7,1,16*P-13,Array.from({length:36},(_,i)=>4+2*(i%2))],
+    ];
+    for(const [name,dst,src,n,mapping] of cases) {
+      words[root/4]=mapping.length;
+      mapping.forEach((p,i)=>words[pte+i]=p*P|3);
+      for(let i=4*P;i<13*P;i++)payload[i]=(i*17+(i>>>16)*53)&255;
+      const physical=v=>mapping[v>>>16]*P+(v&(P-1));
+      const snapshot=Uint8Array.from({length:n},(_,i)=>payload[physical(src+i)]);
+      const expected=payload.slice(4*P,13*P);
+      for(let i=0;i<n;i++)expected[physical(dst+i)-4*P]=snapshot[i];
+      e.copy(dst,src,n);
+      check(name,payload.subarray(4*P,13*P).every((value,i)=>value===expected[i]));
+    }
+    words[root/4]=ordinary.length;ordinary.forEach((p,i)=>words[pte+i]=p*P|3);
+    const before=payload.slice(4*P,13*P);words[pte+3]&=~2;
+    trap('large copy checks every destination permission first',()=>e.copy(2*P,0,2*P));
+    check('large permission failure leaves all payload intact',payload.subarray(4*P,13*P).every((value,i)=>value===before[i]));
+  }
+  const memory=new WebAssembly.Memory({initial:64,maximum:128,shared:true});
+  const u32=new Uint32Array(memory.buffer),u8=new Uint8Array(memory.buffer);
+  // Fixed compiler-protocol input, not an allocator. Runtime allocation and
+  // concurrent SDK/kernel reuse are exercised by grouped-sdk-grow-churn.c.
+  const control=G.MEMORY_GROUP_CONTROL/4, bitmap=G.MEMORY_GROUP_BITMAP/4;
+  u32[control+1]=16;u32[control+2]=128;u32[control+3]=G.MEMORY_GROUP_MAGIC;
+  u32[bitmap]=0xffff;
+  const growthRequests=[]; let growthResult=-1;
+  const {instance}=await WebAssembly.instantiate(bytes,memoryImports(memory, delta => { growthRequests.push(delta >>> 0); return growthResult; }));
+  const e=instance.exports;
+  let ordinaryAccepted=false;
+  try {const {instance:ordinaryInstance}=await WebAssembly.instantiate(bytes,{env:{memory}});ordinaryAccepted=ordinaryInstance!==undefined;}catch{}
+  check('ordinary env.memory import is refused',!ordinaryAccepted);
+  u32[root/4]=2;u32[root/4+1]=32;u32[root/4+2]=P;u32[root/4+14]=1;
+  const pte=root/4+16;u32[pte]=4*P|3;u32[pte+1]=6*P|3;
+  e.__vm_root.value=root;e.__vm_scratch.value=scratch;e.__vm_replica.value=replica(memory,5*P,root);e.__vm_initialize(1);
+  check('active C data initialized once',e.initialized()===0x2468ace);
+  e.write32(60000,0x12345678);check('scalar write uses translated storage',u32[(4*P+60000)/4]===0x12345678);
+  check('scalar read returns stored value',e.read32(60000)===0x12345678);
+  e.write32(P-2,0x12345678);check('split scalar touches both physical pages',u8[5*P-2]===0x78&&u8[6*P]===0x34);
+  check('split scalar read preserves bytes',e.read32(P-2)===0x12345678);
+  e.write64(P-3,0x1234567812345678n);check('split i64 preserves payload',e.read64(P-3)===0x1234567812345678n);
+  e.fill(60000,0xab,32);check('bulk fill uses guest pointers',u8[4*P+60000]===0xab&&u8[4*P+60031]===0xab);
+  for(let i=0;i<32;i++)u8[4*P+61000+i]=i+1;
+  e.copy(P-10,61000,32);check('scatter copy stages source before writes',Array.from({length:32},(_,i)=>e.read32(P-10+i)&255).every((v,i)=>v===i+1));
+  e.simd_copy(P-7,61000);check('SIMD split load/store retains bytes',Array.from({length:16},(_,i)=>e.read32(P-7+i)&255).every((v,i)=>v===i+1));
+  e.write32(62000,7);check('atomic RMW returns previous value',e.atomic_add(62000,3)===7&&e.read32(62000)===10);
+  trap('unaligned atomics trap',()=>e.atomic_add(62001,1));
+  check('wait32 mismatch remains nonblocking',e.wait32(62000,9,-1n)===1);
+  check('wait32 timeout retires its queue node',e.wait32(62000,10,0n)===2&&u32[4112/4+4]===0);
+  e.write64(62008,23n);check('wait64 mismatch remains nonblocking',e.wait64(62008,22n,-1n)===1);
+  check('wait64 timeout retires its queue node',e.wait64(62008,23n,0n)===2&&u32[4112/4+4]===0);
+  check('notify reports actual waiters',e.notify(62000,10)===0);
+  const nativeWord=new Int32Array(memory.buffer,4*P+62000,1);
+  const nativeWait=Atomics.waitAsync(nativeWord,0,10,5000);
+  check('native channel observer parks on the physical payload',nativeWait.async===true);
+  check('C notify excludes native observers from its guest waiter count',e.notify(62000,1)===0);
+  check('C notify wakes the native channel observer',await nativeWait.value==='ok');
+  check('worker wait translates a virtual word before comparing',e.__vm_worker_wait32(62000,9,-1n,root,5*P)===1);
+  check('worker wait timeout retires its replica queue node',e.__vm_worker_wait32(62000,10,0n,root,5*P)===2&&u32[4112/4+4]===0);
+  trap('worker wait rejects an unaligned virtual word',()=>e.__vm_worker_wait32(62001,10,0n,root,5*P));
+  u32[pte+1]=6*P|1;const before=u8[5*P-1];trap('split write preflights all permissions',()=>e.write32(P-1,0));check('failed split write is atomic with respect to preflight',u8[5*P-1]===before);u32[pte+1]=6*P|3;
+  u32[pte+1]=u32[pte];e.write32(P+60000,99);check('shared alias observes same backing without copying',e.read32(60000)===99);u32[pte+1]=6*P|3;
+  e.set_initialized(0x13579bdf);
+  const second=(await WebAssembly.instantiate(bytes,memoryImports(memory))).instance.exports;
+  second.__vm_root.value=root;second.__vm_scratch.value=3*P;second.__vm_replica.value=replica(memory,5*P+64,root);second.__vm_initialize(2);
+  check('thread attach does not replay initial data',e.initialized()===0x13579bdf&&second.initialized()===0x13579bdf&&second.read32(60000)===99);
+  trap('fresh initialization cannot repeat',()=>e.__vm_initialize(1));
+  Atomics.store(u32,(5*P+64+G.MEMORY_GROUP_REPLICA_RUN)/4,0);
+  trap('one replica stop escapes before a source store',()=>second.write32(60000,123));
+  check('stopping one replica preserves its same-root peer',e.read32(60000)===99);
+  Atomics.store(u32,(5*P+64+G.MEMORY_GROUP_REPLICA_RUN)/4,1); // Fixture restart only; no old Worker or wait exists.
+  check('logical memory.size is virtualized',e.size()===2);
+  const beforeGrowth=u32.slice(0,2*P/4);
+  growthResult=37;
+  check('translated memory.grow returns the kernel result',e.grow(3)===37);
+  growthResult=-1;
+  check('translated growth forwards all unsigned delta bits',(e.grow(0xffffffff)>>>0)===0xffffffff&&growthRequests[0]===3&&growthRequests[1]===0xffffffff);
+  check('SDK growth does not allocate or publish frames',u32.subarray(0,2*P/4).every((word,i)=>word===beforeGrowth[i])&&e.size()===2);
+  let missingGrowth=false;
+  try { const unexpectedMissingGrowth = await WebAssembly.instantiate(bytes,{[G.MEMORY_GROUP_MODULE]:{memory}}); if (unexpectedMissingGrowth.instance) throw Error('Missing growth import unexpectedly admitted'); } catch(error) { missingGrowth=error instanceof TypeError||error instanceof WebAssembly.LinkError; }
+  check('missing required kernel growth import is refused',missingGrowth);
+  u32[root/4+14]=0;trap('stop escapes before source function work',()=>e.write32(60000,1));
+  check('stopped instance did not modify guest storage',u32[(4*P+60000)/4]===99);
+  return {checks,scope:'SDK translation and kernel-request marshalling against fixed protocol inputs; allocation/refusal/reuse is checked by Rust and real SDK kernel tests, not this fixture'};
+}

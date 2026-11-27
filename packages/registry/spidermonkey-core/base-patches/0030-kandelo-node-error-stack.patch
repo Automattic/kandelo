@@ -1,0 +1,141 @@
+# Kandelo patch rationale (S15)
+# Judgment: Supported. Keep error-creation hooks because wrapping public
+# Error constructors would miss errors created internally by the engine.
+#
+# Node's stack limits and lazy stack formatting must also apply to Errors
+# created internally by SpiderMonkey. Wrapping the public Error constructor
+# in the bridge misses those errors. Keep engine creation/capture hooks;
+# Node's CallSite formatting, caching and prepareStackTrace policy belong
+# in the bridge. The guest OS cannot observe these internal JavaScript
+# events.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/js/public/Stack.h
++++ b/js/public/Stack.h
+@@ -145,6 +145,25 @@
+     StackCapture&& capture = StackCapture(AllFrames()),
+     HandleObject startAfter = nullptr);
+
++
++/**
++ * Optional embedding policy for Error stacks. A limit hook sets handled only
++ * for realms it owns; zero then captures no frames. The created hook can
++ * install real lazy preparation/accessors using the captured SavedFrame chain.
++ * Other realms keep the original engine behavior. Hooks must preserve pending
++ * exceptions and return false on failure; they must not fabricate frame data.
++ */
++using ErrorStackLimitHook = bool (*)(JSContext*, uint32_t* limit, bool* handled);
++using ErrorStackCreatedHook = bool (*)(JSContext*, HandleObject target,
++                                      HandleObject stack, bool* handled);
++extern JS_PUBLIC_API void SetEmbeddingErrorStackHooks(
++    JSRuntime* rt, ErrorStackLimitHook limit, ErrorStackCreatedHook created);
++extern JS_PUBLIC_API bool CaptureCurrentStackForError(
++    JSContext* cx, MutableHandleObject stack, uint32_t fallbackLimit,
++    HandleObject startAfter = nullptr);
++extern JS_PUBLIC_API bool InitEmbeddingErrorStack(
++    JSContext* cx, HandleObject target, HandleObject stack, bool* handled);
++
+ /**
+  * Returns true if capturing stack trace data to associate with an asynchronous
+  * operation is currently enabled for the current context realm.
+--- a/js/src/vm/Runtime.h
++++ b/js/src/vm/Runtime.h
+@@ -1079,6 +1079,8 @@
+
+   // A hook that implements the abstract operations
+   // HostGetImportMetaProperties and HostFinalizeImportMeta.
++  js::MainThreadData<JS::ErrorStackLimitHook> embeddingErrorStackLimit{nullptr};
++  js::MainThreadData<JS::ErrorStackCreatedHook> embeddingErrorStackCreated{nullptr};
+   js::MainThreadData<JS::ModuleMetadataHook> moduleMetadataHook;
+
+   // Hooks called when script private references are created and destroyed.
+--- a/js/src/vm/SavedStacks.cpp
++++ b/js/src/vm/SavedStacks.cpp
+@@ -1039,6 +1039,39 @@
+          (lastFrame || sb.append('\n'));
+ }
+
++JS_PUBLIC_API void SetEmbeddingErrorStackHooks(
++    JSRuntime* rt, ErrorStackLimitHook limit, ErrorStackCreatedHook created) {
++  js::AssertHeapIsIdle();
++  rt->embeddingErrorStackLimit = limit;
++  rt->embeddingErrorStackCreated = created;
++}
++
++JS_PUBLIC_API bool CaptureCurrentStackForError(
++    JSContext* cx, MutableHandleObject stack, uint32_t fallbackLimit,
++    HandleObject startAfter) {
++  js::AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  bool handled = false;
++  uint32_t limit = fallbackLimit;
++  auto hook = cx->runtime()->embeddingErrorStackLimit.ref();
++  if (hook && !hook(cx, &limit, &handled)) return false;
++  // MaxFrames(0) means unlimited to SavedStacks, not an empty error stack.
++  if (limit == 0) {
++    if (handled) stack.set(nullptr);
++    return true;
++  }
++  return CaptureCurrentStack(cx, stack, StackCapture(MaxFrames(limit)), startAfter);
++}
++
++JS_PUBLIC_API bool InitEmbeddingErrorStack(
++    JSContext* cx, HandleObject target, HandleObject stack, bool* handled) {
++  js::AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  *handled = false;
++  auto hook = cx->runtime()->embeddingErrorStackCreated.ref();
++  return !hook || hook(cx, target, stack, handled);
++}
++
+ JS_PUBLIC_API bool BuildStackString(JSContext* cx, JSPrincipals* principals,
+                                     HandleObject stack,
+                                     MutableHandleString stringp, size_t indent,
+--- a/js/src/vm/ErrorObject.cpp
++++ b/js/src/vm/ErrorObject.cpp
+@@ -691,4 +691,6 @@
+   }
+
++  bool handled;
++  if (!JS::InitEmbeddingErrorStack(cx, errObject, stack, &handled)) return nullptr;
+   return errObject;
+ }
+@@ -1111,6 +1113,11 @@
+   }
+
+   mozilla::Maybe<uint32_t> limit = GetStackTraceLimit(cx);
++  bool embeddingHandled = false;
++  uint32_t embeddingLimit = MAX_REPORTED_STACK_DEPTH;
++  auto limitHook = cx->runtime()->embeddingErrorStackLimit.ref();
++  if (limitHook && !limitHook(cx, &embeddingLimit, &embeddingHandled)) return false;
++  if (embeddingHandled) limit = mozilla::Some(embeddingLimit);
+   RootedValue stackVal(cx, UndefinedValue());
+   if (limit.isSome()) {
+     RootedObject stack(cx);
+@@ -1119,4 +1126,13 @@
+               cx, &stack, JS::StackCapture(JS::MaxFrames(*limit)), caller)) {
+         return false;
++      }
++    }
++
++    if (embeddingHandled) {
++      bool handled;
++      if (!JS::InitEmbeddingErrorStack(cx, obj, stack, &handled)) return false;
++      if (handled) {
++        args.rval().setUndefined();
++        return true;
+       }
+     }
+@@ -1295,10 +1311,7 @@
+
+ bool js::CaptureStack(JSContext* cx, MutableHandleObject stack,
+                       uint32_t limit) {
+-  if (limit == 0) {
+-    return true;
+-  }
+-  return CaptureCurrentStack(cx, stack, JS::StackCapture(JS::MaxFrames(limit)));
++  return JS::CaptureCurrentStackForError(cx, stack, limit);
+ }
+
+ JSString* js::ComputeStackString(JSContext* cx) {

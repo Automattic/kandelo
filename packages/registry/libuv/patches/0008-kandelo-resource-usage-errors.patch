@@ -1,0 +1,28 @@
+# Check the result pointer and translate missing guest thread accounting.
+# backend-controls requires EINVAL for a null output and ENOSYS for missing
+# per-thread accounting. libuv owns its output pointer and error mapping.
+# Drop these guards when upstream validates the pointer and the guest kernel
+# implements RUSAGE_THREAD or reports ENOSYS for that selector.
+--- a/src/unix/core.c
++++ b/src/unix/core.c
+@@ -1097,8 +1097,18 @@
+ static int uv__getrusage(int who, uv_rusage_t* rusage) {
+   struct rusage usage;
+ 
+-  if (getrusage(who, &usage))
+-    return UV__ERR(errno);
++#if defined(UV_PLATFORM_KANDELO)
++  if (rusage == NULL)
++    return UV_EINVAL;
++#endif
++  if (getrusage(who, &usage)) {
++#if defined(UV_PLATFORM_KANDELO) && defined(RUSAGE_THREAD)
++    /* Kandelo kernels without thread accounting reject this selector. */
++    if (who == RUSAGE_THREAD && errno == EINVAL)
++      return UV_ENOSYS;
++#endif
++    return UV__ERR(errno);
++  }
+ 
+   rusage->ru_utime.tv_sec = usage.ru_utime.tv_sec;
+   rusage->ru_utime.tv_usec = usage.ru_utime.tv_usec;

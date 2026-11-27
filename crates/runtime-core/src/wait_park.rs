@@ -103,6 +103,8 @@ pub enum Resume {
     /// `crate::wait_signal`), a caught signal outside it (`EINTR`), or the
     /// deadline (`EAGAIN`).
     SigTimed(crate::wait_signal::SigWait),
+    /// An epoll wait retains its description and writes into its caller's memory.
+    Epoll(crate::wait_epoll::Request),
     /// A blocking call the kernel re-executes when one of its sources fires
     /// (`crate::wait_retry`). A caught signal interrupts it with `EINTR`
     /// (restartable under `SA_RESTART`, as Linux's ERESTARTSYS).
@@ -117,6 +119,7 @@ impl Resume {
             | Resume::Child(_)
             | Resume::Suspend
             | Resume::SigTimed(_)
+            | Resume::Epoll(_)
             | Resume::Retry(_) => 0,
         }
     }
@@ -125,7 +128,7 @@ impl Resume {
         match self {
             Resume::Futex { .. } => -(Errno::ETIMEDOUT as i32),
             // A sleep that ran its course succeeded.
-            Resume::Sleep { .. } => 0,
+            Resume::Sleep { .. } | Resume::Epoll(_) => 0,
             // Child waits and suspends carry no deadline.
             // A transfer's deadline is SO_RCVTIMEO/SO_SNDTIMEO, which POSIX
             // reports as EAGAIN/EWOULDBLOCK.
@@ -149,7 +152,7 @@ impl Resume {
             Resume::Retry(op) if op.restartable() => 0,
             Resume::Retry(_) => wire::FLAG_SUPPRESS_RESTART,
             // Neither is ever restarted (signal(7)).
-            Resume::Suspend | Resume::SigTimed(_) => wire::FLAG_SUPPRESS_RESTART,
+            Resume::Suspend | Resume::SigTimed(_) | Resume::Epoll(_) => wire::FLAG_SUPPRESS_RESTART,
         }
     }
 
@@ -216,7 +219,7 @@ impl Completion {
 ///
 /// A second [`WaitQueue`] instance, separate from the deadline-authority one
 /// in `wait_queue::global`, on purpose: that queue holds deadline-only records
-/// the *host* still owns (poll, select, epoll, sigtimedwait), and expiring one
+/// the *host* still owns (poll and select), and expiring one
 /// of those here would silently end a wait the host is still timing. When
 /// those families move here (steps 4 and 5 of
 /// `docs/plans/2026-09-27-guest-waits-into-rust.md`) the other instance goes
@@ -246,6 +249,10 @@ pub struct Parks {
     /// kernel releases each blocked-retry binding (`crate::wait_retry`)
     /// before the completion can reach the guest.
     released_retry_bindings: Vec<(u32, u32, i64)>,
+    epoll_count: usize,
+    epoll_dirty: bool,
+    epoll_probe_at: Option<MonotonicNs>,
+    finished_epoll: Vec<(u32, u32, u64, bool)>,
 }
 
 impl Default for Parks {
@@ -267,6 +274,10 @@ impl Parks {
             exit_notices: Vec::new(),
             dirty_sources: Vec::new(),
             released_retry_bindings: Vec::new(),
+            epoll_count: 0,
+            epoll_dirty: false,
+            epoll_probe_at: None,
+            finished_epoll: Vec::new(),
         }
     }
 
@@ -276,6 +287,11 @@ impl Parks {
 
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+
+    pub(crate) fn owns_task(&self, pid: u32, tid: u32) -> bool {
+        self.queue.iter().any(|sleeper| sleeper.pid == pid && sleeper.tid == tid)
+            || self.completions.iter().any(|completion| completion.pid == pid && completion.tid == tid)
     }
 
     pub fn pending_completions(&self) -> usize {
@@ -310,6 +326,11 @@ impl Parks {
             }
         };
         self.resume.insert(id, resume);
+        if let Resume::Epoll(request) = resume {
+            self.epoll_count += 1;
+            let first_probe = request.started.saturating_add(crate::wait_epoll::PROBE_INTERVAL_NS);
+            self.epoll_probe_at = Some(self.epoll_probe_at.map_or(first_probe, |old| old.min(first_probe)));
+        }
         // A signal may already be pending in this process, for this thread or
         // -- when this thread blocks it -- for another of its parked threads.
         // Let the next sweep decide it rather than duplicating the targeting
@@ -326,11 +347,17 @@ impl Parks {
     }
 
     fn finish_with(&mut self, wakeup: Wakeup, value: i32, flags: u32, remainder: Option<Remainder>) {
-        if let Some(Resume::Retry(op)) = self.resume.remove(&wakeup.id) {
-            if op.pins_descriptor() {
-                self.released_retry_bindings
-                    .push((wakeup.pid, wakeup.tid, op.token()));
+        match self.remove_resume(wakeup.id) {
+            Some(Resume::Retry(op)) if op.pins_descriptor() => {
+                self.released_retry_bindings.push((wakeup.pid, wakeup.tid, op.token()));
             }
+            Some(Resume::Epoll(request)) => {
+                // Cancellation has no handler to restore the temporary mask.
+                // An ordinary signal interruption leaves it for delivery.
+                let restore = value != -(Errno::EINTR as i32) || flags & wire::FLAG_CANCELLED != 0;
+                self.finished_epoll.push((wakeup.pid, wakeup.tid, request.token, restore));
+            }
+            _ => {}
         }
         self.queue.release_channel(wakeup.channel);
         self.completions.push_back(Completion {
@@ -343,8 +370,20 @@ impl Parks {
         });
     }
 
+    fn remove_resume(&mut self, id: WaiterId) -> Option<Resume> {
+        let resume = self.resume.remove(&id);
+        if matches!(resume, Some(Resume::Epoll(_))) {
+            self.epoll_count -= 1;
+            if self.epoll_count == 0 {
+                self.epoll_dirty = false;
+                self.epoll_probe_at = None;
+            }
+        }
+        resume
+    }
+
     fn forget(&mut self, wakeup: Wakeup) {
-        self.resume.remove(&wakeup.id);
+        self.remove_resume(wakeup.id);
         self.queue.release_channel(wakeup.channel);
     }
 
@@ -400,7 +439,8 @@ impl Parks {
                 | Some(Resume::SigTimed(crate::wait_signal::SigWait {
                     timeout_ns: Some(ns),
                     ..
-                })) => credits.push((wakeup.pid, wakeup.tid, ns)),
+                }))
+                | Some(Resume::Epoll(crate::wait_epoll::Request { timeout_ns: Some(ns), .. })) => credits.push((wakeup.pid, wakeup.tid, ns)),
                 _ => {}
             }
             let value = resume
@@ -415,20 +455,53 @@ impl Parks {
     /// or some queued decision owes a `rem` measured against it. Without
     /// either, the clock read (a host call) is skipped.
     pub fn needs_clock(&mut self) -> bool {
-        self.queue.next_deadline_ns().is_some()
+        self.has_deadline()
             || self.completions.iter().any(|c| c.remainder.is_some())
     }
 
     /// Whether any park has a deadline.
     pub fn has_deadline(&mut self) -> bool {
-        self.queue.next_deadline_ns().is_some()
+        self.epoll_probe_at.is_some() || self.queue.next_deadline_ns().is_some()
     }
 
     /// Nanoseconds until the earliest park deadline, saturating at zero.
     pub fn next_timeout_ns(&mut self, now_ns: MonotonicNs) -> Option<MonotonicNs> {
-        self.queue
-            .next_deadline_ns()
-            .map(|deadline| deadline.saturating_sub(now_ns).max(0))
+        self.queue.next_deadline_ns().into_iter().chain(self.epoll_probe_at)
+            .min().map(|deadline| deadline.saturating_sub(now_ns).max(0))
+    }
+
+    pub fn epoll_ready(&self) -> bool {
+        self.epoll_dirty
+    }
+
+    pub fn note_epoll_ready(&mut self) {
+        self.epoll_dirty = self.epoll_count != 0;
+    }
+
+    pub fn take_epoll_waiters(&mut self, now: MonotonicNs) -> Vec<(WaiterId, u32, u32, crate::wait_epoll::Request)> {
+        let Some(probe_at) = self.epoll_probe_at else { return Vec::new() };
+        if !core::mem::take(&mut self.epoll_dirty)
+            && probe_at > now
+            && self.queue.next_deadline_ns().is_none_or(|deadline| deadline > now)
+        {
+            return Vec::new();
+        }
+        self.epoll_probe_at = Some(now.saturating_add(crate::wait_epoll::PROBE_INTERVAL_NS));
+        self.queue.iter().filter_map(|sleeper| match self.resume.get(&sleeper.id) {
+            Some(Resume::Epoll(request)) => Some((sleeper.id, sleeper.pid, sleeper.tid, *request)),
+            _ => None,
+        }).collect()
+    }
+
+    pub fn finish_epoll_waiter(&mut self, id: WaiterId, value: i32) {
+        if let Some(wakeup) = self.queue.remove_with_reason(id, WakeReason::Source(WakeSource::Epoll)) {
+            let flags = if value == -(Errno::EINTR as i32) { wire::FLAG_SUPPRESS_RESTART } else { 0 };
+            self.finish(wakeup, value, flags);
+        }
+    }
+
+    pub fn take_finished_epoll(&mut self) -> Vec<(u32, u32, u64, bool)> {
+        core::mem::take(&mut self.finished_epoll)
     }
 
     pub fn note_children_changed(&mut self) {
@@ -644,6 +717,7 @@ impl Parks {
         }
         self.completions.retain(|c| c.pid != pid);
         self.released_retry_bindings.retain(|&(p, _, _)| p != pid);
+        self.finished_epoll.retain(|&(p, _, _, _)| p != pid);
     }
 
     /// Move up to `max` records into `out`; the rest stay queued in order.

@@ -560,11 +560,11 @@ ac_cv_func_RAND_egd=${ac_cv_func_RAND_egd=no}
 ac_cv_func__set_invalid_parameter_handler=${ac_cv_func__set_invalid_parameter_handler=no}
 ac_cv_func_posix_spawn_file_actions_addclosefrom_np=${ac_cv_func_posix_spawn_file_actions_addclosefrom_np=no}
 
-# mprotect() links, but Wasm cannot enforce page protection: the kernel
-# accepts a protection change without making later accesses fault
-# (docs/posix-status.md). A configure check finding it would enable guard
-# pages, write barriers or W^X schemes that silently do nothing, so it stays
-# absent until protection is enforced.
+# Wasm cannot enforce page protection, so libc.a defines no public mprotect
+# (docs/posix-status.md). A package that only makes memory accessible links
+# the opt-in -lkandelo-mprotect, whose mprotect() refuses requests that would
+# remove access with ENOTSUP; configure still reports it absent so guard
+# pages, write barriers and W^X schemes are not enabled.
 ac_cv_func_mprotect=${ac_cv_func_mprotect=no}
 
 # xattr — not in musl on wasm32
@@ -581,17 +581,11 @@ ac_cv_func_lsetxattr=${ac_cv_func_lsetxattr=no}
 ac_cv_func_removexattr=${ac_cv_func_removexattr=no}
 ac_cv_func_setxattr=${ac_cv_func_setxattr=no}
 
-# Dynamic loading is provided by Kandelo's SDK glue when a link requests
-# -ldl. The musl archive's weak dlfcn stubs link successfully but only report
-# "Dynamic loading not supported", so an unadorned AC_CHECK_FUNC result is not
-# a functional capability. Force AC_SEARCH_LIBS callers through the SDK's
-# explicit library-selection path instead of accepting the weak stub.
-ac_cv_func_dlopen=${ac_cv_func_dlopen=no}
-ac_cv_lib_dl_dlopen=${ac_cv_lib_dl_dlopen=yes}
-ac_cv_search_dlclose=${ac_cv_search_dlclose=-ldl}
-ac_cv_search_dlerror=${ac_cv_search_dlerror=-ldl}
-ac_cv_search_dlopen=${ac_cv_search_dlopen=-ldl}
-ac_cv_search_dlsym=${ac_cv_search_dlsym=-ldl}
+# Dynamic loading needs no preset: the SDK links its dlopen loader into any
+# program that calls dlopen, dlsym, dlclose or dlerror, with or without
+# -ldl, in place of musl's static stubs. AC_CHECK_FUNC and AC_SEARCH_LIBS
+# therefore find the working functions in libc ("none required"), as on
+# other musl systems.
 
 # ─── Headers ───────────────────────────────────────────────────────────────────
 # Verified via: find sysroot/include -name '*.h'

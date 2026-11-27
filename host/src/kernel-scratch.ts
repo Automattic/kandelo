@@ -165,6 +165,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_exchange_stream_read",
   "kernel_exchange_stream_start",
   "kernel_exec_target_admit",
+  "kernel_initial_group_exec_target_admit",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_get_cwd",
@@ -176,11 +177,33 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_handle_channel",
   "kernel_handle_channel_record",
   "kernel_handle_channel_record_complete",
-  "kernel_kifs_stat_lease",
+  "kernel_rootfs_stat_lease",
   "kernel_handle_guest_io",
   "kernel_inject_datagram",
   "kernel_ioctl",
   "kernel_kms_cursor_read",
+  "kernel_memory_group_snapshot",
+  "kernel_memory_group_storage_action",
+  "kernel_group_completion",
+  "kernel_group_operation",
+  "kernel_group_exec_control",
+  "kernel_group_root_control",
+  "kernel_group_retirement_control",
+  "kernel_memory_group_storage_fork",
+  "kernel_memory_group_storage_mapping",
+  "kernel_memory_group_storage_snapshot",
+  "kernel_memory_group_storage_prepare",
+  "kernel_memory_group_task_action",
+  "kernel_memory_group_task_receipt",
+  "kernel_group_memory_change_prepare",
+  "kernel_group_owned_mapping_prepare",
+  "kernel_group_owned_mapping_validate",
+  "kernel_group_memory_thread_control_prepare",
+  "kernel_group_memory_layout_install",
+  "kernel_group_memory_exec_prepare",
+  "kernel_group_memory_exec_layout",
+  "kernel_group_memory_exec_action",
+  "kernel_group_memory_change_validate",
   "kernel_ipc_shm_read_chunk",
   "kernel_ipc_shm_write_chunk",
   "kernel_mq_drain_notification",
@@ -201,6 +224,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_rootfs_export_container_read",
   "kernel_rootfs_mkdir_parents",
   "kernel_rootfs_read_file",
+  "kernel_rootfs_rename_file",
   "kernel_rootfs_set_foreign_mount_roots",
   "kernel_rootfs_stat_mode",
   "kernel_watch_fs_changes",
@@ -263,10 +287,15 @@ type KernelScratchExportSnapshot = Readonly<
   Partial<Record<KernelScratchExportName, KernelScratchExportBinding>>
 >;
 
+const REQUIRED_POINTER_0_5 = intrinsicObjectFreeze([0, 5] as const);
+const REQUIRED_POINTER_0_5_7 = intrinsicObjectFreeze([0, 5, 7] as const);
+const REQUIRED_POINTER_0_2_5 = intrinsicObjectFreeze([0, 2, 5] as const);
 const REQUIRED_POINTER_0 = intrinsicObjectFreeze([0] as const);
 const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
 const REQUIRED_POINTER_1_3 = intrinsicObjectFreeze([1, 3] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
+const REQUIRED_POINTER_2_7 = intrinsicObjectFreeze([2, 7] as const);
+const REQUIRED_POINTER_2_4 = intrinsicObjectFreeze([2, 4] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
 const REQUIRED_POINTER_0_2 = intrinsicObjectFreeze([0, 2] as const);
@@ -281,8 +310,50 @@ export function kernelScratchRequiredPointerArguments(
   name: KernelScratchExportName,
 ): readonly number[] {
   switch (name) {
+    case "kernel_group_completion":
+      // Rust decodes the entire request before mutation and copies its reply
+      // before returning; neither scratch pointer is retained by ProcessTable.
+      return REQUIRED_POINTER_0_2;
+    case "kernel_group_retirement_control":
+      return REQUIRED_POINTER_0_4;
+    case "kernel_group_root_control":
+      return REQUIRED_POINTER_2_7;
+    case "kernel_group_exec_control":
+      return REQUIRED_POINTER_0_4;
+    case "kernel_group_operation":
+      return REQUIRED_POINTER_0_5_7;
+    case "kernel_memory_group_storage_fork":
+      return REQUIRED_POINTER_0_2_5;
+    case "kernel_memory_group_storage_mapping":
+      return REQUIRED_POINTER_0;
+    case "kernel_memory_group_storage_snapshot":
+      return REQUIRED_POINTER_1;
+    case "kernel_memory_group_storage_action":
+    case "kernel_memory_group_storage_prepare":
+      return REQUIRED_POINTER_0_5;
+    case "kernel_group_memory_exec_prepare":
+      return REQUIRED_POINTER_3;
+    case "kernel_group_memory_exec_layout":
+    case "kernel_group_memory_exec_action":
+    case "kernel_group_memory_layout_install":
+      return REQUIRED_POINTER_0;
+    case "kernel_group_memory_change_prepare":
+      return REQUIRED_POINTER_2_4;
+    case "kernel_group_owned_mapping_prepare":
+      return REQUIRED_POINTER_3_5;
+    case "kernel_group_owned_mapping_validate":
+      return REQUIRED_POINTER_4;
+    case "kernel_group_memory_change_validate":
+    case "kernel_group_memory_thread_control_prepare":
+      return REQUIRED_POINTER_4;
     case "kernel_overlay_activation_codec":
       return REQUIRED_POINTER_1_3;
+    case "kernel_memory_group_task_action":
+      return REQUIRED_POINTER_0;
+    case "kernel_memory_group_snapshot":
+      return REQUIRED_POINTER_1;
+    case "kernel_memory_group_task_receipt":
+      return REQUIRED_POINTER_2;
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
     case "kernel_drain_audio":
@@ -293,7 +364,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_handle_channel":
     case "kernel_handle_channel_record":
     case "kernel_handle_channel_record_complete":
-    case "kernel_kifs_stat_lease":
+    case "kernel_rootfs_stat_lease":
     case "kernel_handle_guest_io":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
@@ -325,6 +396,7 @@ export function kernelScratchRequiredPointerArguments(
       // the ID at arg 0, the data buffer at arg 4.
       return REQUIRED_POINTER_0_4;
     case "kernel_rootfs_inspect_stat":
+    case "kernel_rootfs_rename_file":
       return REQUIRED_POINTER_0_2;
     case "kernel_rootfs_inspect_directory":
       return REQUIRED_POINTER_0_3;
@@ -363,6 +435,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_exec_target_prepare":
     case "kernel_spawn_exec_target_prepare_handle":
     case "kernel_exec_target_admit":
+    case "kernel_initial_group_exec_target_admit":
     case "kernel_process_metadata_read":
     case "kernel_setsockopt":
     case "kernel_socketpair":
@@ -412,6 +485,28 @@ function isKernelScratchExportName(
   value: string,
 ): value is KernelScratchExportName {
   switch (value) {
+    case "kernel_group_completion":
+    case "kernel_group_retirement_control":
+    case "kernel_group_root_control":
+    case "kernel_group_exec_control":
+    case "kernel_group_operation":
+    case "kernel_memory_group_storage_fork":
+    case "kernel_memory_group_storage_mapping":
+    case "kernel_memory_group_storage_snapshot":
+    case "kernel_memory_group_storage_action":
+    case "kernel_memory_group_storage_prepare":
+    case "kernel_group_memory_exec_prepare":
+    case "kernel_group_memory_exec_layout":
+    case "kernel_group_memory_exec_action":
+    case "kernel_group_memory_layout_install":
+    case "kernel_group_memory_change_prepare":
+    case "kernel_group_memory_change_validate":
+    case "kernel_group_owned_mapping_prepare":
+    case "kernel_group_owned_mapping_validate":
+    case "kernel_group_memory_thread_control_prepare":
+    case "kernel_memory_group_snapshot":
+    case "kernel_memory_group_task_action":
+    case "kernel_memory_group_task_receipt":
     case "kernel_overlay_activation_codec":
     case "kernel_clipboard_guest_read":
     case "kernel_clipboard_stage":
@@ -434,6 +529,7 @@ function isKernelScratchExportName(
     case "kernel_exchange_stream_read":
     case "kernel_exchange_stream_start":
     case "kernel_exec_target_admit":
+    case "kernel_initial_group_exec_target_admit":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
     case "kernel_get_cwd":
@@ -445,7 +541,7 @@ function isKernelScratchExportName(
     case "kernel_handle_channel":
     case "kernel_handle_channel_record":
     case "kernel_handle_channel_record_complete":
-    case "kernel_kifs_stat_lease":
+    case "kernel_rootfs_stat_lease":
     case "kernel_handle_guest_io":
     case "kernel_inject_datagram":
     case "kernel_ioctl":
@@ -468,6 +564,7 @@ function isKernelScratchExportName(
     case "kernel_rootfs_export_container_read":
     case "kernel_rootfs_mkdir_parents":
     case "kernel_rootfs_read_file":
+    case "kernel_rootfs_rename_file":
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_watch_fs_changes":
     case "kernel_drain_fs_changes":
@@ -2596,7 +2693,7 @@ export function reserveKernelScratchRegion(
 }
 
 /**
- * @internal Validate a test-injected region without exposing its pointer.
+ * @internal Validate a borrowed region without exposing its pointer.
  *
  * WHY: `KernelScratchRegion` is intentionally structural for callers, so a
  * shape check cannot prove allocator ownership. The module-private WeakMap

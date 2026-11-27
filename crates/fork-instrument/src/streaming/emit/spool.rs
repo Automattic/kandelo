@@ -11,9 +11,9 @@ pub(super) struct Spool {
     limit: u64,
 }
 impl Spool {
-    pub fn new(limit: u64) -> io::Result<Self> {
+    pub fn new(limit: u64, storage: &dyn crate::artifact_io::SpoolStorage) -> io::Result<Self> {
         Ok(Self {
-            file: tempfile::tempfile()?,
+            file: storage.create()?,
             position: 0,
             limit: limit.min(u64::from(u32::MAX)),
         })

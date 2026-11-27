@@ -1072,10 +1072,12 @@ struct SharedOfdStateInner {
     owner_pid: Cell<u32>,
     position_generation: Cell<u64>,
     epoll_identity: Cell<Option<OfdId>>,
+    vfs_watch: Cell<Option<OfdId>>,
 }
 
 impl Drop for SharedOfdStateInner {
     fn drop(&mut self) {
+        if let Some(id) = self.vfs_watch.get() { crate::vfs_events::retire(id); }
         if let Some(id) = self.epoll_identity.get() {
             // A sender waiting on this datagram receiver's full queue can
             // write without blocking once its last owner closes (and fail).
@@ -1109,6 +1111,7 @@ impl SharedOfdState {
             owner_pid: Cell::new(owner_pid),
             position_generation: Cell::new(0),
             epoll_identity: Cell::new(None),
+            vfs_watch: Cell::new(None),
         })?))
     }
 
@@ -1259,6 +1262,10 @@ impl OpenFileDesc {
 
     pub fn set_owner_pid(&self, value: u32) {
         self.shared_state.set_owner_pid(value);
+    }
+
+    pub(crate) fn mark_vfs_watch(&self) {
+        self.shared_state.0.vfs_watch.set(Some(self.ofd_id));
     }
 
     pub fn mark_epoll_watched(&self) {

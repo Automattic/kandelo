@@ -16,6 +16,7 @@ import {
 import {
   unwrapForkWorkerExceptionCapability,
 } from "./fork-worker-exception-capability";
+import type { ProcessMemorySource } from "./process-memory-views";
 
 export interface ForkExternrefForkGrant {
   readonly generation: ForkExternrefGeneration;
@@ -74,7 +75,7 @@ export class ForkExternrefProcessOwner {
   forkGenerationFromContinuation(
     parent: ForkExternrefGeneration,
     childPid: number,
-    memory: WebAssembly.Memory,
+    memory: ProcessMemorySource,
     ptrWidth: 4 | 8,
     moduleBufferAddress: number,
     label = `fork child pid=${childPid}: externref owner`,

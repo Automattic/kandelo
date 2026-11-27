@@ -34,9 +34,9 @@ export class KmsCursorPlane {
   /** `composited`: the CRTC has a color stage, so its presenter blends the
    *  cursor into the primary before the LUT (see kms-gamma.ts) and this
    *  overlay must show nothing, or the cursor would appear twice. */
-  present(cursor: KmsCursor, width: number, height: number, composited = false): void {
+  present(cursor: KmsCursor, width: number, height: number, composited = false): boolean {
     const resized = this.canvas.width !== width || this.canvas.height !== height;
-    if (!resized && cursor.version === this.version && composited === this.composited) return;
+    if (!resized && cursor.version === this.version && composited === this.composited) return false;
     this.composited = composited;
     if (resized) {
       this.canvas.width = width;
@@ -55,5 +55,6 @@ export class KmsCursorPlane {
       this.painted = { x: cursor.x, y: cursor.y,
         width: cursor.width, height: cursor.height };
     }
+    return true;
   }
 }

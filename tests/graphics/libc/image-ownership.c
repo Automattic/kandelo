@@ -508,10 +508,11 @@ static int compressed_supported, compressed_fail_action, compressed_fail_mode;
 static const uint8_t *compressed_expected;
 static uint32_t compressed_expected_size;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates, copy_tex_image_commands;
-/* Texel image rebuilt from OP_TEX_SUB_IMAGE_2D records, using the host's
+/* Texel image rebuilt from RGBA and BGRA8 upload records, using the host's
  * packed stride (UNPACK_ALIGNMENT tracked from OP_PIXEL_STOREI). */
 static uint8_t *texel_capture;
 static uint32_t texel_capture_width, texel_capture_height, texel_capture_bpp, texel_capture_records;
+static uint32_t texel_capture_bgra_records;
 static uint32_t double_unpack_alignment = 4;
 static unsigned pixel_store_commands, framebuffer_bind_commands, framebuffer_status_queries;
 static unsigned bind_failure, bind_queries;
@@ -1531,14 +1532,18 @@ static int backend_ioctl(int fd, unsigned long request, void *arg) {
                     if (name && slot->renderbuffer_binding == name)
                         slot->renderbuffer_binding = 0;
                 }
-            if (op == OP_TEX_SUB_IMAGE_2D)
+            int bgra_upload = 0;
+#ifdef OP_TEX_SUB_IMAGE_2D_BGRA8
+            bgra_upload = op == OP_TEX_SUB_IMAGE_2D_BGRA8;
+#endif
+            if (op == OP_TEX_SUB_IMAGE_2D || bgra_upload)
                 image_pixel_updates++;
             if (op == OP_COPY_TEX_IMAGE_2D)
                 copy_tex_image_commands++;
             if (op == OP_PIXEL_STOREI) pixel_store_commands++;
             if (op == OP_PIXEL_STOREI && words[0] == GL_UNPACK_ALIGNMENT)
                 double_unpack_alignment = words[1];
-            if (op == OP_TEX_SUB_IMAGE_2D && texel_capture) {
+            if ((op == OP_TEX_SUB_IMAGE_2D || bgra_upload) && texel_capture) {
                 uint32_t r[9];
                 assert(len >= 36);
                 memcpy(r, commands + at + 4, sizeof r);
@@ -1547,9 +1552,21 @@ static int backend_ioctl(int fd, unsigned long request, void *arg) {
                 const uint32_t stride = (w * bpp + a - 1u) & ~(a - 1u);
                 assert(w && rows && len == 36u + dlen && dlen == (rows - 1u) * stride + w * bpp);
                 assert(x + w <= texel_capture_width && y + rows <= texel_capture_height);
-                for (uint32_t row = 0; row < rows; row++)
-                    memcpy(texel_capture + ((size_t)(y + row) * texel_capture_width + x) * bpp,
-                           commands + at + 40 + (size_t)row * stride, (size_t)w * bpp);
+                if (bgra_upload) {
+                    assert(bpp == 4 && r[6] == GL_RGBA && r[7] == GL_UNSIGNED_BYTE);
+                    texel_capture_bgra_records++;
+                }
+                for (uint32_t row = 0; row < rows; row++) {
+                    uint8_t *out = texel_capture + ((size_t)(y + row) * texel_capture_width + x) * bpp;
+                    const uint8_t *in = commands + at + 40 + (size_t)row * stride;
+                    memcpy(out, in, (size_t)w * bpp);
+                    // Independent native-adapter model; the expected image
+                    // below still comes directly from the caller's pixels.
+                    if (bgra_upload) for (uint32_t pixel = 0; pixel < w; pixel++) {
+                        out[4 * pixel] = in[4 * pixel + 2];
+                        out[4 * pixel + 2] = in[4 * pixel];
+                    }
+                }
                 texel_capture_records++;
             }
             if (op == OP_CLEAR) { clear_commands++; slot->clears++; }
@@ -8322,6 +8339,9 @@ static int fixture_case_main(int argc,char **argv) {
         glFlush();
         assert(glGetError() == GL_NO_ERROR);
         assert(texel_capture_records >= 2); /* at least two column bands */
+#ifdef OP_TEX_SUB_IMAGE_2D_BGRA8
+        assert((texel_capture_bgra_records > 0) == (format == GL_BGRA_EXT));
+#endif
         assert(!memcmp(texel_capture, expected, (size_t)texture_width * texture_height * bpp));
         free(texel_capture); texel_capture = NULL; free(expected); free(source);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));

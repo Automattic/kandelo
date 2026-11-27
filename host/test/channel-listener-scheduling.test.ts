@@ -64,31 +64,40 @@ describe("browser channel-listener scheduling", () => {
     const waited = new Promise<"ok">((resolve) => {
       wake = resolve;
     });
+    let observeRearm!: () => void;
+    const rearmed = new Promise<void>((resolve) => {
+      observeRearm = resolve;
+    });
     const waitAsync = vi.spyOn(Atomics, "waitAsync")
       .mockReturnValueOnce({
         async: true,
         value: waited,
       } as any)
-      .mockReturnValueOnce({
-        async: true,
-        value: new Promise<"ok">(() => {}),
-      } as any);
+      .mockImplementationOnce(() => {
+        observeRearm();
+        return {
+          async: true,
+          value: new Promise<"ok">(() => {}),
+        } as any;
+      });
 
     worker.listenOnChannel(channel);
 
     expect(worker.usePolling).toBe(false);
     expect(waitAsync).toHaveBeenCalledOnce();
-    expect(waitAsync).toHaveBeenCalledWith(
-      channel.i32View,
-      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-      CHANNEL_STATUS_IDLE,
-    );
+    // The listener retains only its exact physical word, rather than a view
+    // spanning the rest of the process. Assert the target, not view identity.
+    const [word, index, expected] = waitAsync.mock.calls[0];
+    expect(word.buffer).toBe(channel.memory.buffer);
+    expect(word.byteOffset).toBe(channel.channelOffset + CH_STATUS);
+    expect(word.length).toBe(1);
+    expect(index).toBe(0);
+    expect(expected).toBe(CHANNEL_STATUS_IDLE);
     expect(tasks.setImmediate).not.toHaveBeenCalled();
     expect(tasks.queueMicrotask).not.toHaveBeenCalled();
 
     wake("ok");
-    await waited;
-    await Promise.resolve();
+    await rearmed;
 
     expect(waitAsync).toHaveBeenCalledTimes(2);
   });
@@ -104,7 +113,7 @@ describe("browser channel-listener scheduling", () => {
     const replacement = createChannel(channel.pid, replacementMemory);
     worker.processes.set(channel.pid, {
       pid: channel.pid,
-      memory: replacementMemory,
+      memory: replacementMemory, source: replacementMemory,
       channels: [replacement],
     });
     worker.activeChannels = [replacement];
@@ -149,7 +158,7 @@ function createScheduler(status = CHANNEL_STATUS_IDLE): {
     return 0;
   });
   const worker = Object.assign(createCentralizedKernelWorkerTestDouble(), {
-    processes: new Map([[pid, { pid, memory, channels: [channel] }]]),
+    processes: new Map([[pid, { pid, memory, source: memory, channels: [channel] }]]),
     activeChannels: [channel],
     stoppedPids: new Set(),
     parkedChannelCompletions: new Map(),
@@ -182,6 +191,7 @@ function createMemory(): WebAssembly.Memory {
 
 function createChannel(pid: number, memory: WebAssembly.Memory): any {
   return {
+    source: memory,
     pid,
     memory,
     channelOffset: 0,

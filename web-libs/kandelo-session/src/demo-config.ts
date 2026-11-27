@@ -151,6 +151,7 @@ const MAX_DOCK_MENU_ENTRIES = 40;
  * when it is answered.
  */
 export interface DemoRuntimeConfig {
+  executionBackend?: "ordinary" | "memory-group";
   features: DemoRuntimeFeature[];
   requests: DemoResourceRequests;
 }
@@ -166,6 +167,7 @@ export interface DemoRuntimeConfig {
  * reach for that rather than the raw block.
  */
 export interface DemoRuntimeConfigInput {
+  executionBackend?: "ordinary" | "memory-group";
   features?: DemoRuntimeFeature[];
   requests?: DemoResourceRequests;
 }
@@ -552,6 +554,9 @@ function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
     throw new Error(`${field} must be an object`);
   }
 
+  if (value.executionBackend !== undefined && value.executionBackend !== "ordinary" && value.executionBackend !== "memory-group") {
+    throw new Error(`${field}.executionBackend must be ordinary or memory-group`);
+  }
   const features: DemoRuntimeFeature[] = [];
   if (value.features !== undefined) {
     if (!Array.isArray(value.features)) {
@@ -589,6 +594,7 @@ function normalizeRuntime(value: unknown, field: string): DemoRuntimeConfig {
   return {
     features,
     requests: normalizeResourceRequests(value.requests, `${field}.requests`),
+    ...(value.executionBackend === undefined ? {} : { executionBackend: value.executionBackend as "ordinary" | "memory-group" }),
   };
 }
 

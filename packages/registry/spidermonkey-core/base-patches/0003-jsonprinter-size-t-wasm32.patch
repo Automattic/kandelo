@@ -1,0 +1,36 @@
+# Kandelo patch rationale (S02)
+# Judgment: Supported. Keep the overload fix because this target’s size_t
+# is a different C++ type from the integer types already handled by
+# JSONPrinter.
+#
+# The engine's JSON diagnostics print memory sizes using size_t. On this
+# target that is a different C++ type from the existing integer overloads.
+# Enable Mozilla's existing size_t overload rather than change SDK types
+# for all packages or edit every engine caller. The bridge cannot add an
+# overload to this engine class. Prefer an upstream type-based condition
+# when available.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/js/src/vm/JSONPrinter.cpp
++++ b/js/src/vm/JSONPrinter.cpp
+@@ -197,7 +197,7 @@
+   out_.printf("%" PRIu64, value);
+ }
+
+-#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__)
++#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__) || defined(__wasm32__)
+ void JSONPrinter::property(const char* name, size_t value) {
+   propertyName(name);
+   out_.printf("%zu", value);
+--- a/js/src/vm/JSONPrinter.h
++++ b/js/src/vm/JSONPrinter.h
+@@ -51,7 +51,7 @@
+   void property(const char* name, uint32_t value);
+   void property(const char* name, int64_t value);
+   void property(const char* name, uint64_t value);
+-#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__)
++#if defined(XP_DARWIN) || defined(__OpenBSD__) || defined(__wasi__) || defined(__wasm32__)
+   // On OSX and OpenBSD, size_t is long unsigned, uint32_t is unsigned, and
+   // uint64_t is long long unsigned. Everywhere else, size_t matches either
+   // uint32_t or uint64_t.

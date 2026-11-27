@@ -1,0 +1,22 @@
+# Kandelo patch rationale (O09)
+#
+# The real Kandelo libffi backend needs target recognition and must release
+# its generated call adapters. Keep target selection and actual retirement;
+# private cleanup/error declarations now live in the package companion
+# header ffi-kandelo-private.h instead of upstream ffi.h. Node's original
+# native owner still calls release before its resources disappear.
+#
+# Source-only cleanup; normal package and consumer qualification remain required.
+
+--- a/generate-headers.py
++++ b/generate-headers.py
+@@ -22,6 +22,9 @@
+ 
+ def get_target(os_name, target_arch):
+     target_arch = normalize_arch(target_arch)
++
++    if os_name == 'kandelo' and target_arch == 'wasm32':
++        return ('KANDELO_WASM32', 'kandelo')
+ 
+     if target_arch == 'arm':
+         return ('ARM_WIN32' if os_name == 'win' else 'ARM', 'arm')

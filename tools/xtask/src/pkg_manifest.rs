@@ -135,6 +135,10 @@ pub struct ProgramOutput {
     pub fork_instrumentation: ForkInstrumentationPolicy,
     #[serde(default)]
     pub original_wasm: Option<String>,
+    /// Derive this ZIP output from another ordinary executable output using
+    /// the SDK shared-memory transform. The source output stays unchanged.
+    #[serde(default)]
+    pub shared_memory_from: Option<String>,
 }
 
 /// A non-Wasm file that a program package needs at runtime.
@@ -154,6 +158,34 @@ pub struct RuntimeFile {
 
 fn default_runtime_file_mode() -> u32 {
     0o644
+}
+
+/// One `[[fictions]]` entry: a declared fiction this program's links select.
+///
+/// A fiction is behaviour Kandelo cannot provide truthfully and reports as
+/// provided anyway (`sdk/fictions/<name>.toml` defines each). The truthful
+/// behaviour is the default; a declaration opts this package's executable
+/// links into the named fiction with `config`, and must say why (`reason`)
+/// in terms a reviewer can check against the fiction's allowed and
+/// forbidden intents. See docs/package-management.md ("Declared fictions").
+///
+/// ```toml
+/// [[fictions]]
+/// name = "mprotect"
+/// reason = "cont.c makes each fiber stack's lowest page a PROT_NONE guard"
+/// config = { prot_none = "accept-unenforced", prot_none_max = 65536 }
+/// ```
+///
+/// The registry check (name, keys, value types) needs the repository and
+/// runs where the build does (`build_deps::fiction_selection`); this parser
+/// checks the shape.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FictionDeclaration {
+    pub name: String,
+    pub reason: String,
+    #[serde(default)]
+    pub config: BTreeMap<String, toml::Value>,
 }
 
 /// One entry in a manifest's `[[host_tools]]` array. Inline
@@ -399,6 +431,10 @@ pub struct DepsManifest {
     /// (library / program / source). Consumed by `ensure_built`
     /// (probe runner) and `cmd_check` (host-tool consistency lint).
     pub host_tools: Vec<HostTool>,
+
+    /// Declared fictions (`[[fictions]]`), program manifests only. Empty
+    /// when none are declared, which is the truthful default.
+    pub fictions: Vec<FictionDeclaration>,
 
     /// Target arches this manifest opts into. Read from the optional
     /// top-level `arches = ["wasm32", "wasm64"]` TOML field. Defaults
@@ -1334,6 +1370,8 @@ struct Raw {
     runtime_files: Vec<RuntimeFile>,
     #[serde(default)]
     host_tools: Vec<RawHostTool>,
+    #[serde(default)]
+    fictions: Vec<FictionDeclaration>,
     /// Optional `arches = ["wasm32", "wasm64"]`. Empty/absent =
     /// `["wasm32"]` (the default — see DepsManifest::target_arches).
     #[serde(default)]
@@ -1819,6 +1857,51 @@ impl DepsManifest {
             });
         }
 
+        let fictions = raw.fictions;
+        if !matches!(raw.kind, ManifestKind::Program) && !fictions.is_empty() {
+            return Err("[[fictions]] is allowed only for kind = \"program\": \
+                 a fiction applies to executable links, so the program that \
+                 links the code declares it"
+                .into());
+        }
+        let mut fiction_names = BTreeSet::new();
+        for (idx, fiction) in fictions.iter().enumerate() {
+            validate_single_path_component(&fiction.name, &format!("[[fictions]][{idx}].name"))?;
+            if !fiction_names.insert(fiction.name.as_str()) {
+                return Err(format!("[[fictions]] declares {:?} twice", fiction.name));
+            }
+            if fiction.reason.trim().is_empty() {
+                return Err(format!(
+                    "[[fictions]][{idx}] ({}) needs a reason: what the program uses the fiction for",
+                    fiction.name
+                ));
+            }
+            if fiction.config.is_empty() {
+                return Err(format!(
+                    "[[fictions]][{idx}] ({}) has no config; the fiction's defaults are the \
+                     truthful behaviour, which needs no declaration",
+                    fiction.name
+                ));
+            }
+            for (key, value) in &fiction.config {
+                let plain = key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                let scalar = match value {
+                    toml::Value::String(text) => text
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                    toml::Value::Integer(n) => *n >= 0,
+                    _ => false,
+                };
+                if key.is_empty() || !plain || !scalar {
+                    return Err(format!(
+                        "[[fictions]][{idx}] ({}) config {key:?}: keys are lowercase words and \
+                         values are lowercase words or non-negative integers",
+                        fiction.name
+                    ));
+                }
+            }
+        }
+
         let runtime_files = raw.runtime_files;
         if !matches!(raw.kind, ManifestKind::Program) && !runtime_files.is_empty() {
             return Err("[[runtime_files]] is allowed only for kind = \"program\"".into());
@@ -1960,6 +2043,25 @@ impl DepsManifest {
         };
 
         if matches!(raw.kind, ManifestKind::Program) {
+            for output in &program_outputs {
+                if let Some(source_name) = &output.shared_memory_from {
+                    let source = program_outputs.iter().find(|candidate| candidate.name == *source_name)
+                        .ok_or_else(|| format!("shared_memory_from {source_name:?} names no output"))?;
+                    if source.name == output.name || source.shared_memory_from.is_some()
+                        || !source.wasm.ends_with(".wasm") || !output.wasm.ends_with(".zip")
+                        || output.fork_instrumentation != ForkInstrumentationPolicy::Disabled
+                        || output.original_wasm.is_some()
+                    {
+                        return Err("shared_memory_from requires an ordinary Wasm source and a ZIP output with fork_instrumentation = disabled".into());
+                    }
+                    if raw.build.toolchain != PackageToolchain::Sdk {
+                        return Err("shared_memory_from requires the SDK toolchain".into());
+                    }
+                    if raw.arches.iter().any(|arch| *arch != TargetArch::Wasm32) {
+                        return Err("shared_memory_from supports only wasm32 outputs".into());
+                    }
+                }
+            }
             let mut original_artifacts = Vec::<&str>::new();
             for output in &program_outputs {
                 if let Some(original) = &output.original_wasm {
@@ -2057,6 +2159,7 @@ impl DepsManifest {
             program_outputs,
             runtime_files,
             host_tools,
+            fictions,
             target_arches,
             dir,
             kernel_abi: raw.kernel_abi,
@@ -3483,6 +3586,109 @@ spdx = "TestLicense"
 "#
         );
         DepsManifest::parse(&text, PathBuf::from("/x"))
+    }
+
+    const FICTION_OUTPUTS: &str = "[[outputs]]\nname = \"app\"\nwasm = \"app.wasm\"\n";
+
+    #[test]
+    fn parses_a_declared_fiction() {
+        let manifest = program_manifest(
+            "app",
+            &format!(
+                "{FICTION_OUTPUTS}\n[[fictions]]\nname = \"mprotect\"\n\
+                 reason = \"fiber stack guard pages\"\n\
+                 config = {{ prot_none = \"accept-unenforced\", prot_none_max = 65536 }}\n"
+            ),
+        );
+        assert_eq!(manifest.fictions.len(), 1);
+        let fiction = &manifest.fictions[0];
+        assert_eq!(fiction.name, "mprotect");
+        assert_eq!(fiction.reason, "fiber stack guard pages");
+        assert_eq!(fiction.config["prot_none"].as_str(), Some("accept-unenforced"));
+        assert_eq!(fiction.config["prot_none_max"].as_integer(), Some(65536));
+        assert!(program_manifest("app", FICTION_OUTPUTS).fictions.is_empty());
+    }
+
+    #[test]
+    fn refuses_malformed_fiction_declarations() {
+        let declare = |body: &str| {
+            try_program_manifest("app", &format!("{FICTION_OUTPUTS}\n{body}")).unwrap_err()
+        };
+        let config = "config = { prot_none = \"accept-unenforced\" }";
+        assert!(declare(&format!("[[fictions]]\nname = \"mprotect\"\nreason = \" \"\n{config}\n"))
+            .contains("needs a reason"));
+        assert!(declare("[[fictions]]\nname = \"mprotect\"\nreason = \"r\"\n").contains("no config"));
+        assert!(declare(&format!(
+            "[[fictions]]\nname = \"mprotect\"\nreason = \"r\"\n{config}\n\
+             [[fictions]]\nname = \"mprotect\"\nreason = \"r\"\n{config}\n"
+        ))
+        .contains("twice"));
+        assert!(declare("[[fictions]]\nname = \"mprotect\"\nreason = \"r\"\nconfig = { prot_none_max = -1 }\n")
+            .contains("non-negative"));
+        assert!(declare("[[fictions]]\nname = \"../x\"\nreason = \"r\"\nconfig = { a = \"b\" }\n")
+            .contains("name"));
+        assert!(declare(&format!("[[fictions]]\nname = \"mprotect\"\nreason = \"r\"\nwhy = 1\n{config}\n"))
+            .contains("unknown field"));
+    }
+
+    #[test]
+    fn fictions_belong_to_program_manifests() {
+        let text = format!(
+            "{EXAMPLE}\n[[fictions]]\nname = \"mprotect\"\nreason = \"r\"\n\
+             config = {{ prot_none = \"accept-unenforced\" }}\n"
+        );
+        let error = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(error.contains("only for kind = \"program\""), "{error}");
+    }
+
+    #[test]
+    fn shared_memory_outputs_are_declared_by_their_producer() {
+        let output = r#"[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+
+[[outputs]]
+name = "probe-shared"
+wasm = "probe-shared.zip"
+shared_memory_from = "probe"
+fork_instrumentation = "disabled"
+"#;
+        let manifest = program_manifest("probe", output);
+        assert_eq!(manifest.program_outputs[1].shared_memory_from.as_deref(), Some("probe"));
+        assert_eq!(manifest.output_dest_rel("probe.wasm").unwrap(), PathBuf::from("probe/probe.wasm"));
+        for changed in [
+            output.replace(r#"shared_memory_from = "probe""#, r#"shared_memory_from = "missing""#),
+            output.replace(r#"shared_memory_from = "probe""#, r#"shared_memory_from = "probe-shared""#),
+            output.replace("probe-shared.zip", "probe-shared.wasm"),
+            output.replace(r#"fork_instrumentation = "disabled""#, r#"fork_instrumentation = "auto""#),
+            output.replace("wasm = \"probe.wasm\"", "wasm = \"probe.zip\""),
+        ] {
+            assert!(try_program_manifest("probe", &changed).is_err(), "{changed}");
+        }
+        assert!(try_program_manifest("probe", &format!(r#"{output}
+[[outputs]]
+name = "chained"
+wasm = "chained.zip"
+shared_memory_from = "probe-shared"
+fork_instrumentation = "disabled"
+"#)).is_err());
+        let unsupported = format!(r#"kind = "program"
+name = "probe"
+version = "1.0"
+arches = ["wasm64"]
+depends_on = []
+[source]
+url = "https://example.test/probe.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+{output}"#);
+        assert!(DepsManifest::parse(&unsupported, PathBuf::from("/x")).is_err());
+        let ordinary = program_manifest("probe", r#"[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+"#);
+        assert!(ordinary.program_outputs[0].shared_memory_from.is_none());
     }
 
     #[test]

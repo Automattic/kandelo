@@ -1,0 +1,24 @@
+# Kandelo patch rationale (O03)
+#
+# Consumers move the installed package between resolver-owned directories.
+# The upstream template records the temporary absolute install prefix; no
+# faithful stock metadata-relative installation setting was established.
+# Keep these three explicit path lines rather than maintain another complete
+# metadata generator or hide the same substitutions in a script. No event-
+# loop algorithm changes. Installed relocation/flag qualification remains.
+#
+# Source-only review/cleanup; no build or runtime qualification is claimed.
+
+--- a/libuv-static.pc.in
++++ b/libuv-static.pc.in
+@@ -1,7 +1,7 @@
+-prefix=@prefix@
++prefix=${pcfiledir}/../..
+ exec_prefix=${prefix}
+-libdir=@libdir@
+-includedir=@includedir@
++libdir=${prefix}/lib
++includedir=${prefix}/include
+ 
+ Name: libuv-static
+ Version: @PACKAGE_VERSION@

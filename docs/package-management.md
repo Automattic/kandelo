@@ -133,6 +133,11 @@ package builds (rootfs, shell, coreutils-docs, and others) execute
 the caller provisions the locked tree. A tree that already matches, such as
 one CI installed, is left untouched.
 
+The setup runner compiles the native `xtask` orchestrator with Cargo's
+release profile, matching build planning and the other `run.sh` entry points.
+Program, SDK and kernel build profiles continue to come from their declared
+build steps. Cache validation and package selection use the same engine.
+
 `./run.sh setup` builds this same graph. `./run.sh local-build` runs `xtask
 bootstrap packages`, the SDK prerequisites and the same engine step setup's
 `xtask bootstrap` runs, and both take their selection from one function
@@ -893,6 +898,47 @@ requires regular non-symlink runtime files after fresh builds and cache
 hits. It mirrors them at
 `{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
 number of `[[outputs]]` entries.
+
+### Shared-memory outputs
+
+An SDK program can declare a separate compatible executable as a normal ZIP
+output. The source name refers to another ordinary output of the same producer:
+
+```toml
+[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+
+[[outputs]]
+name = "probe-shared"
+wasm = "probe-shared.zip"
+shared_memory_from = "probe"
+fork_instrumentation = "disabled"
+```
+
+The recipe produces `probe.wasm`. Before publication, the normal resolver invokes
+`wasm32posix-shared-memory` and creates a deterministic ZIP containing executable
+`program.wasm`. The derived output must disable ordinary fork instrumentation
+because translation consumes the already instrumented source. Chained outputs,
+side modules, stale ABI contracts and unsupported architectures are rejected;
+this setting currently supports SDK memory32 executables only. The source remains
+ordinary and is never rewritten. Adding an output follows the existing
+multi-output mirror directory rules.
+
+The setting and translator/helper source closure enter the producer's cache key.
+Fresh builds, cache admission and complete local receipts validate the archive,
+source digest, shared-memory layout and current program ABI contract. Standalone
+local installation derives the output when collecting the complete generation.
+
+For image recipes the resolver supplies `WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS`, a
+readonly bounded JSON handoff in the private work directory. It identifies the
+consumer and the reachable declared producer outputs with source SHA-256,
+verified archive path, normal resolver URI, byte length and SHA-256. The shell
+composer registers these through normal lazy archives at
+`/usr/libexec/kandelo/memory-group/<source-sha256>/program.wasm`. No central program
+list or desktop dependency is required. The runtime retains kernel descriptor
+binding; availability in an image does not opt an ordinary launch into sharing.
+See [shared-memory groups](shared-memory-groups.md) for launch and trust limits.
 
 Optional [package session procedures](package-sessions.md) use this same
 runtime-file contract. Packages declare offer setup forms, participant join
@@ -1850,8 +1896,8 @@ every shell to a single worktree's SDK.
 
 ### Sysroot libraries are not packages
 
-The opt-in `libkandelo-ucontext-unsupported.a` is also a sysroot artifact,
-not a package. Bootstrap checks required core outputs and installed-byte
+The opt-in `libkandelo-ucontext-unsupported.a` and `libkandelo-mprotect.a` are also sysroot artifacts,
+not packages. Bootstrap checks required core outputs and installed-byte
 receipts against the current musl, overlay, glue, build-script, and
 toolchain inputs. Missing archives, stale input stamps, or altered outputs
 trigger `scripts/build-musl.sh --ensure`, including sysroots provisioned
@@ -2136,17 +2182,12 @@ fi
 [ -f "$PCRE2_SOURCE_DIR/CMakeLists.txt" ] || {
     echo "ERROR: pcre2-source missing CMakeLists.txt" >&2; exit 1; }
 
-# Build PCRE2 statically into a script-local tree (NOT cached as
-# a library — the build is mariadb-specific by configuration).
-PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
-if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
-    cmake "$PCRE2_SOURCE_DIR" \
-        -DCMAKE_C_COMPILER="$LLVM_CLANG" \
-        -DCMAKE_C_FLAGS="--target=$WASM_TARGET … --sysroot=$SYSROOT -O2 -DNDEBUG" \
-        -DCMAKE_SIZEOF_VOID_P=$PCRE2_SIZEOF_VOID_P \
-        -DPCRE2_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF …
-    make -j"$NPROC" pcre2-8-static pcre2-posix-static
-fi
+# Build PCRE2 in the consumer's work root with the same SDK toolchain
+# selected for MariaDB's target architecture.
+cmake -S "$PCRE2_SOURCE_DIR" -B "$PCRE2_BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+    -DPCRE2_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF …
+cmake --build "$PCRE2_BUILD" --target pcre2-8-static pcre2-posix-static
 
 # Install into sysroot for mariadb's main cmake to link against.
 cp "$PCRE2_BUILD/libpcre2-8.a"     "$SYSROOT/lib/"
@@ -2609,6 +2650,8 @@ Optional:
 - `[build].script_path` — see "Override" below.
 - `[[host_tools]]` — see the Host-tool requirements section below.
 
+(`[[fictions]]` is program-only; see "Declared fictions".)
+
 Rejected at parse time (the parser surfaces a clear error):
 
 - `[outputs]` and `[[outputs]]` — sources have no built-artifact
@@ -2768,6 +2811,112 @@ registry context, then run `cargo xtask build-deps check`.
 See decisions 10 (cache-key impact) and 11 (probe + install hint
 contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
 
+## Declared fictions
+
+A **fiction** is behaviour Kandelo reports as provided without providing it,
+for software that cannot run on the truthful answer. Fictions are never the
+default: a program gets the truthful behaviour unless its package declares
+the fiction. The design and review rules are in
+[the design record](plans/2026-11-17-declared-fictions-design.md).
+
+The registry is `sdk/fictions/<name>.toml`. Each entry states what is faked,
+how that differs from POSIX, the risks, the intents a declaration may and may
+not use it for, the truthful alternative, and the configuration schema.
+Today there is one fiction, `mprotect` (below).
+
+A program package declares a fiction with a reason and a configuration:
+
+```toml
+[[fictions]]
+name = "mprotect"
+reason = "cont.c fiber stack guard pages (one 64 KiB PROT_NONE page per fiber stack); GC compaction is compiled out"
+config = { prot_none = "accept-unenforced", prot_none_max = 65536 }
+```
+
+- Only `kind = "program"` manifests may declare fictions: a fiction changes
+  what an executable link produces. A program declares the fictions the code
+  it links needs, including code from library packages.
+- `reason` is required. It names the caller and what the fiction is used for,
+  and a reviewer checks it against the registry's allowed and forbidden
+  intents. It is free text and not part of the cache key.
+- `config` is required and must depart from the truthful default; keys and
+  values are checked against the registry when the package builds. A config
+  change is part of the cache key.
+- The build sets `KANDELO_FICTIONS` for the recipe, so every SDK link in the
+  build applies the declaration without recipe edits. A package that declares
+  none has the variable removed.
+- `program-packages.json` reports each package's declarations (`name`,
+  `reason`, `selection`).
+
+Outside a package build, select a fiction by hand with the same syntax:
+
+```sh
+wasm32posix-cc app.c -o app.wasm \
+    --kandelo-fiction=mprotect:prot_none=accept-unenforced,prot_none_max=65536
+KANDELO_FICTIONS='mprotect:read_only=accept-unenforced' make
+```
+
+The driver validates every selection (unknown names, keys or values, and a
+selection equal to the truthful default, are errors) and applies it to
+executable links only. For each fiction a program actually links, the program
+carries a line with the full selection in its `kandelo.fictions` custom
+section; a program that never calls the faked interface carries nothing. The
+section survives the post-link wasm-opt, fork instrumentation and install.
+
+### The `mprotect` fiction
+
+WebAssembly memory has no page protection. With only `-lkandelo-mprotect`, a
+request that keeps read and write access succeeds and anything else is
+`ENOTSUP` (see `docs/posix-status.md`). The fiction makes chosen classes of
+restrictive request report success without effect:
+
+| Key | Values | Meaning |
+|---|---|---|
+| `prot_none` | `enotsup` (default), `accept-unenforced` | requests without `PROT_READ` (`PROT_NONE`, write-only, exec-only) |
+| `prot_none_max` | bytes, `0` (default) = no limit | larger `prot_none` requests stay `ENOTSUP` |
+| `read_only` | `enotsup` (default), `accept-unenforced` | requests with `PROT_READ` but not `PROT_WRITE` |
+| `read_only_max` | bytes, `0` (default) = no limit | larger `read_only` requests stay `ENOTSUP` |
+
+Lengths are compared after rounding the request out to 64 KiB pages. The
+driver links the declared `mprotect()` in place of the library's truthful
+one, even when the link names `-lkandelo-mprotect` itself. An accepted
+request still reaches the kernel, which validates it and logs the first one
+of each process image to `/dev/kmsg` (`pid N mprotect(addr, len, PROT_NONE)
+succeeded but is not enforced: ...`).
+
+Declarations in the registry:
+
+| Package | Config | Caller |
+|---|---|---|
+| ruby | `prot_none = "accept-unenforced"`, `prot_none_max = 65536` | `cont.c` fiber stack guard pages (fibers themselves still fail with `ENOSYS`: the Kandelo coroutine backend has no context switch). GC compaction, whose read barrier would need real protection and uses requests of the same size, is compiled out (`GC.compact` raises `NotImplementedError`). See `packages/registry/ruby/README.md`. |
+| quickshell | `prot_none = "accept-unenforced"` | Qt QML's V4 `OSAllocator::decommit` makes released JS heap pages `PROT_NONE` after `MADV_DONTNEED` and crashes if that fails. Its executable-memory probe (`PROT_READ\|PROT_EXEC`) stays `ENOTSUP`, which keeps the QML JIT off. |
+| file | `read_only = "accept-unenforced"` | libmagic's `apprentice_map` seals a loaded compiled magic database (`.mgc`) with `PROT_READ` as hardening and refuses the database if that fails. Nothing writes the map afterwards. Text databases, such as the shipped `/usr/share/misc/magic`, never reach the call. |
+
+Packages whose `mprotect` callers only widen access link `-lkandelo-mprotect`
+and declare nothing. PHP links it too: Zend's fiber stack guard gets
+`ENOTSUP`, and `Fiber::start()` throws a catchable exception ("Fiber stack
+protect failed") instead of reaching `makecontext()`.
+
+A library package cannot declare a fiction, so a library's `mprotect` callers
+reach its consumers one of three ways:
+
+- **Compiled out.** OpenSSL is built `no-secure-memory`: its secure heap,
+  whose arena has `PROT_NONE` guard pages, reports itself unavailable and the
+  secure allocators use the ordinary heap (`packages/registry/openssl/README.md`).
+- **Truthful library in the link interface.** Qt6Core (`qresource.cpp`, makes
+  a remapped resource writable) and Qt6Qml (V4 heap commit) list
+  `kandelo-mprotect` as a private library, which a static Qt exports in its
+  CMake link interface, so every consumer links it without naming it.
+- **Declared by each program.** Qt6Qml's V4 `decommit()` also asks for
+  `PROT_NONE` and crashes when refused. Every program that links Qt6Qml
+  declares the fiction for it, as quickshell does; one that does not still
+  links (through the truthful library above) and crashes at its first heap
+  decommit.
+
+SpiderMonkey links `-lkandelo-mprotect` for `ArrayBuffer` and Wasm buffer
+commits; its read-only and `PROT_NONE` callers are DEBUG-only GC checks or
+JIT code paths, neither of which its release, JIT-less build runs.
+
 ## Packages that are not real upstream builds yet
 
 Packages should be real upstream software built through the normal platform
@@ -2901,6 +3050,7 @@ kept in
 | Package | Patch | Reason | Follow-up |
 |---|---|---|---|
 | `harper` | `patches/chrono-0.4.45.patch`, `cubecl-common-0.8.1.patch`, `dirs-7.0.0.patch`, `getrandom-0.3.4.patch`, `getrandom-0.4.3.patch`, `mio-1.2.4.patch`, `tokio-1.53.3.patch`, `socket2-0.6.5.patch`, `parking_lot_core-0.9.12.patch`, `open-5.4.4.patch`. | Recognize Unix Wasm and Kandelo's existing libc interfaces: time, XDG directories, entropy, native future execution, threads, files, sockets, epoll/eventfd, peer credentials, and musl layouts. `open` selects guest Unix launcher commands; no opener is bundled, and an absent launcher remains an I/O failure. | Upstream target-recognition changes and the musl field-initialization fix; retain the actual Unix APIs rather than replacing them with browser stubs. |
+| `json-c` | `patches/0001-free-containers-outside-assert.patch`: evaluate final container deletion outside `assert`. | json-c 0.19 release builds define `NDEBUG`, removing a required freeing call. A native reproduction retains 200 objects after 100 nested releases; the patch retains zero. | Upstream the correction; remove it when the packaged release includes it. See `packages/registry/json-c/README.md`. |
 | `vim` | `patches/0001-clamp-expired-input-check.patch`: clamp an expired calculated input timeout to zero before the first availability check. | Upstream `inchar_loop()` subtracts elapsed time from a zero/finite timeout, then passes a negative result to a helper that means "wait indefinitely". Slow or preempted execution stalls startup and insert-mode redraw until another key arrives. Clock and POSIX select behavior are correct; this is an upstream timing defect. | Send upstream; drop the patch when the pinned release includes the correction. |
 | `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |

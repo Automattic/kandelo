@@ -64,6 +64,80 @@ Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A sing
      └────────────┘  └───────────┘  └───────────┘
 ```
 
+## Experimental process address spaces
+
+The internal shared-memory backend distinguishes a process's guest addresses
+from its physical instantiation memory. Ordinary processes keep genuine linear
+memory and direct native views. Grouped images use explicit checked byte,
+scalar and atomic operations over a page-table root; they expose no substitute
+`.buffer` or rewritten global constructors. Fork continuation, reference and
+loader metadata use the same image source. Grouped side modules are refused
+before dependency I/O; compatible static executables use the SDK producer.
+
+The dedicated kernel Worker registers an image source only through its owned
+published replica handle and an exact Rust receipt/generation check. Once an
+explicit source provider is installed, missing custody never falls back to a
+native or graphics lookup. Kernel process-byte imports, extent validation,
+syscall planning and completion use that source. The native snapshot comparator
+remains on its direct path; grouped comparisons request an owned read.
+
+Kernel image access outlives any one execution replica. Native channel listeners
+pin the exact physical word they armed until the engine promise settles, even
+after source revocation or a page-table change. Notification alone proves no
+retirement. Unpublished allocation rollback requires exact Rust cancellation;
+published or uncertain storage stays charged. Independent device buffers remain
+the only transport into persistent page/audio realms.
+
+Grouped anonymous map/unmap/protect/remap/brk dispatch retains one exact pending
+request, queues same-image mutations, and acquires Rust preparation only after
+the all-replica barrier supplies a stable logical extent. It copies arguments
+and bounded kernel records, observes native control-word progress
+outside kernel entry, then revalidates the caller, Rust metadata and root/PTE
+baseline before synchronous publication. Failed commit restores old entries;
+uncertain publication contains storage. Removed PTE references stay charged.
+Unpublished cancellation can finish after channel removal without changing a
+successor image, and a busy pool keeps cleanup custody. Its completion does
+not establish native-observer or Worker retirement. Rust owns budgeted linear
+image intervals, heap and reserved controls; protection/unmap preserve holes,
+and observed virtual growth does not recreate old unmapped pages. Grouped
+fork copies this metadata from its live kernel parent without changing the
+ordinary fork wire. Heap queries allocate no preparation, and growth admission
+failure preserves the old break. Private-file preparation retains the backing
+and OFD lock identity independently of the descriptor. Rust selects a bounded
+population interval and sequential read cursor; the host writes only fresh
+unpublished pages. Remap tails use that same file and byte offset after
+close/unlink. Population errors cancel the original plan before publication.
+Final native close effects use a budgeted cold journal drained by the outer
+kernel scope, after process/MM borrows end. Anonymous and private-file C probes
+exercise the normal SDK and process Worker entries on Node and the three
+browsers. Whole-page EOF/SIGBUS and truncation, remaining kernel-dereferenced
+I/O, physical fork/thread, shared-object and device effects remain unfinished.
+These mechanism checks do not establish POSIX conformance, reclamation or
+Node/browser performance acceptance.
+
+The Node/browser process entries share a memory-free prepare/ready exchange
+before one backing is transported on the authenticated parent channel. They
+validate the versioned artifact, reject an implicit Wasm start, and bind replica
+controls before initialization. Both public hosts now accept the explicit
+`experimentalMemoryGroup` launch option for bytes or installed VFS paths;
+ordinary artifacts retain their ordinary backend. Initial path validation uses
+an optional kernel capability bound to a configured group and the exact retained
+target. Commit owns the executable descriptor and advances generation before
+execution admission reserves its receipt. Grouped-parent `posix_spawn` also
+validates the pending child and parent group; it preserves the committed
+executable identity. The full app has not yet wired shared-mode configuration. Cancellation before decoding validates only the exact stopped
+identity and publishes the receiving realm's own terminal fence without
+constructing a guest instance. A stop racing a retirement-marker read cannot
+authorize a read from revoked grouped storage.
+
+The desktop-first implementation also admits whole fixed-size tmpfs shared
+objects and immutable read leases on ephemeral rootfs files. Exact owned EGL
+command streams use staged private process pages; GL reads checked virtual
+bytes before the existing queue copies the submitted range. General object
+resize/offset semantics, fragmented driver unmapping, CPU BO mappings and
+full preview acceptance remain unfinished. See
+[shared-memory groups](shared-memory-groups.md).
+
 ## Three Layers
 
 ### 1. Kernel (Rust → Wasm)
@@ -208,7 +282,11 @@ The shared Node/browser `host_getrandom` adapter allocates an independent
 buffer of at most 65,536 bytes, the
 [Web Crypto per-call quota](https://www.w3.org/TR/webcrypto/#Crypto-method-getRandomValues).
 It publishes one initialized window to the Rust-lent destination and returns
-its byte count. The backing buffer, as well as its view, is bounded.
+its byte count. The backing buffer, as well as its view, is bounded. Nonempty
+requests fail with `ENOSYS` if the cryptographic provider is unavailable; no
+weak-randomness fallback is permitted. Each window is copied only after its
+provider call succeeds, so a failed fill leaves that window unchanged. Rust
+owns syscall progress and preserves bytes from earlier completed windows.
 
 Large `/dev/urandom`, `/dev/random`, and `getrandom()` requests bypass the
 request-sized transfer reservation. During normal dispatch Rust selects the
@@ -602,6 +680,12 @@ revalidate the exact host process generation before each PID-only kernel
 operation, so an `exec` that reuses the PID cannot receive a stale
 continuation's address-space or thread mutation. Child-launch paths use
 monotonic task IDs or the expected process memory as their equivalent guard.
+
+Host-owned process reaping follows the same immediate-entry rule after exact
+generation detachment. A busy gate refuses before retaining a reap callback;
+both hosts await a later-turn retry before recording job detachment. Rust
+still verifies parent ownership and exited state, so a guest parent's wait
+status remains available to that parent.
 
 A prepared exec rechecks the old worker's exact memory registration and
 still-pending exec syscall channel inside the commit entry. A cooperative
@@ -1374,7 +1458,12 @@ A short retry timer remains a scheduling safety net. `ENOLCK` is a completed
 guest-visible failure, not a retry result. Native runtimes can consume the same
 generic wake event without implementing advisory-lock storage.
 
-**Finite-timeout waits keep one kernel-owned deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`, `handleEpollPwait`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The deadline is kernel state on `CLOCK_MONOTONIC` (`crates/runtime-core/src/wait_queue.rs`): the first time a call is known to block, the host opens a wait with `kernel_wait_deadline_open(pid, tid, kind, timeout_ms)` and keeps only the returned handle on the channel (`ChannelInfo.waitHandle`); every re-entry asks `kernel_wait_deadline_remaining_ns`, and `clearReadinessWait` closes the handle when the call completes or is abandoned. A handle is an execution generation and is never reused, so a timer armed before an `exec` cannot complete a request issued after it. Because the clock is monotonic, a wall-clock step (an NTP correction, a DST change, a user setting the date) no longer moves pending timeouts. A call that finds its descriptor ready, fails, or is non-blocking never opens a deadline. The host still owns the park itself — the timer and the wake routing — and refuses to boot a kernel that lacks the deadline exports rather than falling back to wall-clock arithmetic.
+**Epoll parks in the kernel.** Rust pins the epoll description, keeps the
+monotonic deadline and optional mask, and writes events in the caller's memory.
+The host delivers its timer and publishes the completion. See the
+[epoll contract](epoll.md).
+
+**Host-retried finite waits keep one kernel-owned deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The deadline is kernel state on `CLOCK_MONOTONIC` (`crates/runtime-core/src/wait_queue.rs`): the first time a call is known to block, the host opens a wait with `kernel_wait_deadline_open(pid, tid, kind, timeout_ms)` and keeps only the returned handle on the channel (`ChannelInfo.waitHandle`); every re-entry asks `kernel_wait_deadline_remaining_ns`, and `clearReadinessWait` closes the handle when the call completes or is abandoned. A handle is an execution generation and is never reused, so a timer armed before an `exec` cannot complete a request issued after it. Because the clock is monotonic, a wall-clock step (an NTP correction, a DST change, a user setting the date) no longer moves pending timeouts. A call that finds its descriptor ready, fails, or is non-blocking never opens a deadline. The host still owns the park itself — the timer and the wake routing — and refuses to boot a kernel that lacks the deadline exports rather than falling back to wall-clock arithmetic.
 
 **epoll interests and delivery state belong to open file descriptions.**
 Instances live in the kernel-global backing table. Interests use Linux's
@@ -1777,6 +1866,12 @@ and libc performs an ordinary checkpoint after every `prepare`/`next` return
 and after `dlclose`. Constructors still begin only after both the import and
 checkpoint return, so signal delivery and dynamic initialization add no
 host-to-Wasm reentrancy.
+
+Live pthread replicas resolve function-pointer imports from the current module
+closure, including the module's own exports. Their newly instantiated GOT cells
+may start at zero until those exports are published. This is distinct from a
+fork snapshot: saved import values and table positions must match exactly, and
+an inconsistent saved function pointer remains an error.
 
 The dlopen replay list and its atomic pthread-fork lock live in a transient,
 host-private control record. The same host build writes and reads that record
@@ -2444,6 +2539,24 @@ compile one thread module between them.
 
 ## Memory Layout
 
+Opt-in shared-memory groups belong to Rust's `ProcessTable` and `MemoryGroups`, separately from POSIX process groups. The kernel owns admission and budgets, backing resource leases, physical page custody, image roots and replica scratch, shared objects, mapping transactions, barriers and exact retirement. Prepared construction can roll back; live, stopping or quarantined Workers prevent reuse. Old exec-image custody remains distinct from its successor. SDK private-memory growth sends its unsigned page delta through the admitted syscall channel. The kernel's existing storage owner allocates and zeroes frames, retains image custody and publishes the new virtual extent; the SDK does not allocate physical pages.
+
+Shared-object collection during a mapping operation is opportunistic. If a participant holds the notification queue or an exact native observation still pins an orphan, the kernel retains its physical pages and accounting for a later sweep. This retryable condition cannot turn a successful mapping into a fatal operation, including after mapping publication. Invalid storage state remains an error.
+
+Host-adapter 38 supplies raw bounded reads, writes, copies, growth and atomics over a kernel-issued backing resource. These imports bridge separate Wasm memories: the kernel's own pointers cannot directly address the group's `WebAssembly.Memory`. TypeScript retains the actual Memory, Worker and native Promise objects, transports kernel-issued descriptors and reports genuine completion. It does not choose physical pages, reconstruct mapping effects or decide when storage can be reused. Graphics mappings retain their Rust BO/object ownership; host device staging is independent. Program ABI 56 is unchanged. The public Node/browser launch API selects this backend only through explicit opt-in. See [shared-memory groups](shared-memory-groups.md) for the trust boundary, scope and validation requirements.
+
+Host-adapter 33 retains grouped syscall completions in the actual
+`ProcessTable`. Rust captures and consumes request flags, permits dispatch,
+retains full-width results and prepared signals, and selects publication,
+stop holds, native queue observations, interruption, terminal unwind and
+discard. A prepared admission can bind its native channel before Worker
+construction; it cannot dispatch until Rust starts the task. Completion holds
+prevent control/image reuse independently of native pins. Actual thread exit,
+process exit and exec commit grant the corresponding terminal authority.
+The host binds real objects, copies detached outputs, executes requested
+platform effects and reports exact observation settlement. An acknowledgement
+releases the completion hold; it proves neither Worker stop nor page reuse.
+
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 
 ```
@@ -2944,6 +3057,13 @@ before a queued Rust retirement marker is written. Fence listeners remain
 active; an expected cancellation must not become a second crash report.
 This handoff is enabled only for ordinary fork. A vfork borrower's existing
 lifetime completion and address-space containment protocol remains its owner.
+
+The browser construction factory preserves the closed creator owner's private
+cancellation reason for pending allocations and admitted preparation that
+resumes after disposal. Only that private reason is expected shutdown; copied
+error text, constructor failures and failed Worker termination remain visible.
+Allocation failure diagnostics retain the original error alongside context.
+
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space
@@ -2969,11 +3089,50 @@ The dynamic slot rules follow that POSIX shape:
 
 Retaining the caller slot instead of migrating its TLS into the main control prefix keeps fork replay simple: `wpk_fork_rewind_begin` restores the saved `__tls_base`, `__stack_pointer`, and other mutable globals exactly as the calling thread wrote them. The cost is one retained 256 KiB address-space reservation for fork-from-pthread children.
 
+### Process byte-transfer preflight
+
+`HostIO::proc_validate_range` carries an explicit guest access direction.
+The kernel/host import checks the complete virtual range and, for grouped
+images, the required page rights without copying a payload. Scalar and
+vector reads preflight output before consuming descriptor state and recheck
+on retry; entropy rechecks its remaining destinations on each resumed turn.
+Grouped scalar I/O uses the Rust guest-address path for every buffer size.
+Writes gather from readable memory, so a read-only source remains valid.
+Preflight is an observation, not a lease: actual byte transfers validate
+again. Mapping publication is serialized through the kernel worker; logical
+C memory growth can append pages but cannot revoke existing permissions.
+
+Generic grouped output plans and frozen retries check write authority before
+kernel effects. `runtime-core::guest_recvmsg::GuestRecvmsg` copies caller
+metadata, resolves the exact socket/OFD, observes bounded output shape from
+kernel-owned queue metadata and preflights before receive. The Wasm adapter
+ends its active retry binding before the owned result publishes fields and
+SCM_RIGHTS descriptors, so publication cannot accidentally target the parked
+carrier's OFD. A stale process/image refuses publication and releases its
+owned references. Name/control checks cover only the possible kernel output
+prefix; caller inputs, padding and unused capacity are not output buffers.
+DRI/GL output probes use explicit write preflight instead of reading an
+allocation sized to the output; KMS inputs explicitly request read access.
+Generic input and captured-length faults remain EFAULT before kernel effects. These observations do not promise that a later failing
+host callback or concurrent writer can be rolled back.
+
 ### Heap initialization (brk)
 
 The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn` and `exec`, the host parses `__heap_base` from the new program's exports (`extractHeapBase` in `host/src/constants.ts`), computes the low control slab, and calls `kernel_set_brk_base(pid, control_end)` *before* the new worker can issue its first syscall. The new program's first `brk(0)` returns the first guest-managed byte after host control memory, so musl's malloc places the heap above the data, shadow-stack, and host control regions.
 
 The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don't export `__heap_base`. Programs built with our SDK always export it, so the fallback is rarely used in normal operation. `fork` correctly inherits the parent's brk, mmap base, max address, reserved prefix, and mappings via the kernel's process-state serialization; `exec` resets them (POSIX-correct) and the host installs the new program's computed layout.
+
+### Prepared address-space metadata
+
+`memory::change` owns one-shot staged `mmap`, `munmap`, `mprotect`, `mremap`
+and `brk` metadata. Preparation retains baseline and proposed metadata under
+admitted I/O credit. Commit validates the exact manager, baseline, file
+references and offsets, then moves the proposal without another allocation.
+Cancellation drops its snapshots and never restores old metadata over newer
+state. The grouped coordinator stages backing and supported device effects
+behind the all-replica barrier before publication. Ordinary operations leave
+this staging owner empty. The idle manager holds one optional nonzero 64-bit
+transaction number; snapshots allocate only during preparation.
 
 ## Filesystem
 
@@ -4640,9 +4799,38 @@ count and SHA-256 before boot.
 The host stages and reads kernel-owned files only through kernel exports
 (`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
 `kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
-`kernel_rootfs_mkdir_parents`). Writes, unlink and the browser's TLS root
+`kernel_rootfs_mkdir_parents`, `kernel_rootfs_rename_file`). Writes, unlink and the browser's TLS root
 certificate use these methods. Worker inspection uses
 the namespace methods below, including foreign mounts and cross-mount links.
+
+`CentralizedKernelWorker.rootfsRenameFile` publishes a staged entry with the
+existing tmpfs/rootfs rename operation, preserving open readers on the old
+inode and the native FIFO/Unix-socket registration policy. It accepts canonical
+absolute paths through two checked kernel scratch spans and does not borrow a
+guest process identity. Cross-authority moves fail with `EXDEV`; a kernel
+without the optional export fails with `ENOSYS`. Callers stage a complete file
+before renaming it: `rootfsWriteFile` truncates in place and is not itself an
+atomic publication primitive. Both hosts share this worker implementation.
+
+`ConnectedNamesFile` publishes `/run/kandelo/hosts-connected` in the dedicated
+kernel worker on both hosts. The native `/run` layout supplies its root-owned
+0755 parent even for image-less boots. The publisher checks directory ownership
+and modes, writes a complete 0644 staging file, then uses atomic rename. It
+does not edit `/etc/hosts`. Its source is the network owner's complete name,
+address and alias table, including real fallback virtual networks; Internet
+lookup results and UI snapshots are not membership sources. Departures remove
+only names still owned by the departing address. A machine ID cannot be reused
+until its previous attachment is retired.
+
+Initial publication precedes worker readiness; network-control replies await
+publication too. Membership changes schedule publication outside network
+callbacks, coalescing intermediate directory updates. Disposal revokes queued
+and staged generations before network/kernel retirement. Publication or staging
+cleanup errors produce host diagnostics and reject readiness/control replies;
+they do not count an older complete file as current. Failed publication retains
+the last complete file and attempts to remove the staging name. Interface tests
+exercise these rules but do not establish four-host guest DNS behavior. The
+libc resolver has not yet been changed to consume this file.
 
 For resizable persistent browsers, host-managed TLS provisioning runs after
 journal selection, recovery and any boot-time compaction, but before the worker
@@ -4712,6 +4900,17 @@ These hints are not a durable change log. Mapped writes and external changes
 to Node foreign mounts are not reported, and an inode modified through a
 hard-link name is not reported under every alias. See [WebMCP](webmcp.md)
 for the consumer-facing contract.
+
+Guest processes can subscribe through the optional `vfs-events` kernel feature.
+An open description for `/dev/kandelo/fs-events` binds to a readable rootfs or
+tmpfs descriptor. Mutations queue rename and change records with raw basenames
+for immediate directory children. Duplicated watcher descriptors share the
+queue until the last reference closes. A full queue reports overflow, so a
+consumer can rescan. Watches on the same directory share a bounded index
+of child inodes and names. The next write after a namespace change refreshes
+that directory's index. If an index exceeds the memory budget, writes still
+resolve the names from the directory itself. The last watch releases its
+index. See [guest VFS events](posix-status.md) for the record format.
 
 ### Inspection of the live filesystem
 
@@ -7619,9 +7818,10 @@ does. The host validates every guest output range before asking the kernel to
 consume a record, so an `EFAULT` cannot lose child status or reap a zombie.
 
 Default stop actions park execution cooperatively at the syscall boundary. The
-kernel emits a process-transition event, and the shared Node/browser host holds
-prepared completions by exact channel identity, including every pthread
-channel, until SIGCONT. SIGCONT changes state immediately even when blocked,
+kernel emits a process-transition event. The shared Node/browser host holds
+ordinary completions by exact channel identity; grouped completions and their
+all-thread resume signal barrier remain in `ProcessTable` until SIGCONT.
+SIGCONT changes state immediately even when blocked,
 ignored, or caught; SIGKILL can terminate a stopped process. Current Wasm
 workers do not provide arbitrary-instruction preemption, so CPU-bound code that
 never reaches a syscall cannot be suspended immediately; that boundary is
@@ -10020,3 +10220,15 @@ Integrated Swift/Node and three-engine headless controls validate these tooling
 contracts only. Physical opaque/partial/hidden-window adversarial controls and
 observer overhead remain unqualified. No complete-presentation coverage,
 originating native layer, application latency or native-feel claim follows.
+
+### Thread Worker startup and early process exit
+
+The shared Node/browser Worker protocol acknowledges pthread TLS, table and
+syscall-channel initialization before the existing clone transaction returns
+success. Merely constructing a Worker leaves asynchronous module loading and
+instantiation outstanding; an immediate parent abort could otherwise overtake
+that startup and require forced containment. Startup cancellation settles the
+same transaction without fabricating readiness. The startup acknowledgement
+is separate from `memory_quiescent` and never proves resource retirement.
+A running compute-only thread can still require the documented forced path.
+This change is undergoing the Node port's native and browser regression gates.

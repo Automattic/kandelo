@@ -1,0 +1,30 @@
+# Kandelo patch rationale (S11)
+# Judgment: Supported. Keep the target selector because Mozilla’s selected
+# header-wrapper visibility mechanism does not fit this wasm32 libc++
+# build.
+#
+# Mozilla's generated system-header wrappers do not fit this wasm32 libc++
+# build. Select its flag-based visibility path instead of changing Node
+# code or making the SDK imitate another operating system. The bridge
+# cannot fix how engine headers are compiled. Replace this selector if a
+# supported build option or a general header-wrapper fix supplies the same
+# visibility rules.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/build/moz.configure/toolchain.configure
++++ b/build/moz.configure/toolchain.configure
+@@ -2220,7 +2220,12 @@
+ @depends(target, build_environment)
+ def visibility_flags(target, env):
+     if target.os != "WINNT":
+-        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD"):
++        # Kandelo: wasm32 builds against libc++, like the BSDs, and produces a
++        # static executable with no dynamic symbol table, so use the flag-based
++        # scheme rather than the gcc_hidden.h pragma. wrap_system_includes()
++        # below still returns True, so dist/system_wrappers is generated, but
++        # only the pragma flags put it on the include path.
++        if target.kernel in ("Darwin", "FreeBSD", "OpenBSD") or target.cpu == "wasm32":
+             return ("-fvisibility=hidden", "-fvisibility-inlines-hidden")
+         return (
+             "-I%s/system_wrappers" % os.path.join(env.dist),

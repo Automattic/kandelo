@@ -66,3 +66,12 @@ describe("activity presentation metadata", () => {
     expect(() => validateKandeloDemoConfig({ version: 1, profiles: { demo: { activity } } } as unknown as KandeloDemoConfig)).toThrow();
   });
 });
+
+it('keeps memory-group selection explicit per image activity', () => {
+  const candidate = structuredClone(config);
+  candidate.profiles!.graphics.runtime!.executionBackend = 'memory-group';
+  expect(imageActivity(candidate, 'graphics', 'shell').launch).toMatchObject({ executionBackend: 'memory-group' });
+  expect(imageActivity(candidate, 'shell', 'shell').launch).not.toHaveProperty('executionBackend');
+  candidate.profiles!.graphics.runtime!.executionBackend = 'unknown' as any;
+  expect(() => validateKandeloDemoConfig(candidate)).toThrow('executionBackend');
+});

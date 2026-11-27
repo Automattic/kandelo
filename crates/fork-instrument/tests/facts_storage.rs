@@ -313,3 +313,46 @@ fn resolved_plans_are_bound_to_the_exact_original_module_and_invalidated_on_rean
     let unbound = FactsStore::read_sections([FACTS.as_bytes()], StorageLimits::default()).unwrap();
     assert!(unbound.resolve_calls(&scan, Default::default()).is_err());
 }
+
+#[test]
+fn grouped_reach_matches_the_disk_solver_across_cast_and_slot_cycles() {
+    let mut text = String::from(
+        "#kandelo-calltypes\t5\n\
+         W\tobserved\tStart\n\
+         SE\t@fn:observed\tfirst\n\
+         SE\tfirst\tsecond\n\
+         SE\tsecond\tfirst\n\
+         SE\tsecond\tread\n\
+         SF\tread\tFinish\n\
+         SE\tfirst\t@ty:Finish\n\
+         SF\t@ty:Finish\tExtra\n",
+    );
+    for n in 0..80 {
+        text.push_str(&format!("Z\tStart\tT{n}\nZ\tT{n}\tStart\n"));
+    }
+    let solve = |metadata_bytes| {
+        let store = FactsStore::read_sections(
+            [text.as_bytes()],
+            StorageLimits {
+                metadata_bytes,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        store.solve_conversions(true, true).unwrap();
+        let mut reached = Vec::new();
+        store
+            .visit_conversion_reach(|name, ty| {
+                assert_eq!(name, "observed");
+                reached.push(ty.to_owned());
+                Ok(())
+            })
+            .unwrap();
+        reached
+    };
+    let grouped = solve(StorageLimits::default().metadata_bytes);
+    assert_eq!(grouped, solve(0));
+    assert_eq!(grouped.len(), 83);
+    assert!(grouped.contains(&"Extra".to_owned()));
+    assert!(grouped.contains(&"Finish".to_owned()));
+}

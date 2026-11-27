@@ -10,7 +10,7 @@ import { runTerminalCommand } from "./support/terminal-command";
 import { installPcmRetirementTrace } from "./support/pcm-retirement-trace";
 
 const shellImageReady = [
-  "programs/wasm32/bash.wasm",
+  "programs/wasm32/bash/bash.wasm",
   "programs/wasm32/shell.vfs.zst",
 ].every((path) => {
   try {

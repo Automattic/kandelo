@@ -8,6 +8,7 @@ use wasm_encoder::{
 use wasmparser::{DataKind, ElementItems, ElementKind, Parser, Payload};
 
 mod emit;
+mod instance_globals;
 #[cfg(test)]
 mod tests;
 
@@ -43,6 +44,7 @@ pub struct ModuleBootstrapPlan<'a> {
     element_dropped: Vec<bool>,
     data_dropped: Vec<bool>,
     start: Option<u32>,
+    thread_globals: Option<u32>,
     source: [u8; 32],
     limits: BootstrapLimits,
 }
@@ -53,6 +55,7 @@ pub struct FrozenModuleBootstrap {
     element_dropped: Vec<bool>,
     data_dropped: Vec<bool>,
     start: Option<u32>,
+    thread_globals: Option<u32>,
     declarations: FrozenDeclarations,
     /// Module-state restore sets this after restoring globals/table baselines.
     pub done_global: u32,
@@ -70,11 +73,13 @@ impl<'a> ModuleBootstrapPlan<'a> {
             element_dropped: Vec::new(),
             data_dropped: Vec::new(),
             start: scan.start,
+            thread_globals: None,
             source: scan.source_fingerprint(),
             limits,
         };
         let mut metadata = limits.metadata_bytes;
         let mut work = limits.work;
+        output.thread_globals = instance_globals::discover(scan, &mut metadata, &mut work)?;
         for payload in Parser::new(0).parse_all(scan.input()) {
             match payload? {
                 Payload::ElementSection(section) => {
@@ -238,6 +243,10 @@ impl<'a> ModuleBootstrapPlan<'a> {
             start: self
                 .start
                 .map(|start| map.function_index(start))
+                .transpose()?,
+            thread_globals: self
+                .thread_globals
+                .map(|function| map.function_index(function))
                 .transpose()?,
             declarations: FrozenDeclarations::new(
                 vec![FuncType::new([], [])],

@@ -4,13 +4,16 @@
 
 use crate::Result;
 use crate::arch::{Language, WasmArch, target_triple};
-use crate::exec::{run, run_passthrough, run_without_env};
+use crate::exec::{
+    RunResult, run, run_passthrough, run_passthrough_capturing_stderr, run_without_env,
+};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
-    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags, filter_args,
-    host_imports_allowance, infer_thread_slot_declaration, join, link_flags,
-    main_thread_stack_size, needs_linking, parse_args, read_text_file, requests_cfi,
-    shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file,
+    calltypes_plugin_flags, compile_flags, compiles_cxx, cxx_compile_flags,
+    default_visibility_flags, expand_response_files, filter_args, host_imports_allowance,
+    infer_thread_slot_declaration, join, link_flags, main_thread_stack_size, needs_linking,
+    parse_args, read_text_file, requests_cfi, shared_link_flags, thread_slot_declaration_define,
+    tokenize_gnu_response_file,
 };
 use crate::node_path::{self, basename, cwd, is_absolute, resolve};
 use crate::toolchain::{Toolchain, read_abi_contract_digest, resolve_lld_major};
@@ -363,33 +366,81 @@ pub fn working_directory_from_clang_trace(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Glue {
     /// Linked as objects ahead of crt1.o and the caller's inputs, in this
-    /// order: the syscall channel and compiler-rt builtins, the dlopen loader
-    /// when the link asks for it, and the C++ runtime entry
-    /// (`cxxrt_entry.cpp`) when the link includes libc++abi.
+    /// order: the syscall channel and compiler-rt builtins, and the C++
+    /// runtime entry (`cxxrt_entry.cpp`) when the link includes libc++abi.
     pub leading: Vec<String>,
-    /// The minimal C++ runtime fallback (`cxxrt.c`), linked lazily after the
-    /// caller's inputs and the C++ libraries: a member is used only when
-    /// nothing earlier defines what it provides.
+    /// The dlopen loader (`dlopen.c`), linked lazily ahead of the first
+    /// libc archive: a program gets it when it calls dlopen, dlsym,
+    /// dlclose or dlerror, with or without -ldl, and gets none of it
+    /// otherwise. See `loader_position` for where it goes.
+    pub loader: Vec<String>,
+    /// Linked lazily after the caller's inputs and the C++ libraries, ahead
+    /// of libc.a: the minimal C++ runtime fallback (`cxxrt.c`), used only
+    /// for what libc++ and libc++abi did not define.
     pub fallback: Vec<String>,
+    /// The generated definitions of the declared fictions
+    /// (`crate::fictions`), linked lazily ahead of crt1.o and the caller's
+    /// inputs: a member is used only when the program refers to what it
+    /// defines, and then in place of the SDK library's truthful definition
+    /// (lld keeps the first lazy definition of a symbol).
+    pub fictions: Vec<String>,
+    /// The SDK libraries the fictions' definitions call, linked after the
+    /// caller's inputs.
+    pub fiction_libraries: Vec<String>,
 }
 
 /// The glue source that installs the C++ runtime's language entries.
 pub const CXX_ENTRY_GLUE: &str = "cxxrt_entry.cpp";
 
 /// Link-time libc glue sources, in link order.
-pub fn glue_sources(toolchain: &Toolchain, link_dl: bool, cxx_runtime: bool) -> Glue {
+pub fn glue_sources(toolchain: &Toolchain, cxx_runtime: bool) -> Glue {
     let mut leading = vec!["channel_syscall.c", "compiler_rt.c"];
-    if link_dl {
-        leading.push("dlopen.c");
-    }
     if cxx_runtime {
         leading.push(CXX_ENTRY_GLUE);
     }
     let path = |name: &&str| join(&toolchain.glue_dir, name);
     Glue {
         leading: leading.iter().map(path).collect(),
+        loader: ["dlopen.c"].iter().map(path).collect(),
         fallback: ["cxxrt.c"].iter().map(path).collect(),
+        ..Glue::default()
     }
+}
+
+/// Where the dlopen loader goes among the caller's link inputs: just
+/// before the caller's own libc (`-lc`, `-l c`, `-l:libc.a` or a path to a
+/// `libc.a`), or `None` when the caller does not name libc, in which case
+/// the loader follows the caller's inputs. A caller's libc would otherwise
+/// offer musl's static dlopen stubs first, and the linker extracts the
+/// first lazy definition of a symbol it sees: librsvg's pkg-config file
+/// adds -lc, and cargo's link did the same.
+///
+/// [RUNTIME-WORKAROUND: WASM-LD-LAZY-SIGNATURE-MISMATCH] The loader is not
+/// simply placed ahead of every caller input. When a lazy definition
+/// (archive member or --start-lib object) precedes an undefined reference
+/// with a different signature, wasm-ld 23 extracts it without its
+/// signature check and emits a direct call with the wrong arguments, an
+/// invalid module. Autoconf's `char dlopen (void);` probes make exactly
+/// that reference, so a loader ahead of them broke every dlopen probe.
+/// After the inputs, as libc.a is, wasm-ld reports the mismatch and links
+/// its trapping stub.
+pub fn loader_position(forwarded: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while i < forwarded.len() {
+        let arg = forwarded[i].as_str();
+        let names_libc = match arg {
+            "-lc" | "-l:libc.a" => true,
+            "-l" => forwarded
+                .get(i + 1)
+                .is_some_and(|next| next == "c" || next == ":libc.a"),
+            _ => !arg.starts_with('-') && (arg == "libc.a" || arg.ends_with("/libc.a")),
+        };
+        if names_libc {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn is_cxx_glue(source: &str) -> bool {
@@ -434,6 +485,14 @@ pub fn build_cxx_glue_compile_args(
 
 fn glue_compile_base(toolchain: &Toolchain, arch: WasmArch) -> Vec<String> {
     let mut args = compile_flags(arch);
+    // The glue is the platform's private implementation (the syscall
+    // channel, the fork entry, compiler builtins), so it stays hidden
+    // (Clang's WebAssembly default, which user code compiled for an
+    // executable does not get; see default_visibility_flags): a program's
+    // -rdynamic does not export it, and exporting therefore does not keep
+    // fork, and with it the kernel's fork import, in a program that never
+    // calls fork. The dlopen loader marks its public interface default.
+    args.push("-fvisibility=hidden".into());
     // The glue is code of every executable, so its facts must be in the link
     // like any other object's.
     if let Some(plugin) = &toolchain.calltypes_plugin {
@@ -533,6 +592,7 @@ fn build_clang_args_internal(
             args.push("--start-no-unused-arguments".into());
         }
         args.extend(compile_flags(arch));
+        args.extend(default_visibility_flags(&parsed));
         if compiles_cxx(language, &filtered) {
             args.extend(cxx_compile_flags());
         }
@@ -613,7 +673,19 @@ fn build_clang_args_internal(
         }
         if parsed.shared {
             // Shared library build: no CRT, no libc, no syscall glue.
-            args.extend(shared_link_flags());
+            // A library may explicitly export only its C ABI. Do not turn
+            // the caller's --no-export-dynamic back into an export of every
+            // archive member (including an entire language runtime).
+            let caller_limits_exports = filtered.iter().any(|arg| {
+                arg.strip_prefix("-Wl,").is_some_and(|options| {
+                    options.split(',').any(|option| option == "--no-export-dynamic")
+                })
+            }) || filtered.windows(2).any(|pair| {
+                pair[0] == "-Xlinker" && pair[1] == "--no-export-dynamic"
+            });
+            args.extend(shared_link_flags().into_iter().filter(|flag| {
+                !caller_limits_exports || flag != "-Wl,--export-all"
+            }));
         } else {
             let Some(lld_major) = toolchain.lld_major else {
                 return Err("wasm-ld version is unresolved; call prepare_executable_linker() before building \
@@ -646,16 +718,46 @@ fn build_clang_args_internal(
             }
             let glue = match glue_objects {
                 Some(objects) => objects.clone(),
-                None => glue_sources(
-                    toolchain,
-                    parsed.link_dl,
-                    links_cxx_runtime(language, &filtered),
-                ),
+                None => glue_sources(toolchain, links_cxx_runtime(language, &filtered)),
             };
             args.extend(glue.leading);
+            if parsed.link_dl {
+                // Fully instrumented side modules need a process activation
+                // owner, even if only their imported callbacks could fork.
+                // Retain the real libc entry so normal instrumentation sees
+                // kernel_fork and supplies that owner; never invent a claim.
+                args.push("-Wl,--export=fork".into());
+            }
+            if !glue.fictions.is_empty() {
+                args.push("-Wl,--start-lib".into());
+                args.extend(glue.fictions);
+                args.push("-Wl,--end-lib".into());
+            }
             let lib = join(&toolchain.sysroot, "lib");
             args.push(join(&lib, "crt1.o"));
-            args.extend(parsed.forwarded_args.iter().cloned());
+            let lazy_group = |members: Vec<String>| -> Vec<String> {
+                if members.is_empty() {
+                    return members;
+                }
+                let mut group = vec!["-Wl,--start-lib".to_string()];
+                group.extend(members);
+                group.push("-Wl,--end-lib".into());
+                group
+            };
+            // The dlopen loader is lazy like libc's own members, and goes
+            // ahead of the first libc archive (see loader_position).
+            let mut late_lazy = glue.fallback;
+            match loader_position(&parsed.forwarded_args) {
+                Some(at) => {
+                    args.extend(parsed.forwarded_args[..at].iter().cloned());
+                    args.extend(lazy_group(glue.loader));
+                    args.extend(parsed.forwarded_args[at..].iter().cloned());
+                }
+                None => {
+                    args.extend(parsed.forwarded_args.iter().cloned());
+                    late_lazy.extend(glue.loader);
+                }
+            }
             args.extend(sdk_compile_args);
             // Where clang puts the C++ library: after the caller's inputs,
             // before libc. Side modules (above) take it from the program
@@ -663,16 +765,15 @@ fn build_clang_args_internal(
             if links_cxx_stdlib(language, &filtered) {
                 args.extend(["-lc++", "-lc++abi"].map(String::from));
             }
+            args.extend(glue.fiction_libraries);
             // The minimal C++ runtime is a fallback for C++ code linked
             // without libc++ and libc++abi. As a lazy member after them it
             // supplies only what they did not: libc++'s operator new, which
             // throws std::bad_alloc, is weak like the fallback's, so a
             // fallback object linked earlier would win and abort instead.
-            if !glue.fallback.is_empty() {
-                args.push("-Wl,--start-lib".into());
-                args.extend(glue.fallback);
-                args.push("-Wl,--end-lib".into());
-            }
+            // The dlopen loader joins this group unless the caller named
+            // libc itself.
+            args.extend(lazy_group(late_lazy));
             args.push(join(&lib, "libc.a"));
             // LLD 22 made --stack-first the default; LLD 21 neither defaults to
             // it nor accepts --no-stack-first. Preserve Kandelo's established
@@ -755,6 +856,44 @@ impl Drop for TempDir {
     }
 }
 
+/// Keep long normalized compiler invocations below host argv limits. LLVM's
+/// GNU response syntax quotes each argument, preserving ordering and escapes.
+fn compiler_command_args(args: &[String]) -> Result<(Vec<String>, Option<TempDir>)> {
+    if args.iter().map(|arg| arg.len() + 1).sum::<usize>() < 16 * 1024 {
+        return Ok((args.to_vec(), None));
+    }
+    let directory = TempDir::new("kandelo-compiler-args-")?;
+    let path = directory.path().join("command.rsp");
+    let contents = args
+        .iter()
+        .map(|arg| format!("\"{}\"", arg.replace('\\', "\\\\").replace('\"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, contents)
+        .map_err(|error| format!("cannot write compiler response file: {error}"))?;
+    Ok((vec![format!("@{}", path.display())], Some(directory)))
+}
+
+fn run_compiler(compiler: &str, args: &[String]) -> Result<RunResult> {
+    let (args, _directory) = compiler_command_args(args)?;
+    Ok(run(compiler, &args, None))
+}
+
+fn run_compiler_passthrough(compiler: &str, args: &[String]) -> Result<i32> {
+    let (args, _directory) = compiler_command_args(args)?;
+    Ok(run_passthrough(compiler, &args))
+}
+
+/// Like `run_compiler_passthrough`, but also returns the compiler's stderr
+/// (still shown to the caller) so a link failure can be explained.
+fn run_compiler_passthrough_capturing_stderr(
+    compiler: &str,
+    args: &[String],
+) -> Result<(i32, String)> {
+    let (args, _directory) = compiler_command_args(args)?;
+    Ok(run_passthrough_capturing_stderr(compiler, &args))
+}
+
 /// Compile the link-time glue for an executable link into a temporary
 /// directory. Returns the objects (in link order) and the directory holding
 /// them, or `None` when this invocation is not an executable link.
@@ -764,6 +903,7 @@ pub fn compile_executable_glue(
     arch: WasmArch,
     language: Language,
     executable_linker: Option<LinkerPreparation>,
+    fiction_selections: &[crate::fictions::Selection],
 ) -> Result<Option<(Glue, TempDir)>> {
     if !matches!(
         executable_linker,
@@ -778,14 +918,11 @@ pub fn compile_executable_glue(
     }
     let define = executable_thread_slot_define(user_args, arch)?;
     let dir = TempDir::new("kandelo-glue-")?;
-    let sources = glue_sources(
-        toolchain,
-        parsed.link_dl,
-        links_cxx_runtime(language, &filtered),
-    );
+    let sources = glue_sources(toolchain, links_cxx_runtime(language, &filtered));
     let (cxx_sources, c_sources): (Vec<String>, Vec<String>) = sources
         .leading
         .iter()
+        .chain(&sources.loader)
         .chain(&sources.fallback)
         .cloned()
         .partition(|source| is_cxx_glue(source));
@@ -832,10 +969,42 @@ pub fn compile_executable_glue(
         };
         node_path::join(&[&dir_text, &object])
     };
-    let objects = Glue {
+    let mut objects = Glue {
         leading: sources.leading.iter().map(object).collect(),
+        loader: sources.loader.iter().map(object).collect(),
         fallback: sources.fallback.iter().map(object).collect(),
+        ..Glue::default()
     };
+    for selection in fiction_selections {
+        let name = crate::fictions::source_name(selection);
+        let source = dir.path().join(&name);
+        std::fs::write(&source, crate::fictions::source(selection))
+            .map_err(|error| format!("cannot write {}: {error}", source.display()))?;
+        let source_text = source.to_string_lossy().into_owned();
+        let mut args = glue_compile_base(toolchain, arch);
+        args.push("-iquote".into());
+        args.push(toolchain.glue_dir.clone());
+        args.extend(["-O2", "-x", "c", "-c"].map(String::from));
+        args.push(source_text.clone());
+        let result = run_without_env(
+            &toolchain.cc,
+            &args,
+            Some(dir.path()),
+            &["CCC_OVERRIDE_OPTIONS"],
+        );
+        if result.exit_code != 0 {
+            return Err(format!(
+                "compiling the declared fiction {} failed:\n{}",
+                selection.fiction.name,
+                result.stderr.trim()
+            ));
+        }
+        objects.fictions.push(object(&source_text));
+        let library = crate::fictions::support_library(selection).to_string();
+        if !objects.fiction_libraries.contains(&library) {
+            objects.fiction_libraries.push(library);
+        }
+    }
     Ok(Some((objects, dir)))
 }
 
@@ -854,7 +1023,7 @@ pub fn prepare_executable_linker(
     let classification_args = build_clang_args_internal(
         user_args, toolchain, arch, language, None, false, true, None,
     )?;
-    let classification = run(compiler, &with_trace_flag(&classification_args), None);
+    let classification = run_compiler(compiler, &with_trace_flag(&classification_args))?;
     if classification.exit_code != 0 {
         return Err(format!(
             "clang -### failed while classifying the requested jobs:\n{}",
@@ -882,7 +1051,7 @@ pub fn prepare_executable_linker(
         false,
         None,
     )?;
-    let trace = run(compiler, &with_trace_flag(&provisional), None);
+    let trace = run_compiler(compiler, &with_trace_flag(&provisional))?;
     if trace.exit_code != 0 {
         return Err(format!(
             "clang -### failed while preparing the executable link:\n{}",
@@ -1012,12 +1181,12 @@ pub fn run_compiler_driver(
     abi_contract: Option<&[u8; 32]>,
 ) -> Result<i32> {
     if !linking || args.iter().any(|a| a == "-###") {
-        return Ok(run_passthrough(compiler, args));
+        return run_compiler_passthrough(compiler, args);
     }
-    let trace = run(compiler, &with_trace_flag(args), None);
+    let trace = run_compiler(compiler, &with_trace_flag(args))?;
     // A failing trace is a failing command: let the real run report it.
     if trace.exit_code != 0 {
-        return Ok(run_passthrough(compiler, args));
+        return run_compiler_passthrough(compiler, args);
     }
     let jobs = traced_jobs(&trace.stderr)?;
     let wasm_opt: Vec<&Vec<String>> = jobs.iter().filter(|job| is_wasm_opt_job(job)).collect();
@@ -1051,7 +1220,7 @@ pub fn run_compiler_driver(
     if wasm_opt.len() == 1 {
         link_args.push("--no-wasm-opt".into());
         link_args.push(format!("-Wl,{KEEP_TARGET_FEATURES}"));
-        let held_back = run(compiler, &with_trace_flag(&link_args), None);
+        let held_back = run_compiler(compiler, &with_trace_flag(&link_args))?;
         let held_back_jobs = if held_back.exit_code == 0 {
             traced_jobs(&held_back.stderr)?
         } else {
@@ -1072,8 +1241,11 @@ pub fn run_compiler_driver(
             );
         }
     }
-    let exit_code = run_passthrough(compiler, &link_args);
+    let (exit_code, link_stderr) = run_compiler_passthrough_capturing_stderr(compiler, &link_args)?;
     if exit_code != 0 {
+        if let Some(hint) = link_failure_hint(&link_stderr) {
+            eprintln!("{hint}");
+        }
         return Ok(exit_code);
     }
 
@@ -1081,8 +1253,13 @@ pub fn run_compiler_driver(
     let module = std::fs::read(&output).ok();
     if let Some(module) = module.as_deref().filter(|m| is_wasm_module(m)) {
         let facts = wasm_artifact::read_artifact_facts(module).map_err(|error| error.0)?;
-        let failures = wasm_artifact::program_extensions::describe_failures(&facts, wasm_artifact::program_extensions::IMPLEMENTED);
-        if !failures.is_empty() { return Err(failures.join("; ")); }
+        let failures = wasm_artifact::program_extensions::describe_failures(
+            &facts,
+            wasm_artifact::program_extensions::IMPLEMENTED,
+        );
+        if !failures.is_empty() {
+            return Err(failures.join("; "));
+        }
         if is_fork_capable(module)? {
             if let Some(hashed) = with_code_hash_section(module)? {
                 write_output(&output, &hashed)?;
@@ -1104,6 +1281,60 @@ pub fn run_compiler_driver(
     }
     stamp_abi_contract(&output, abi_contract)?;
     Ok(0)
+}
+
+/// Guidance for a link that failed on a symbol Kandelo deliberately leaves
+/// out of libc.a, naming the opt-in library and why it is not the default.
+pub fn link_failure_hint(linker_stderr: &str) -> Option<&'static str> {
+    let undefined = |symbol: &str| {
+        linker_stderr.lines().any(|line| {
+            line.split("undefined symbol: ").skip(1).any(|rest| {
+                rest.strip_prefix(symbol).is_some_and(|after| {
+                    !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+        })
+    };
+    undefined("mprotect").then_some(MPROTECT_LINK_HINT)
+}
+
+const MPROTECT_LINK_HINT: &str = "kandelo: mprotect() is not linked by default. \
+WebAssembly memory has no page protection, so Kandelo cannot make memory read-only, \
+inaccessible or executable. If this program only uses mprotect() to make memory \
+readable and writable (for example to commit a PROT_NONE reservation), link \
+-lkandelo-mprotect: its mprotect() accepts PROT_READ|PROT_WRITE (with or without \
+PROT_EXEC) and fails with ENOTSUP for a request that would remove read or write \
+access. See \"Opt-in libraries for unsupported APIs\" in docs/sdk-guide.md.";
+
+#[cfg(test)]
+mod link_hint_tests {
+    use super::link_failure_hint;
+
+    #[test]
+    fn names_the_mprotect_opt_in_for_an_undefined_mprotect() {
+        let stderr = "wasm-ld: error: /tmp/a.o: undefined symbol: mprotect\n\
+            clang: error: linker command failed with exit code 1\n";
+        let hint = link_failure_hint(stderr).expect("hint");
+        assert!(hint.contains("-lkandelo-mprotect"));
+        assert!(hint.contains("ENOTSUP"));
+    }
+
+    #[test]
+    fn stays_quiet_for_other_symbols() {
+        assert_eq!(
+            link_failure_hint("wasm-ld: error: a.o: undefined symbol: mprotect_all\n"),
+            None
+        );
+        assert_eq!(
+            link_failure_hint("wasm-ld: error: a.o: undefined symbol: __mprotect\n"),
+            None
+        );
+        assert_eq!(
+            link_failure_hint("wasm-ld: error: a.o: undefined symbol: getcontext\n"),
+            None
+        );
+        assert_eq!(link_failure_hint(""), None);
+    }
 }
 
 /// Append the SDK's `kandelo.abi.contract` digest to a linked program, after
@@ -1151,6 +1382,14 @@ pub fn may_compile(user_args: &[String], arch: WasmArch) -> Result<bool> {
 
 /// The shared entry of wasm{32,64}posix-cc and -c++: the exit status.
 pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -> Result<i32> {
+    // Build systems use compiler response files once their link command grows.
+    // Apply the same SDK target/flag/glue contract inside them as on argv.
+    // Linker-only -Wl,@file remains governed by the traced linker preparation.
+    let directory = cwd();
+    let expanded = expand_response_files(user_args, &mut |path| {
+        Ok(read_llvm_response_file(path, &directory))
+    })?;
+    let user_args = expanded.as_slice();
     let mut toolchain = crate::toolchain::resolve_toolchain(arch)?;
     if user_args == ["--print-kandelo-sdk"] {
         return print_sdk_identity(&toolchain);
@@ -1164,7 +1403,18 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     }
     let executable_linker =
         prepare_executable_linker(user_args, &mut toolchain, arch, language, &compiler)?;
-    let glue = compile_executable_glue(user_args, &toolchain, arch, language, executable_linker)?;
+    // Validated for every invocation, so a bad selection fails at the first
+    // compile rather than at a configure test's link.
+    let fiction_flags = parse_args(&filter_args(user_args, arch).filtered)?.fictions;
+    let fiction_selections = crate::fictions::selections_from_environment(&fiction_flags)?;
+    let glue = compile_executable_glue(
+        user_args,
+        &toolchain,
+        arch,
+        language,
+        executable_linker,
+        &fiction_selections,
+    )?;
     // An executable link links the glue, and carries the glue's digest.
     let abi_contract = glue
         .as_ref()
@@ -1183,6 +1433,33 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
     let result = run_compiler_driver(&compiler, &args, linking, abi_contract.as_ref());
     drop(glue);
     result
+}
+
+#[cfg(test)]
+mod compiler_response_tests {
+    use super::*;
+
+    #[test]
+    fn long_compiler_commands_preserve_order_and_quoting_in_private_response_files() {
+        let mut args = vec![
+            "space path.o".to_string(),
+            "-DQUOTE=\"hello\"".to_string(),
+            "-DBACKSLASH=a\\b".to_string(),
+            "-DMULTILINE=a\nb".to_string(),
+        ];
+        args.extend((0..1000).map(|i| format!("/long dependency path/{i}.a")));
+        let (command, owner) = compiler_command_args(&args).unwrap();
+        let owner = owner.expect("long command needs owned response storage");
+        assert_eq!(
+            command,
+            [format!("@{}", owner.path().join("command.rsp").display())]
+        );
+        let encoded = std::fs::read_to_string(owner.path().join("command.rsp")).unwrap();
+        assert_eq!(tokenize_gnu_response_file(&encoded), args);
+        let path = owner.path().to_path_buf();
+        drop(owner);
+        assert!(!path.exists());
+    }
 }
 
 /// Identify the SDK used by an external compiler that caches linked outputs.
@@ -1205,8 +1482,9 @@ fn print_sdk_identity(toolchain: &Toolchain) -> Result<i32> {
         join(&toolchain.sysroot, "lib/libc.a"),
         host_imports_allowance(&toolchain.glue_dir),
     ];
-    let glue = glue_sources(toolchain, true, true);
+    let glue = glue_sources(toolchain, true);
     inputs.extend(glue.leading);
+    inputs.extend(glue.loader);
     inputs.extend(glue.fallback);
     inputs.extend(
         std::fs::read_dir(&toolchain.glue_dir)

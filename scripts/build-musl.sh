@@ -369,6 +369,11 @@ fi
 # 2. Write config.mak
 # ---------------------------------------------------------------
 echo "==> Writing config.mak..."
+# -fvisibility=default: musl's public interface has default visibility, as
+# on every Unix, and its internals are marked hidden in its own sources.
+# Clang's WebAssembly default is hidden, which kept a plugin host's
+# -rdynamic from exporting the libc functions its modules call. The static
+# library's code is the same either way.
 cat > "$MUSL_DIR/config.mak" << EOF
 ARCH = $ARCH
 srcdir = .
@@ -376,7 +381,7 @@ prefix = $SYSROOT
 CC = $CC --target=$TARGET
 AR = $AR
 RANLIB = $RANLIB
-CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math $CALLTYPES_FLAGS
+CFLAGS = -O2 -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fno-trapping-math -fvisibility=default $CALLTYPES_FLAGS
 CFLAGS_AUTO =
 LDFLAGS_AUTO =
 LIBCC =
@@ -486,6 +491,29 @@ echo "==> Building opt-in ucontext stand-ins..."
 rm -f "$SYSROOT/lib/libkandelo-ucontext-unsupported.a"
 "$AR" rcs "$SYSROOT/lib/libkandelo-ucontext-unsupported.a" "$SYSROOT/lib/ucontext_unsupported.o"
 rm -f "$SYSROOT/lib/ucontext_unsupported.o"
+
+# ---------------------------------------------------------------
+# 8b'. Build the opt-in mprotect (NOT part of libc.a)
+# ---------------------------------------------------------------
+# Wasm cannot enforce page protection, so libc.a defines no public mprotect
+# and a program that calls it fails to link. Software that only makes memory
+# accessible opts in with -lkandelo-mprotect, whose mprotect() refuses
+# requests that would remove access with ENOTSUP; see the source. Two
+# members: the policy-driven implementation, and the truthful mprotect()
+# over it. A link that declares the mprotect fiction gets a generated
+# mprotect() from the SDK driver instead of the second member.
+echo "==> Building opt-in mprotect..."
+for member in kandelo_mprotect_policy kandelo_mprotect; do
+    "$CC" --target=$TARGET -O2 \
+        -matomics -mbulk-memory \
+        -I"$SYSROOT/include" \
+        -c "$REPO_ROOT/libc/glue/$member.c" \
+        -o "$SYSROOT/lib/$member.o"
+done
+rm -f "$SYSROOT/lib/libkandelo-mprotect.a"
+"$AR" rcs "$SYSROOT/lib/libkandelo-mprotect.a" \
+    "$SYSROOT/lib/kandelo_mprotect_policy.o" "$SYSROOT/lib/kandelo_mprotect.o"
+rm -f "$SYSROOT/lib/kandelo_mprotect_policy.o" "$SYSROOT/lib/kandelo_mprotect.o"
 
 # ---------------------------------------------------------------
 # 8c. Private kernel-owned device runtime (pulled only when referenced)

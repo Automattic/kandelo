@@ -160,7 +160,119 @@ fn discover(plan: &mut ReachingPlan, queue: &mut VecDeque<u32>, edge: Edge) {
     }
 }
 
+/// How one step of an explanation chain reaches its callee.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExplainEdge {
+    Direct,
+    Tail,
+    /// `call_indirect` or `call_ref` matched by signature and table facts.
+    Indirect,
+}
+
+impl ExplainEdge {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "call",
+            Self::Tail => "tail-call",
+            Self::Indirect => "indirect",
+        }
+    }
+}
+
 impl Scan<'_> {
+    /// Shortest call chain from `target` to one of `seeds` whose every
+    /// intermediate function is in `members`. Diagnosis only: it answers
+    /// "which call makes this function part of the instrumented set" using
+    /// the same table and signature rules as the closure below.
+    pub fn explain(
+        &self,
+        seeds: &BTreeSet<u32>,
+        members: &BTreeSet<u32>,
+        target: u32,
+    ) -> Option<Vec<(u32, ExplainEdge)>> {
+        let tables = table_targets(self);
+        let types = self.types.as_ref();
+        let signatures = |function: u32| {
+            let mut out = Vec::new();
+            let mut ty = Some(types.core_type_at_in_module(self.functions[function as usize].ty));
+            while let Some(id) = ty {
+                out.push(types.get(id).unwrap().composite_type.unwrap_func().clone());
+                ty = types.supertype_of(id);
+            }
+            out
+        };
+        let mut by_signature: HashMap<wasmparser::FuncType, Vec<u32>> = HashMap::new();
+        for &function in members.iter().chain(seeds) {
+            for sig in signatures(function) {
+                by_signature.entry(sig).or_default().push(function);
+            }
+        }
+        let wanted = |f: u32| seeds.contains(&f) || members.contains(&f);
+        let mut previous: HashMap<u32, (u32, ExplainEdge)> = HashMap::new();
+        let mut queue = VecDeque::from([target]);
+        let mut seen = HashSet::from([target]);
+        while let Some(caller) = queue.pop_front() {
+            if seeds.contains(&caller) {
+                // Walk back from the seed. Each entry names how it reaches
+                // the entry after it; the seed's own edge is unused.
+                let mut chain = vec![(caller, ExplainEdge::Direct)];
+                let mut at = caller;
+                while let Some(&(from, edge)) = previous.get(&at) {
+                    chain.push((from, edge));
+                    at = from;
+                }
+                chain.reverse();
+                return Some(chain);
+            }
+            let Some(body) = self.functions[caller as usize].body.as_ref() else {
+                continue;
+            };
+            let sites = body
+                .calls
+                .iter()
+                .map(|&t| (t, false))
+                .chain(body.tails.iter().map(|t| (t.target, true)));
+            for (site, tail) in sites {
+                let mut next = Vec::new();
+                match site {
+                    CallTarget::Direct(callee) => {
+                        if wanted(callee) {
+                            next.push((callee, if tail { ExplainEdge::Tail } else { ExplainEdge::Direct }));
+                        }
+                    }
+                    CallTarget::Dispatch(Dispatch::Ref { target: ValueProof::Function(f), .. }) => {
+                        if wanted(f) {
+                            next.push((f, ExplainEdge::Indirect));
+                        }
+                    }
+                    CallTarget::Dispatch(Dispatch::Ref { target: ValueProof::Null, .. }) => {}
+                    CallTarget::Dispatch(site @ (Dispatch::Table { ty, .. } | Dispatch::Ref { ty, .. })) => {
+                        let id = types.core_type_at_in_module(ty);
+                        let sig = types.get(id).unwrap().composite_type.unwrap_func();
+                        for &callee in by_signature.get(sig).into_iter().flatten() {
+                            let reaches = match site {
+                                Dispatch::Table { table, index, .. } => {
+                                    tables.can_dispatch(table, index, callee)
+                                }
+                                Dispatch::Ref { .. } => true,
+                            };
+                            if reaches {
+                                next.push((callee, ExplainEdge::Indirect));
+                            }
+                        }
+                    }
+                }
+                for (callee, edge) in next {
+                    if seen.insert(callee) {
+                        previous.insert(callee, (caller, edge));
+                        queue.push_back(callee);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Resolve the direct/indirect/reference fixed point without decoding any
     /// function again. Seeds and the external-boundary policy are explicit so
     /// legacy dlopen lowering and sink analysis cannot silently be skipped.

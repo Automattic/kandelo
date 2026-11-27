@@ -1,0 +1,10 @@
+script_path = "packages/registry/node-undici-llhttp/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 2
+inputs = [
+  "packages/registry/node-undici-llhttp",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "sdk/activate.sh",
+]

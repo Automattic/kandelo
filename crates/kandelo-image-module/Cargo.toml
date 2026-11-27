@@ -10,7 +10,6 @@ name = "kandelo_image_module"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-namespace-benchmark = ["runtime-core/namespace-benchmark"]
 positioned-image = ["dep:spin"]
 
 [dependencies]

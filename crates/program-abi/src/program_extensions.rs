@@ -109,6 +109,15 @@ pub mod stat_cache_v1 {
     ];
 }
 
+/// The grouped SDK delegates private frame allocation to the actual kernel.
+/// This required namespace is independent of both the base ABI and the physical
+/// memory layout namespace; no ordinary executable requests it.
+pub mod memory_group_growth_v1 {
+    pub const MODULE: &str = "kandelo.memory-group-growth.v1";
+    pub const IMPORT: &str = "__kandelo_memory_group_grow_v1";
+    pub const VERSION: u32 = 1;
+}
+
 /// Every implemented extension, by module and its single function import.
 /// Each has the signature `(pointer, i32, i32) -> i32`.
 pub const EXTENSIONS: &[(&str, &str)] = &[
@@ -127,5 +136,26 @@ pub fn extension_import(module: &str) -> Option<&'static str> {
 
 /// Whether a name is one of the extension functions, imported from any module.
 pub fn is_extension_import_name(name: &str) -> bool {
-    EXTENSIONS.iter().any(|(_, import)| *import == name)
+    name == memory_group_growth_v1::IMPORT || EXTENSIONS.iter().any(|(_, import)| *import == name)
+}
+
+/// Independently versioned trusted-group memory layout. Not a base env import.
+/// Ordinary hosts reject this required memory namespace until their explicit
+/// grouped backend is available. The kernel owns the shared allocation bitmap.
+#[path = "memory_group_layout.rs"]
+pub mod memory_group_v3;
+
+#[cfg(test)]
+mod memory_group_layout_tests {
+    use super::memory_group_v3 as g;
+    #[test]
+    fn physical_pool_metadata_cannot_overlap_wait_nodes_or_root_controls() {
+        let ranges=[(g::CONTROL,g::CONTROL+16),(g::WAIT_HEADER,g::WAIT_HEADER+24),
+            (g::BITMAP,g::BITMAP+g::BITMAP_BYTES),(g::WAIT_NODES,g::PAGE_BYTES)];
+        for pair in ranges.windows(2) {assert!(pair[0].1<=pair[1].0);}
+        assert_eq!(g::MAXIMUM_PAGES,g::BITMAP_BYTES*8);
+        assert!(g::ROOT_GROW_LOCK+4<=g::ROOT_RUN);
+        assert!(g::ROOT_RUN+4<=g::ROOT_HEADER_BYTES);
+        assert!((g::MAXIMUM_PAGES as u64)*(g::PAGE_BYTES as u64)<=u32::MAX as u64+1);
+    }
 }

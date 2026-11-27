@@ -104,8 +104,7 @@ Module `kandelo.klog.v1` supplies `__kandelo_klogctl_v1`:
 ```
 
 It is `klogctl(action, buffer, capacity)` over the kernel message ring, with
-the arguments reordered to the `(pointer, i32, i32)` shape every extension
-uses. musl's `klogctl()` is replaced in the overlay
+the arguments reordered to the `(pointer, i32, i32)` shape shared with stack capture. musl's `klogctl()` is replaced in the overlay
 (`libc/musl-overlay/src/linux/klogctl.c`) to call it, so a program imports
 the interface only if it links `klogctl()`; every other program keeps its
 base identity. A non-negative return is `klogctl`'s result. An error is a
@@ -168,3 +167,30 @@ The SDK adds this import to memory32 programs that link the syscall glue.
 Those builds require a host that declares this extension. Existing
 ABI-56 programs keep their original admission and syscall behavior.
 The extension does not change the filesystem disk format.
+
+## Shared-memory execution and private growth
+
+A grouped executable requires the shared memory import
+`kandelo.memory-group.v3.memory` and the function import
+`kandelo.memory-group-growth.v1.__kandelo_memory_group_grow_v1`:
+
+```text
+(delta_pages: i32) -> i32
+```
+
+The delta is unsigned. The result is the previous private virtual page count,
+or -1 on allocation refusal; zero delta queries that count without allocating.
+The actual kernel image and frame-pool owners choose, zero, charge and retain
+physical frames before publishing the new virtual extent. The worker supplies
+only its admitted channel and transports the scalar request. Caught signals
+remain pending until an ordinary request with the libc signal-return shim.
+
+The normal SDK translator adds the exact function import and `kernelGrowth: 1`
+metadata. Old grouped artifacts must be rebuilt; the ordinary ABI-56 baseline
+and base libc linker allowance are unchanged. Hosts without grouped execution
+refuse these required interfaces. The kernel-host transport is request 601,
+versioned with the host adapter rather than the program digest.
+
+This grows a process's private virtual memory. Resizing shared objects remains
+a follow-up. See [shared-memory groups](shared-memory-groups.md) for the
+complete executable, ownership and preview limits.

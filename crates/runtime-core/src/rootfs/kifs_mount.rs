@@ -553,6 +553,9 @@ impl RootfsState {
     pub(super) fn truncate_kifs(&mut self, index: u32, length: i64) -> Result<(), Errno> {
         let size = u64::try_from(length).map_err(|_| Errno::EINVAL)?;
         let inode = self.inodes.get_mut(index as usize).and_then(Option::as_mut).ok_or(Errno::EBADF)?;
+        if inode.group_read_leases != 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
         let kifs = self.kifs.as_mut().ok_or(Errno::EIO)?;
         kifs.namespace.truncate_file(inode.ino, size, now_timestamp())?;
         inode.content_gen = inode.content_gen.wrapping_add(1);

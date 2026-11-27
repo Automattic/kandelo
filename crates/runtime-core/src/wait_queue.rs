@@ -121,6 +121,8 @@ pub enum WakeSource {
     AdvisoryLock,
     /// AF_UNIX datagram send readiness changed somewhere in the machine.
     DatagramWritable,
+    /// An epoll with a retained waiter received a readiness notification.
+    Epoll,
     /// A child of this parent changed state (exit, stop, continue).
     ChildEvent { parent: u32 },
     /// A signal became deliverable to this task.
@@ -146,7 +148,7 @@ impl WakeSource {
     /// rather than leaving an untargeted sweep as permanent background
     /// behaviour.
     pub fn is_broad(self) -> bool {
-        matches!(self, Self::AdvisoryLock | Self::DatagramWritable)
+        matches!(self, Self::AdvisoryLock | Self::DatagramWritable | Self::Epoll)
     }
 }
 

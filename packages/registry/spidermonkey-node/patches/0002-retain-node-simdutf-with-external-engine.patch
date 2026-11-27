@@ -1,0 +1,34 @@
+# Kandelo patch rationale (O22)
+#
+# An external engine does not remove Node's own simdutf consumers or the
+# host source generator's need for it. Correct the dependency condition
+# instead of relying on an accidentally linked library or adding another
+# package solely to avoid this small fix. The guest OS and runtime bridge
+# cannot repair a missing build dependency. Keep host and guest copies
+# assigned to their toolsets.
+#
+# Judgment: Supported. Node and its host generator still use simdutf when
+# the bundled V8 engine is not selected.
+#
+--- a/node.gypi
++++ b/node.gypi
+@@ -246,7 +246,7 @@
+         'dependencies': [ 'deps/simdjson/simdjson.gyp:simdjson' ],
+     }],
+
+-    [ 'node_shared_simdutf=="false" and node_use_bundled_v8!="false"', {
++    [ 'node_shared_simdutf=="false"', {
+         'dependencies': [ 'tools/v8_gypfiles/simdutf.gyp:simdutf' ],
+     }],
+
+--- a/node.gyp
++++ b/node.gyp
+@@ -1647,7 +1647,7 @@
+         [ 'OS=="mac"', {
+           'libraries': [ '-framework CoreFoundation -framework Security' ],
+         }],
+-        [ 'node_shared_simdutf=="false" and node_use_bundled_v8!="false"', {
++        [ 'node_shared_simdutf=="false"', {
+           'dependencies': [ 'tools/v8_gypfiles/simdutf.gyp:simdutf#host' ],
+         }],
+         [ 'node_shared_libuv=="false"', {

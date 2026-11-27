@@ -13,6 +13,7 @@ import { useMachineProgress, useKernelHost, useStatus } from "../kernel-host/rea
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import type { TerminalLinkContext } from "../../../../../web-libs/kandelo-session/src/terminal-links";
 import { registerTerminalLinks } from "../../../lib/terminal-links";
+import { loadTerminalBaseFont, TerminalFontWriter } from "../../../lib/terminal-fonts";
 import { requestTerminalAutoFocus } from "./terminal-focus";
 import { useExchangeDrop } from "../app/exchange-drop";
 import { ExchangeDropOverlay } from "../app/ExchangeToasts";
@@ -126,6 +127,7 @@ const ShellTerminalHost: React.FC<{
   const fitTerminalRef = React.useRef<(() => void) | null>(null);
   const viewRef = React.useRef({ active, autoFocus });
   viewRef.current = { active, autoFocus };
+  const [fontFamily, setFontFamily] = React.useState<string | null>(null);
   const [attached, setAttached] = React.useState(false);
   const [attachError, setAttachError] = React.useState<string | null>(null);
 
@@ -138,10 +140,19 @@ const ShellTerminalHost: React.FC<{
   }, [active, onFocusTerminalChange]);
 
   React.useEffect(() => {
+    if (status !== "running" || fontFamily !== null) return;
+    let active = true;
+    void loadTerminalBaseFont(document).then(family => {
+      if (active) setFontFamily(family);
+    });
+    return () => { active = false; };
+  }, [status, fontFamily]);
+
+  React.useEffect(() => {
     // Don't open the PTY until the kernel is running. The chassis-driven
     // status comes from useStatus after the live boot path finishes.
     if (status !== "running") return;
-    if (!containerRef.current) return;
+    if (!containerRef.current || fontFamily === null) return;
 
     // React StrictMode mounts this effect twice. Clear renderer nodes that
     // xterm leaves behind without removing the host-owned logical PTY.
@@ -150,13 +161,14 @@ const ShellTerminalHost: React.FC<{
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
+      fontFamily,
       theme: readShellTheme(containerRef.current),
       allowProposedApi: true,
     });
     terminalRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
+    const output = new TerminalFontWriter(term, containerRef.current.ownerDocument);
     term.open(containerRef.current);
     const applyTheme = () => {
       term.options.theme = readShellTheme(containerRef.current);
@@ -184,7 +196,7 @@ const ShellTerminalHost: React.FC<{
     const previewFailure = (error: unknown) => {
       if (disposed) return;
       const message = `Preview failed: ${error instanceof Error ? error.message : String(error)}`;
-      term.writeln(`\r\n${message}`);
+      output.write(`\r\n${message}\r\n`);
       onPreviewError?.(message);
     };
     const previewRequests = term.parser.registerOscHandler(PREVIEW_OSC, data => {
@@ -282,8 +294,8 @@ const ShellTerminalHost: React.FC<{
           return;
         }
         ptyRef.current = pty;
-        unsubData = pty.onData((bytes) => term.write(bytes));
-        term.write("", () => { replayingHistory = false; });
+        unsubData = pty.onData((bytes) => output.write(bytes));
+        output.write("", () => { replayingHistory = false; });
         const onInput = term.onData((data) => pty.write(data));
         const onResize = term.onResize(({ cols, rows }) => {
           if (viewRef.current.active) pty.resize(cols, rows);
@@ -342,12 +354,13 @@ const ShellTerminalHost: React.FC<{
       if (fitFrame) window.cancelAnimationFrame(fitFrame);
       links.dispose();
       previewRequests.dispose();
+      output.dispose();
       term.dispose();
       terminalRef.current = null;
       fitTerminalRef.current = null;
       setAttached(false);
     };
-  }, [host, status, terminal.path, onPreviewError]);
+  }, [host, status, terminal.path, fontFamily, onPreviewError]);
 
   React.useEffect(() => {
     if (!active) return;
@@ -365,7 +378,7 @@ const ShellTerminalHost: React.FC<{
         isDisposed: () => terminalRef.current !== term || !viewRef.current.active });
     });
     return () => cancelAnimationFrame(frame);
-  }, [active, autoFocus, status]);
+  }, [active, autoFocus, status, fontFamily]);
 
   return (
     <div className="kshell-terminal-slot" hidden={!active} aria-hidden={!active}>

@@ -1,4 +1,6 @@
 extern crate alloc;
+pub(crate) mod change;
+pub(crate) mod linear;
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::collections::BTreeSet;
@@ -29,6 +31,70 @@ pub struct MappingFile {
     /// Pathname column, already in Linux's spelling for unlinked objects
     /// (for example `/memfd:name (deleted)`).
     pub name: Vec<u8>,
+    /// Exact optional source for grouped private remap growth. Ordinary file
+    /// labels carry no source capability. Fragments share its one backing hold.
+    pub(crate) private_source: Option<crate::private_mapping::Source>,
+    /// Optional kernel-owned direct backing, shared by VMA fragments/forks.
+    pub(crate) group_shared: Option<GroupSharedMapping>,
+}
+
+/// A direct in-memory backing created by an exact grouped mapping transaction.
+/// Its identity and bounds are kernel authority; host physical offsets never
+/// enter this record. Clones share the admitted metadata and object lifetime.
+#[derive(Debug, Clone)]
+pub struct GroupSharedMapping(crate::io_owner::IoArc<GroupSharedObject>);
+struct GroupSharedObject {
+    group: u32,
+    id: u64,
+    length: usize,
+    physical: spin::Mutex<Option<crate::io_owner::IoArc<crate::memory_group::object::SharedPages>>>,
+    _metadata: crate::metadata_budget::MetadataReservation<'static>,
+}
+impl core::fmt::Debug for GroupSharedObject {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GroupSharedObject").field("group", &self.group).field("id", &self.id).field("length", &self.length).finish()
+    }
+}
+impl PartialEq for GroupSharedMapping {
+    fn eq(&self, other: &Self) -> bool { self.0.identity() == other.0.identity() }
+}
+impl Eq for GroupSharedMapping {}
+impl GroupSharedMapping {
+    pub(crate) fn new(group: u32, id: u64, length: usize) -> Result<Self, Errno> {
+        if group == 0 || id == 0 || length == 0 { return Err(Errno::EINVAL); }
+        let bytes = core::mem::size_of::<MappingFile>().checked_add(64)
+            .and_then(|n| n.checked_mul(2)).ok_or(Errno::ENOMEM)?;
+        let metadata = crate::io_buffer::IO_MEMORY.reserve(bytes)?;
+        Ok(Self(crate::io_owner::IoArc::try_new(GroupSharedObject { group, id, length,
+            physical: spin::Mutex::new(None), _metadata: metadata })?))
+    }
+    pub fn group(&self) -> u32 { self.0.group }
+    pub(crate) fn id(&self) -> u64 { self.0.id }
+    pub fn length(&self) -> usize { self.0.length }
+    /// Lend a bounded physical transport descriptor during one synchronous
+    /// host operation. No logical name lookup or ProcessTable re-entry is
+    /// needed by the adapter; the model continues to own page lifetime.
+    pub fn with_physical_pages<T>(&self, work: impl FnOnce(u64, &[u32]) -> T) -> Result<T, Errno> {
+        self.physical()?.with_pages(work)
+    }
+    pub(crate) fn only_inode_hold(&self) -> bool { self.0.strong_count() == 1 }
+    pub(crate) fn install_physical(&self, pages: crate::io_owner::IoArc<crate::memory_group::object::SharedPages>) -> Result<(), Errno> {
+        if pages.group() != self.group() || pages.object() != self.id() || pages.byte_length() != self.length() || !pages.allocated() {
+            return Err(Errno::EINVAL);
+        }
+        let mut physical = self.0.physical.lock();
+        if physical.is_some() { return Err(Errno::EALREADY); }
+        *physical = Some(pages);
+        Ok(())
+    }
+    pub(crate) fn physical(&self) -> Result<crate::io_owner::IoArc<crate::memory_group::object::SharedPages>, Errno> {
+        self.0.physical.lock().as_ref().cloned().ok_or(Errno::EAGAIN)
+    }
+    pub(crate) fn cancel_physical(&self, pages: &crate::io_owner::IoArc<crate::memory_group::object::SharedPages>) -> Result<(), Errno> {
+        let mut binding = self.0.physical.lock();
+        if binding.as_ref().is_none_or(|bound| bound.identity() != pages.identity()) { return Err(Errno::ESRCH); }
+        *binding = None; Ok(())
+    }
 }
 
 /// Rust-owned identity and resource authority for one opt-in device mapping.
@@ -114,6 +180,10 @@ pub struct MemoryLayoutMetadata {
 
 /// Kernel memory manager for mmap/munmap/brk.
 pub struct MemoryManager {
+    /// Opt-in virtual image/heap intervals; ordinary processes pay one pointer.
+    grouped_linear: Option<crate::IoBox<linear::GroupLinearMemory>>,
+    /// Exact staged-change owner; ordinary operations leave this empty.
+    pending_change: Option<core::num::NonZeroU64>,
     /// List of active mappings, kept sorted by address.
     mappings: IoBuffer<MappedRegion>,
     last_exact_mapping_id: u64,
@@ -137,6 +207,11 @@ pub struct MemoryManager {
     data_limit: u64,
     /// Program break at process start, used to compute data segment growth.
     initial_brk: usize,
+    /// Whether this process image has made an `mprotect` request Kandelo
+    /// reported as successful without enforcing it (one that removes read or
+    /// write access). Only the first is logged. A new image (exec) and a fork
+    /// child start with a new memory manager, so each logs its own first.
+    unenforced_protection_seen: bool,
 }
 
 /// Why [`MemoryManager::try_mmap_anonymous`] refused a mapping.
@@ -172,6 +247,8 @@ impl MemoryManager {
 
     pub fn new() -> Self {
         MemoryManager {
+            grouped_linear: None,
+            pending_change: None,
             mappings: IoBuffer::new(),
             reserved_regions: IoBuffer::new(),
             last_exact_mapping_id: 0,
@@ -182,7 +259,15 @@ impl MemoryManager {
             brk_limit: Self::DEFAULT_MAX_ADDR,
             data_limit: u64::MAX,
             initial_brk: Self::INITIAL_BRK,
+            unenforced_protection_seen: false,
         }
+    }
+
+    /// True the first time it is called for this process image: whether a
+    /// successful `mprotect` that Kandelo does not enforce is the first, and
+    /// so the one to log.
+    pub fn take_first_unenforced_protection(&mut self) -> bool {
+        !core::mem::replace(&mut self.unenforced_protection_seen, true)
     }
 
     /// Read-only access to the mmap mappings (for fork serialization).
@@ -193,6 +278,13 @@ impl MemoryManager {
         self.mappings
             .iter()
             .any(|m| m.flags & wasm_posix_shared::mmap::MAP_SHARED != 0)
+    }
+
+    pub(crate) fn has_unsupported_group_shared_mapping(&self, group: u32) -> bool {
+        self.mappings.iter().any(|mapping| mapping.flags & wasm_posix_shared::mmap::MAP_SHARED != 0
+            && !mapping.file.as_ref().and_then(|file| file.private_source.as_ref()).is_some_and(|source| source.is_immutable_shared())
+            && !mapping.file.as_ref().and_then(|file| file.group_shared.as_ref())
+                    .is_some_and(|object| object.0.group == group))
     }
 
     pub fn mappings(&self) -> &[MappedRegion] {
@@ -991,6 +1083,15 @@ mod tests {
 
     fn mapped_region(addr: usize, len: usize) -> MappedRegion {
         MappedRegion::anonymous(addr, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS)
+    }
+
+    #[test]
+    fn only_the_first_unenforced_protection_of_an_image_is_reported() {
+        let mut manager = MemoryManager::new();
+        assert!(manager.take_first_unenforced_protection());
+        assert!(!manager.take_first_unenforced_protection());
+        // A new image (exec) or fork child starts with a new manager.
+        assert!(MemoryManager::new().take_first_unenforced_protection());
     }
 
     #[test]

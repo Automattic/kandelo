@@ -110,6 +110,18 @@ if [ ! -f Makefile ]; then
     export bash_cv_dev_fd=absent
     export bash_cv_dev_stdin=absent
 
+    # No loadable builtins. dlopen works on Kandelo, and configure would
+    # find it in libc, but `enable -f` is rarely used and Kandelo ships no
+    # loadable builtins. With them, bash links the dynamic loader, its fork
+    # instrumentation takes the dynamic-linking role, and it links with
+    # -rdynamic (see LOCAL_LDFLAGS below), which pushed bash past the
+    # shell's eager boot budget. Without HAVE_DLOPEN/HAVE_DLSYM, `enable -f`
+    # reports "dynamic loading not available".
+    export ac_cv_lib_dl_dlopen=no
+    export ac_cv_func_dlopen=no
+    export ac_cv_func_dlclose=no
+    export ac_cv_func_dlsym=no
+
     # Functions bash probes for that musl provides but the SDK config.site doesn't cover
     export ac_cv_func_getwd=no
     export ac_cv_func_sigrelse=no
@@ -396,7 +408,12 @@ echo "==> Building bash..."
 # vs the top-level link) that produces exit 2 under -jN with no visible
 # error. Serial builds fine; ~3 min on an 8-core. Stay with -j1 unless
 # bash's own Makefile gets fixed upstream.
-make -j1 2>&1 | tail -30
+# LOCAL_LDFLAGS is configure's per-host link flag: -rdynamic on *-linux*
+# hosts, so loadable builtins can call bash's own functions. Bash is built
+# without loadable builtins (see the dlopen cache variables above), so it
+# exports nothing to modules; -rdynamic would export every bash function
+# (3,700 exports, 220 KB more after fork instrumentation).
+make -j1 LOCAL_LDFLAGS= 2>&1 | tail -30
 
 BASH_BIN="$SRC_DIR/bash"
 if [ ! -f "$BASH_BIN" ]; then

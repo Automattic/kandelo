@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
-const grepBinary = tryResolveBinary("programs/grep.wasm");
+const grepBinary = tryResolveBinary("programs/grep/grep.wasm");
 
 const hasGrep = !!grepBinary;
 

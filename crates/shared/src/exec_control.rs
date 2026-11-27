@@ -1,0 +1,99 @@
+//! Kernel-owned grouped-exec lifecycle. Reuses the copied operation reply wire.
+pub mod command {
+    pub const BEGIN: u32 = 1;
+    pub const POLL: u32 = 2;
+    pub const CANCEL: u32 = 3;
+    pub const VALIDATE: u32 = 4;
+    pub const HANDOFF: u32 = 5;
+    pub const VALIDATE_INSTALL: u32 = 9;
+    pub const INSTALLED: u32 = 10;
+    pub const ACK: u32 = 13;
+    pub const STATUS: u32 = 14;
+    pub const PLATFORM_COMPLETED: u32 = 15;
+    pub const PLATFORM_FAILED: u32 = 16;
+    pub const ENTER_NATIVE: u32 = 17;
+}
+pub mod phase {
+    pub const PREPARING: u32 = 1;
+    pub const PREPARED: u32 = 2;
+    pub const COMMITTED: u32 = 3;
+    pub const HANDOFF: u32 = 4;
+    pub const OLD_STOPPED: u32 = 5;
+    pub const CANCELLING: u32 = 6;
+    pub const CANCELLED: u32 = 7;
+    pub const TERMINATING: u32 = 8;
+    pub const TERMINATED_FUTURE: u32 = 9;
+    pub const INSTALLED: u32 = 10;
+    pub const FINISHED: u32 = 11;
+    pub const CONTAINED: u32 = 12;
+    pub const RETIRING_INSTALLED: u32 = 13;
+}
+/// Every effect is issued at most once per exact future receipt. Completion
+/// reports must name the currently outstanding effect; a late duplicate cannot
+/// advance the next phase or supply stop/reference retirement proof.
+pub mod effect {
+    pub const WAIT_WORKERS: u32 = 13;
+    pub const DETACH_PREVIOUS: u32 = 14;
+    pub const JOIN_PREVIOUS: u32 = 15;
+    pub const INSTALL_REPLACEMENT: u32 = 16;
+    pub const RETIRE_PREVIOUS: u32 = 17;
+    pub const BIND_REPLACEMENT: u32 = 18;
+    pub const START_REPLACEMENT: u32 = 19;
+    pub const DISCARD_FUTURE: u32 = 20;
+    pub const PUBLISH_TERMINATION: u32 = 21;
+    pub const FINISH_HANDOFF: u32 = 22;
+    pub const CONTAIN_FAILURE: u32 = 23;
+    pub const WAIT_READY: u32 = 24;
+    pub const DELIVER_LAUNCH: u32 = 25;
+    pub const SEAL_REPLACEMENT: u32 = 26;
+    pub const CANCEL_PREPARATION: u32 = 27;
+    pub const WAIT_REPLACEMENT: u32 = 28;
+    pub const JOIN_REPLACEMENT: u32 = 29;
+    pub const RETIRE_REPLACEMENT: u32 = 30;
+    pub const WAKE_REPLACEMENT: u32 = 31;
+}
+pub const EFFECTS: &[(&str, u32)] = &[
+    ("waitWorkers", effect::WAIT_WORKERS),
+    ("detachPrevious", effect::DETACH_PREVIOUS),
+    ("joinPrevious", effect::JOIN_PREVIOUS),
+    ("installReplacement", effect::INSTALL_REPLACEMENT),
+    ("retirePrevious", effect::RETIRE_PREVIOUS),
+    ("bindReplacement", effect::BIND_REPLACEMENT),
+    ("startReplacement", effect::START_REPLACEMENT),
+    ("discardFuture", effect::DISCARD_FUTURE),
+    ("publishTermination", effect::PUBLISH_TERMINATION),
+    ("finishHandoff", effect::FINISH_HANDOFF),
+    ("containFailure", effect::CONTAIN_FAILURE),
+    ("waitReady", effect::WAIT_READY),
+    ("deliverLaunch", effect::DELIVER_LAUNCH),
+    ("sealReplacement", effect::SEAL_REPLACEMENT),
+    ("cancelPreparation", effect::CANCEL_PREPARATION),
+    ("waitReplacement", effect::WAIT_REPLACEMENT),
+    ("joinReplacement", effect::JOIN_REPLACEMENT),
+    ("retireReplacement", effect::RETIRE_REPLACEMENT),
+    ("wakeReplacement", effect::WAKE_REPLACEMENT),
+];
+pub const LAYOUT_FIELDS: &[(&str, usize)] = &[
+    ("initialPages", 0),
+    ("maximumPages", 8),
+    ("controlBase", 16),
+    ("controlEnd", 24),
+    ("channelOffset", 32),
+    ("channelPage", 40),
+    ("brkBase", 48),
+    ("mmapBase", 56),
+    ("brkLimit", 64),
+    ("maxAddr", 72),
+    ("firstThreadSlotPage", 80),
+    ("firstThreadBasePage", 88),
+    ("threadArenaEndPage", 96),
+    ("threadSlotCount", 104),
+];
+pub const SOURCE: usize = 112;
+pub const PARENT: usize = 144;
+pub const SIGNAL: usize = 148;
+
+pub const EXIT_STATUS: usize = 152;
+pub mod flags {
+    pub const EXIT_HELD: u32 = 128;
+}

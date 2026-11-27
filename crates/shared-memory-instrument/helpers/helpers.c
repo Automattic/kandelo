@@ -1,0 +1,167 @@
+#include <stdint.h>
+#include "group-layout.h"
+
+// Trusted experimental address space. Root header: current pages, maximum
+// pages, scatter-copy capacity, initialized. PTEs follow a 64-byte header.
+// Each replica has its own control block and scratch; root word 13
+// serializes growth against the owning kernel realm. Concurrent unmap still
+// requires the application to stop using the unmapped addresses.
+#define PAGE KANDELO_MG_PAGE_BYTES
+#define HEADER KANDELO_MG_ROOT_HEADER_BYTES
+#define AI static __inline__ __attribute__((always_inline))
+#define EXPORT(name) __attribute__((export_name(name)))
+// The normal translator validates each exact () -> i32 constant body against
+// the Rust declaration before accepting this compiled helper. This proves
+// layout agreement, not correctness of arbitrary helper implementation code.
+#define LAYOUT_MARKER(name, value) \
+    EXPORT("vm_layout_" #name) uint32_t vm_layout_##name(void) { return value; }
+KANDELO_MG_LAYOUT_MARKERS(LAYOUT_MARKER)
+#undef LAYOUT_MARKER
+AI uint32_t *words(uint32_t p) { return (uint32_t *)(uintptr_t)p; }
+AI void fail(void) { __builtin_trap(); }
+AI uint32_t r_load(uint32_t replica, uint32_t offset) {
+    return __atomic_load_n(words(replica+offset), __ATOMIC_ACQUIRE);
+}
+AI uint32_t r_alive(uint32_t root, uint32_t replica) {
+    return __atomic_load_n(words(root+KANDELO_MG_ROOT_RUN), __ATOMIC_ACQUIRE)
+        && r_load(replica,KANDELO_MG_REPLICA_RUN);
+}
+AI void r_ack(uint32_t replica,uint32_t epoch) {
+    __atomic_store_n(words(replica+KANDELO_MG_REPLICA_ACK),epoch,__ATOMIC_RELEASE);
+    __builtin_wasm_memory_atomic_notify((int*)words(replica+KANDELO_MG_REPLICA_ACK),1);
+}
+// Source safe points have no surviving physical address temporary. A queue
+// acknowledgment is weaker: its physical wait target stays pinned until the
+// returning helper retires its node. Neither acknowledgment is a stop fence.
+EXPORT("vm_checkpoint")
+void vm_checkpoint(uint32_t root,uint32_t replica) {
+    if(!root||!replica||!r_alive(root,replica))fail();
+    uint32_t epoch=r_load(replica,KANDELO_MG_REPLICA_REQUEST);
+    while(epoch) {
+        r_ack(replica,epoch);
+        while(r_load(replica,KANDELO_MG_REPLICA_REQUEST)==epoch) {
+            if(!r_alive(root,replica))fail();
+            __builtin_wasm_memory_atomic_wait32((int*)words(replica+KANDELO_MG_REPLICA_REQUEST),epoch,-1);
+        }
+        if(!r_alive(root,replica))fail();
+        epoch=r_load(replica,KANDELO_MG_REPLICA_REQUEST);
+    }
+    // ACK is the last acknowledged epoch. The owner must require its exact
+    // currently requested epoch, never treat a stale ACK as current parking.
+}
+AI uint32_t effective(uint32_t p, uint64_t offset, uint32_t n, uint32_t root) {
+    if (!root || offset > UINT32_MAX) fail();
+    uint64_t q = (uint64_t)p + offset;
+    uint64_t limit = (uint64_t)__atomic_load_n(&words(root)[0], __ATOMIC_ACQUIRE) * PAGE;
+    if (q > limit || n > limit - q) fail();
+    return (uint32_t)q;
+}
+AI uint32_t page(uint32_t p, uint32_t rights, uint32_t root) {
+    uint32_t e = words(root + HEADER)[p >> 16];
+    if ((e & rights) != rights || !(e & -PAGE)) fail();
+    return (e & -PAGE) | (p & (PAGE - 1));
+}
+EXPORT("vm_span")
+uint32_t vm_span(uint32_t p, uint32_t n, uint32_t rights, uint32_t root) {
+    (void)effective(p, 0, n, root);
+    if (!n) return 0;
+    uint32_t first = page(p, rights, root), contiguous = 1;
+    uint64_t end = (uint64_t)p + n;
+    for (uint64_t q = ((uint64_t)p & -(uint64_t)PAGE) + PAGE; q < end; q += PAGE) {
+        if (page((uint32_t)q, rights, root) != (uint64_t)first + q - p)
+            contiguous = 0;
+    }
+    return contiguous ? first : 0;
+}
+EXPORT("vm_read_address")
+uint32_t vm_read_address(uint32_t base, uint64_t offset, uint32_t n, uint32_t root, uint32_t scratch) {
+    uint32_t p = effective(base, offset, n, root);
+    uint32_t a = vm_span(p, n, 1, root);
+    if (a) return a;
+    if (n > 16) fail();
+    for (uint32_t i = 0; i < n; i++)
+        *(uint8_t *)(uintptr_t)(scratch + i) = *(uint8_t *)(uintptr_t)page(p + i, 1, root);
+    return scratch;
+}
+EXPORT("vm_write_address")
+uint32_t vm_write_address(uint32_t base, uint64_t offset, uint32_t n, uint32_t root, uint32_t scratch) {
+    uint32_t p = effective(base, offset, n, root);
+    uint32_t a = vm_span(p, n, 2, root);
+    if (a) return a;
+    if (n > 16) fail();
+    return scratch;
+}
+EXPORT("vm_write_commit")
+void vm_write_commit(uint32_t base, uint64_t offset, uint32_t n, uint32_t root, uint32_t scratch, uint32_t chosen) {
+    if (chosen != scratch) return;
+    uint32_t p = effective(base, offset, n, root);
+    for (uint32_t i = 0; i < n; i++)
+        *(uint8_t *)(uintptr_t)page(p + i, 2, root) = *(uint8_t *)(uintptr_t)(scratch + i);
+}
+EXPORT("vm_atomic_address")
+uint32_t vm_atomic_address(uint32_t base, uint64_t offset, uint32_t n, uint32_t rights, uint32_t root) {
+    uint32_t p = effective(base, offset, n, root);
+    if (p & (n - 1)) fail();
+    uint32_t a = vm_span(p, n, rights, root);
+    if (!a) fail();
+    return a;
+}
+AI uint32_t vm_copy_address(uint32_t p, uint32_t rights, uint32_t root) { return page(p, rights, root); }
+AI uint8_t vm_copy_read(uint32_t p) { return *(uint8_t *)(uintptr_t)p; }
+AI void vm_copy_write(uint32_t p, uint8_t value) { *(uint8_t *)(uintptr_t)p = value; }
+AI void vm_copy_raw(uint32_t d, uint32_t s, uint32_t n) {
+    __builtin_memmove((void *)(uintptr_t)d, (void *)(uintptr_t)s, n);
+}
+AI void vm_copy_poll(uint32_t root, uint32_t replica) {
+    // Stop may abandon a partial copy, just as terminating an ordinary writer
+    // may. Do not acknowledge a reversible mapping barrier with live cursors.
+    if (!r_alive(root, replica)) fail();
+}
+EXPORT("vm_bulk_poll")
+void vm_bulk_poll(uint32_t root, uint32_t replica) { vm_copy_poll(root, replica); }
+#define VM_COPY_INLINE AI
+#define VM_COPY_PAGE_BYTES PAGE
+#define VM_COPY_BITMAP_BYTES KANDELO_MG_BITMAP_BYTES
+#include "copy-graph.h"
+EXPORT("vm_copy")
+void vm_copy(uint32_t dst, uint32_t src, uint32_t n, uint32_t root, uint32_t scratch, uint32_t replica) {
+    uint32_t s = vm_span(src, n, 1, root), d = vm_span(dst, n, 2, root);
+    struct vm_copy_graph_context context = {
+        .dst = dst, .src = src, .n = n, .root = root, .replica = replica,
+        .scratch = scratch, .capacity = words(root)[2],
+    };
+    vm_copy_bounded(&context, s, d);
+}
+EXPORT("vm_fill")
+void vm_fill(uint32_t dst, uint32_t value, uint32_t n, uint32_t root) {
+    uint32_t d = vm_span(dst, n, 2, root);
+    if (!n) return;
+    if (d) { __builtin_memset((void *)(uintptr_t)d, value, n); return; }
+    for (uint32_t i = 0; i < n; i++) *(uint8_t *)(uintptr_t)page(dst + i, 2, root) = value;
+}
+EXPORT("vm_size")
+uint32_t vm_size(uint32_t root) { if (!root) fail(); return __atomic_load_n(&words(root)[0], __ATOMIC_ACQUIRE); }
+EXPORT("vm_initialize_gate")
+uint32_t vm_initialize_gate(uint32_t root, uint32_t fresh, uint32_t replica) {
+    if (!root || !replica || replica%KANDELO_MG_REPLICA_BYTES || fresh > 2 || words(root)[0] > words(root)[1]
+        || words(replica+KANDELO_MG_REPLICA_MAGIC_OFFSET)[0]!=KANDELO_MG_REPLICA_MAGIC
+        || words(replica+KANDELO_MG_REPLICA_ROOT)[0]!=root || !r_alive(root,replica)) fail();
+    if (fresh == 2) {
+        if (__atomic_load_n(&words(root)[3], __ATOMIC_ACQUIRE) != 1) fail();
+        return 0; // Attach: drop this instance's active data without replaying it.
+    }
+    uint32_t expected = 0;
+    if (!__atomic_compare_exchange_n(&words(root)[3], &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) fail();
+    return fresh;
+}
+// The import is bound to this exact task's kernel channel. Frame selection,
+// budget checks, zeroing, PTE publication and custody belong to the kernel.
+__attribute__((import_module(KANDELO_MG_GROWTH_MODULE), import_name(KANDELO_MG_GROWTH_IMPORT)))
+extern uint32_t kernel_private_grow(uint32_t delta);
+EXPORT("vm_grow")
+uint32_t vm_grow(uint32_t delta, uint32_t root) {
+    if (!root) fail();
+    return kernel_private_grow(delta);
+}
+
+#include "vm-wait-queue.h"

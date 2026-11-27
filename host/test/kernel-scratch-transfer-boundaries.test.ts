@@ -127,6 +127,7 @@ const NETWORK_IFREQ_HANDLERS = [
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
+  source: WebAssembly.Memory;
   channelOffset: number;
   i32View: Int32Array;
   consecutiveSyscalls: number;
@@ -248,6 +249,7 @@ function makeScratchHarness(
   const channel: TestChannel = {
     pid,
     memory: processMemory,
+    source: processMemory,
     channelOffset,
     i32View: new Int32Array(
       processMemory.buffer,
@@ -402,6 +404,7 @@ function makeScratchHarness(
       {
         pid,
         memory: processMemory,
+        source: processMemory,
         channels: [channel],
         ptrWidth,
       },
@@ -450,6 +453,7 @@ function prepareGenericSyscallHarness(
       {
         pid: harness.channel.pid,
         memory: harness.channel.memory,
+        source: harness.channel.source,
         channels: [harness.channel],
         ptrWidth,
       },
@@ -1107,6 +1111,60 @@ describe("trusted host executable target preparation", () => {
     });
     expect(harness.worker.spawnHostExecTargetPrepare(1, 100, { bytes, name: "current-preparer" })).toBe(71);
     expect(prepare).toHaveBeenCalledOnce();
+  });
+});
+
+describe("kernel-owned file publication rename", () => {
+  it.each([4, 8] as const)("lends both paths through checked %i-byte scratch pointers", (width) => {
+    const harness = makeScratchHarness(width);
+    const rename = vi.fn((oldPtr: number | bigint, oldLen: number, newPtr: number | bigint, newLen: number) => {
+      expect(typeof oldPtr).toBe(width === 8 ? "bigint" : "number");
+      expect(typeof newPtr).toBe(width === 8 ? "bigint" : "number");
+      const decode = (ptr: number | bigint, length: number) => new TextDecoder().decode(
+        harness.kernelBytes.subarray(Number(ptr), Number(ptr) + length),
+      );
+      expect(decode(oldPtr, oldLen)).toBe("/run/staged");
+      expect(decode(newPtr, newLen)).toBe("/run/current");
+      expect(Number(newPtr)).toBe(Number(oldPtr) + oldLen);
+      return 0;
+    });
+    harness.kernelExports.kernel_rootfs_rename_file = rename;
+    harness.worker.rootfsRenameFile("/run/staged", "/run/current");
+    expect(rename).toHaveBeenCalledOnce();
+    expectScratchTailUntouched(harness);
+  });
+
+  it.each([-2, 1])("preserves errno or rejects an invalid native result %s", (result) => {
+    const harness = makeScratchHarness();
+    harness.kernelExports.kernel_rootfs_rename_file = () => result;
+    try {
+      harness.worker.rootfsRenameFile("/run/staged", "/run/current");
+      throw new Error("rename unexpectedly succeeded");
+    } catch (error) {
+      expect(error).toBeInstanceOf(KernelScratchError);
+      expect((error as KernelScratchError).errno).toBe(result === -2 ? 2 : EIO);
+    }
+    expectScratchTailUntouched(harness);
+  });
+
+  it("reports an unavailable optional export", () => {
+    const harness = makeScratchHarness(4, ["kernel_rootfs_rename_file"]);
+    expect(() => harness.worker.rootfsRenameFile("/run/staged", "/run/current"))
+      .toThrow(/rootfs rename failed/);
+    expectScratchTailUntouched(harness);
+  });
+
+  it("refuses reentry before invoking the namespace mutation", () => {
+    const harness = makeScratchHarness();
+    const rename = vi.fn();
+    harness.kernelExports.kernel_rootfs_rename_file = rename;
+    harness.kernelExports.kernel_exec_target_size = () => {
+      expect(() => harness.worker.rootfsRenameFile("/run/staged", "/run/current"))
+        .toThrow(/cannot run while kernel_exec_target_size is active/);
+      return 0n;
+    };
+    expect(harness.worker.execTargetSize(100, 1)).toBe(0n);
+    expect(rename).not.toHaveBeenCalled();
   });
 });
 
@@ -2671,7 +2729,8 @@ describe("kernel scratch transfer capacity regressions", () => {
     "rejects an out-of-range %s fd_set before copying it",
     (_name, _method, syscall) => {
       const harness = makeScratchHarness();
-      const invalidSet = harness.processBytes.byteLength - 4;
+      // Even a one-descriptor set requires a complete native word.
+      const invalidSet = harness.processBytes.byteLength - 1;
 
       expect(() =>
         dispatchScratchBoundarySyscallWithArgs(harness, syscall, [
@@ -2784,10 +2843,17 @@ describe("kernel scratch transfer capacity regressions", () => {
     expectScratchTailUntouched(harness);
   });
 
-  it("rejects an out-of-range epoll output array before polling", () => {
+  it("forwards epoll output addresses for kernel validation and publishes EFAULT", () => {
     const harness = makeScratchHarness();
     const invalidEvents =
       harness.processBytes.byteLength - STRUCT_SIZE_WASM_EPOLL_EVENT + 1;
+    harness.handleChannel.mockImplementation(() => {
+      const view = new DataView(harness.kernelBytes.buffer, harness.scratchOffset);
+      expect(view.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(BigInt(invalidEvents));
+      view.setBigInt64(CH_RETURN, -1n, true);
+      view.setUint32(CH_ERRNO, EFAULT, true);
+      return 0;
+    });
 
     expect(() =>
       dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.EpollPwait, [
@@ -2800,16 +2866,12 @@ describe("kernel scratch transfer capacity regressions", () => {
       ]),
     ).not.toThrow();
 
-    expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
+    expect(harness.handleChannel).toHaveBeenCalledTimes(1);
+    expect(harness.completeChannel.mock.lastCall?.slice(4, 6)).toEqual([-1, EFAULT]);
     expectScratchTailUntouched(harness);
   });
 
-  it("writes one exact-size epoll result with zero padding and data at offset eight", () => {
+  it("preserves direct guest epoll copyout when publishing the kernel result", () => {
     const harness = makeScratchHarness();
     const eventsPointer =
       harness.processBytes.byteLength - STRUCT_SIZE_WASM_EPOLL_EVENT;
@@ -2819,8 +2881,9 @@ describe("kernel scratch transfer capacity regressions", () => {
       eventsPointer,
       eventsPointer + STRUCT_SIZE_WASM_EPOLL_EVENT,
     );
-    // The host asks the kernel's own epoll_pwait for one nonblocking pass
-    // (the kernel owns the registrations) and copies its events out.
+    // Rust owns validation and copyout. This transport fixture preserves the
+    // guest pointer and must not overwrite the result with stale scratch bytes.
+    // The real SDK epoll fixture exercises the kernel's translated copyout.
     harness.handleChannel.mockImplementation(() => {
       const channelView = new DataView(
         harness.kernelBytes.buffer,
@@ -2829,10 +2892,8 @@ describe("kernel scratch transfer capacity regressions", () => {
       expect(channelView.getUint32(CH_SYSCALL, true)).toBe(ABI_SYSCALLS.EpollPwait);
       expect(channelView.getBigInt64(CH_ARGS, true)).toBe(3n);
       expect(channelView.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true)).toBe(0n);
-      const eventsPointer = Number(
-        channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-      );
-      const kernelEvents = new DataView(harness.kernelBytes.buffer, eventsPointer);
+      expect(channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(BigInt(eventsPointer));
+      const kernelEvents = new DataView(harness.processBytes.buffer, eventsPointer);
       kernelEvents.setUint32(WASM_EPOLL_EVENT_EVENTS_OFFSET, 1, true);
       kernelEvents.setUint32(WASM_EPOLL_EVENT_PAD_OFFSET, 0, true);
       kernelEvents.setBigUint64(WASM_EPOLL_EVENT_DATA_OFFSET, expectedData, true);
@@ -2860,11 +2921,7 @@ describe("kernel scratch transfer capacity regressions", () => {
     expect(output.getBigUint64(WASM_EPOLL_EVENT_DATA_OFFSET, true)).toBe(
       expectedData,
     );
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      1,
-      0,
-    );
+    expect(harness.completeChannel.mock.lastCall?.slice(4, 6)).toEqual([1, 0]);
     expectScratchTailUntouched(harness);
   });
 
@@ -4674,7 +4731,7 @@ describe("kernel scratch transfer capacity regressions", () => {
         const value = super.getUint32(byteOffset, littleEndian);
         if (
           this.buffer === harness.channel.memory.buffer &&
-          byteOffset === lengthPointer &&
+          this.byteOffset + byteOffset === lengthPointer &&
           capturedReads++ === 0
         ) {
           // Model a second guest thread changing socklen_t after the sizing
@@ -4783,7 +4840,7 @@ describe("kernel scratch transfer capacity regressions", () => {
       getUint32(byteOffset: number, littleEndian?: boolean): number {
         if (
           this.buffer === harness.channel.memory.buffer &&
-          byteOffset === lengthPointer &&
+          this.byteOffset + byteOffset === lengthPointer &&
           sizingReads++ === 0
         ) {
           // With the old order-dependent planner, the preceding fixed

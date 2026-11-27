@@ -45,6 +45,9 @@
 //!                          `--force-source-build` bypasses the selected
 //!                          package's cache/index entry.
 
+#[path = "shared_memory_outputs.rs"]
+mod shared_memory_outputs;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::os::fd::AsFd;
@@ -2190,6 +2193,33 @@ pub(crate) struct ProgramPackageProjection {
     pub(crate) cache_keys: BTreeMap<String, String>,
     pub(crate) dependency_closures: BTreeMap<String, Vec<ProgramDependencyIdentity>>,
     pub(crate) members: Vec<ProgramPackageProjectionMember>,
+    /// The package's declared fictions, absent when it declares none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) fictions: Vec<ProgramFictionDeclaration>,
+}
+
+/// A declared fiction as the program package index reports it: provenance
+/// for whoever installs the package, next to the stamp each linked program
+/// carries (`kandelo.fictions`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProgramFictionDeclaration {
+    pub(crate) name: String,
+    pub(crate) reason: String,
+    /// `name:key=value,...` as declared, keys sorted.
+    pub(crate) selection: String,
+}
+
+fn program_fiction_declarations(manifest: &DepsManifest) -> Vec<ProgramFictionDeclaration> {
+    manifest
+        .fictions
+        .iter()
+        .map(|fiction| ProgramFictionDeclaration {
+            name: fiction.name.clone(),
+            reason: fiction.reason.trim().to_string(),
+            selection: fiction_selection_text(fiction),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -5923,6 +5953,7 @@ fn program_package_index_for_root_once(
             cache_keys,
             dependency_closures,
             members,
+            fictions: program_fiction_declarations(manifest),
         };
         for arch in &projection.arches {
             for member in &projection.members {
@@ -6087,6 +6118,7 @@ pub(crate) fn source_only_program_package_index_for_nodes(
                 cache_keys: BTreeMap::new(),
                 dependency_closures: BTreeMap::new(),
                 members: members.clone(),
+                fictions: program_fiction_declarations(&manifest),
             });
         if projection.members != members {
             return Err(format!(
@@ -7452,6 +7484,24 @@ fn compute_sha_with_identity_context_for_platform(
                     h.update(b"|");
                 }
             }
+            // Declared fictions change what the SDK links into every
+            // program the build produces. The reason is free text and, like
+            // comments, determines nothing.
+            if !target.fictions.is_empty() {
+                h.update(b"kandelo-fictions-v1\n");
+                for fiction in &target.fictions {
+                    h.update((fiction.name.len() as u64).to_le_bytes());
+                    h.update(fiction.name.as_bytes());
+                    h.update((fiction.config.len() as u64).to_le_bytes());
+                    for (key, value) in &fiction.config {
+                        let value = value.to_string();
+                        for field in [key.as_bytes(), value.as_bytes()] {
+                            h.update((field.len() as u64).to_le_bytes());
+                            h.update(field);
+                        }
+                    }
+                }
+            }
             if target.target_arches != [TargetArch::Wasm32] {
                 h.update(b"kandelo-target-arches-v1\n");
                 for arch_entry in &target.target_arches {
@@ -7496,6 +7546,9 @@ fn compute_sha_with_identity_context_for_platform(
                 if out.fork_instrumentation != ForkInstrumentationPolicy::Auto {
                     h.update(b"|fork_instrumentation=");
                     h.update(out.fork_instrumentation.as_str().as_bytes());
+                }
+                if let Some(source) = &out.shared_memory_from {
+                    h.update(b"|shared_memory_from="); h.update(source.as_bytes());
                 }
                 if let Some(original) = &out.original_wasm {
                     h.update(b"|original_wasm=");
@@ -7555,6 +7608,9 @@ fn compute_sha_with_identity_context_for_platform(
             h.update(input.digest);
             h.update(b"\n");
         }
+    }
+    for input in shared_memory_outputs::input_digests(target)? {
+        h.update(b"shared-memory-output-input:\0"); h.update(input.label.as_bytes()); h.update(input.digest);
     }
     if policy == ResolvePolicy::SourceOnlyV1
         && matches!(target.kind, ManifestKind::Library | ManifestKind::Program)
@@ -12590,6 +12646,124 @@ struct PrimarySourceHandoff {
     source_dir: PathBuf,
 }
 
+/// The environment variable through which a package build hands its declared
+/// fictions to the SDK driver (`crates/kandelo-cc/src/fictions.rs`).
+pub(crate) const FICTIONS_ENV: &str = "KANDELO_FICTIONS";
+
+/// The registry of declared fictions, relative to the repository root.
+pub(crate) const FICTION_REGISTRY_DIR: &str = "sdk/fictions";
+
+/// One declaration's selection text, `name:key=value,...` with keys sorted,
+/// after checking it against the registry entry
+/// `sdk/fictions/<name>.toml`: the fiction exists, every key is in its
+/// config schema, and every value has the key's type. The SDK driver checks
+/// the selection again (it is the authority on what it links); this check
+/// fails the build before any recipe runs, naming the manifest.
+pub(crate) fn fiction_declaration_selection(
+    declaration: &crate::pkg_manifest::FictionDeclaration,
+    repo_root: &Path,
+) -> Result<String, String> {
+    let name = &declaration.name;
+    let path = repo_root
+        .join(FICTION_REGISTRY_DIR)
+        .join(format!("{name}.toml"));
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "[[fictions]] {name:?} is not a declared fiction ({}: {error})",
+            path.display()
+        )
+    })?;
+    let registry: toml::Value =
+        toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    if registry.get("name").and_then(toml::Value::as_str) != Some(name.as_str()) {
+        return Err(format!("{}: name does not match the file name", path.display()));
+    }
+    let schema = registry
+        .get("config")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| format!("{}: no [config.*] schema", path.display()))?;
+    let mut pairs = Vec::with_capacity(declaration.config.len());
+    for (key, value) in &declaration.config {
+        let Some(entry) = schema.get(key).and_then(toml::Value::as_table) else {
+            let known: Vec<&str> = schema.keys().map(String::as_str).collect();
+            return Err(format!(
+                "[[fictions]] {name}: no config key {key:?}; the registry defines: {}",
+                known.join(", ")
+            ));
+        };
+        let text = match entry.get("type").and_then(toml::Value::as_str) {
+            Some("enum") => {
+                let allowed: Vec<&str> = entry
+                    .get("values")
+                    .and_then(toml::Value::as_array)
+                    .map(|values| values.iter().filter_map(toml::Value::as_str).collect())
+                    .unwrap_or_default();
+                match value.as_str() {
+                    Some(word) if allowed.contains(&word) => word.to_string(),
+                    _ => {
+                        return Err(format!(
+                            "[[fictions]] {name}: {key} must be one of {}",
+                            allowed.join(", ")
+                        ));
+                    }
+                }
+            }
+            Some("size") => match value.as_integer() {
+                Some(n) if n >= 0 => n.to_string(),
+                _ => {
+                    return Err(format!(
+                        "[[fictions]] {name}: {key} must be a non-negative byte count"
+                    ));
+                }
+            },
+            other => {
+                return Err(format!(
+                    "{}: config.{key} has unknown type {other:?}",
+                    path.display()
+                ));
+            }
+        };
+        pairs.push(format!("{key}={text}"));
+    }
+    let selection = format!("{name}:{}", pairs.join(","));
+    debug_assert_eq!(selection, fiction_selection_text(declaration));
+    Ok(selection)
+}
+
+/// A declaration as selection text, `name:key=value,...` with keys sorted,
+/// unchecked: integers in decimal, words as written.
+pub(crate) fn fiction_selection_text(
+    declaration: &crate::pkg_manifest::FictionDeclaration,
+) -> String {
+    let pairs: Vec<String> = declaration
+        .config
+        .iter()
+        .map(|(key, value)| match value {
+            toml::Value::String(word) => format!("{key}={word}"),
+            other => format!("{key}={other}"),
+        })
+        .collect();
+    format!("{}:{}", declaration.name, pairs.join(","))
+}
+
+/// The value of [`FICTIONS_ENV`] for `target`'s build: every declaration's
+/// selection, `;`-separated, or `None` for a package that declares none.
+pub(crate) fn fiction_selections(
+    target: &DepsManifest,
+    repo_root: &Path,
+) -> Result<Option<String>, String> {
+    if target.fictions.is_empty() {
+        return Ok(None);
+    }
+    let selections = target
+        .fictions
+        .iter()
+        .map(|declaration| fiction_declaration_selection(declaration, repo_root))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("{}: {error}", target.spec()))?;
+    Ok(Some(selections.join(";")))
+}
+
 fn configure_primary_source_environment(
     command: &mut Command,
     target: &DepsManifest,
@@ -13296,6 +13470,7 @@ fn validate_source_only_cache_artifacts_from_receipt(
                         failures.join("; ")
                     ));
                 }
+                shared_memory_outputs::validate(target, output, &root.path)?;
                 if let Some(original) = &output.original_wasm {
                     let entry = require_source_only_receipt_entry(target, receipt, original, "original Wasm", true)?;
                     if entry.mode & 0o7111 != 0 {
@@ -14444,6 +14619,127 @@ fn package_build_path(repo: &Path, toolchain: PackageToolchain, inherited: &OsSt
     std::env::join_paths(paths).map_err(|error| format!("package build PATH: {error}"))
 }
 
+/// Final executable identity must exist before deriving a source-bound output.
+fn stamp_program_outputs(target: &DepsManifest, tmp: &Path, repo_root: &Path,
+    abi_version: u32, cache_key_sha: &str) -> Result<(), String> {
+    let stamp_key = hex_to_32(cache_key_sha).map_err(|error| {
+        format!(
+            "{}: cache_key_sha is not a valid sha256 hex digest: {error}",
+            target.spec()
+        )
+    })?;
+    // Sibling of the build key: the ABI-contract digest
+    // (the program digest, `local_abi_identity`) this artifact was built
+    // against. Stamped on EVERY program (kernel, userspace, and every
+    // guest) so the host can compare a guest's stamp against the
+    // running kernel's own kandelo.abi.contract stamp at exec and
+    // refuse a stale guest even when the ABI version numbers coincide.
+    // This is the same digest folded into the SourceOnlyV1 cache key,
+    // so it is reliable, not best-effort: propagate errors like the
+    // build-key stamp.
+    let abi_contract_digest =
+        crate::local_abi_identity::local_abi_contract_digest(repo_root, abi_version)
+            .map_err(|error| {
+                format!(
+                    "{}: compute ABI contract digest for stamp: {error}",
+                    target.spec()
+                )
+            })?;
+    for output in target.program_outputs.iter().filter(|output| output.shared_memory_from.is_none()) {
+        let member = tmp.join(&output.wasm);
+        let bytes = std::fs::read(&member).map_err(|error| {
+            format!(
+                "{}: read built wasm output {}: {error}",
+                target.spec(),
+                member.display()
+            )
+        })?;
+        // Both the build-key and abi-contract stamps are wasm custom
+        // sections: they only apply to a loadable wasm module. Some
+        // `program` packages declare non-wasm outputs (e.g. a lazy VFS
+        // archive `*.zip`/`*.zst` or a data blob) whose bytes have no
+        // wasm magic; there is nothing to stamp on them, and feeding
+        // them to the wasm stamper would fail on a bad magic header.
+        // Skip those members -- they carry no ABI/build identity and
+        // are never loaded as a module (verify-fresh and the belt
+        // check only ever read `.wasm` members).
+        if !bytes.starts_with(b"\0asm") {
+            continue;
+        }
+        let stamped = crate::build_stamp::stamp_program_output(
+            &bytes,
+            &stamp_key,
+            &abi_contract_digest,
+        )
+        .map_err(|error| {
+            format!(
+                "{}: stamp ABI contract digest on wasm output {}: {error}",
+                target.spec(),
+                member.display()
+            )
+        })?;
+        // The built member may be read-only: a `make install` binary
+        // is commonly mode 0555, the fork-instrument step deliberately
+        // preserves that mode, and the resolver-scratch copy inherits
+        // it. This stamp is the authoritative writer of the final bytes
+        // into the pre-publication build stage, so overwrite in place
+        // (preserving the inode, which some packages hard-link, e.g.
+        // mandoc's `man` -> `mandoc`): temporarily restore owner-write,
+        // then re-apply the original mode so the published artifact
+        // keeps its executable/read-only bits.
+        #[cfg(unix)]
+        let restore_mode = {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&member)
+                .map_err(|error| {
+                    format!(
+                        "{}: stat stamped wasm output {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?
+                .permissions()
+                .mode();
+            if mode & 0o200 == 0 {
+                std::fs::set_permissions(
+                    &member,
+                    std::fs::Permissions::from_mode(mode | 0o200),
+                )
+                .map_err(|error| {
+                    format!(
+                        "{}: make stamped wasm output writable {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+                Some(mode)
+            } else {
+                None
+            }
+        };
+        std::fs::write(&member, stamped).map_err(|error| {
+            format!(
+                "{}: write stamped wasm output {}: {error}",
+                target.spec(),
+                member.display()
+            )
+        })?;
+        #[cfg(unix)]
+        if let Some(mode) = restore_mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&member, std::fs::Permissions::from_mode(mode))
+                .map_err(|error| {
+                    format!(
+                        "{}: restore stamped wasm output mode {}: {error}",
+                        target.spec(),
+                        member.display()
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
 fn build_into_cache(
     target: &DepsManifest,
     registry: &Registry,
@@ -14586,6 +14882,7 @@ fn build_into_cache(
         Ok(paths) => paths,
         Err(error) => return Err(error),
     };
+    let dependency_shared_memory_inputs = shared_memory_outputs::dependency_inputs(target, registry, &selected_cache_root, arch, abi_version, policy, &work.recipe_work)?;
     let dependency_original_inputs = write_dependency_original_inputs(target, registry, &dependency_paths,
         arch, abi_version, policy, &work.recipe_work)?;
 
@@ -14643,6 +14940,14 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
+        cmd.env_remove("WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS");
+        if let Some(path) = &dependency_shared_memory_inputs { cmd.env("WASM_POSIX_DEP_SHARED_MEMORY_OUTPUTS", path); }
+        // A package's declared fictions reach every SDK link of its build;
+        // a package without one must not inherit a caller's selection.
+        match fiction_selections(target, repo_root)? {
+            Some(selections) => cmd.env(FICTIONS_ENV, selections),
+            None => cmd.env_remove(FICTIONS_ENV),
+        };
         cmd.env_remove("WASM_POSIX_DEP_ORIGINAL_INPUTS");
         if let Some(path) = &dependency_original_inputs {
             cmd.env("WASM_POSIX_DEP_ORIGINAL_INPUTS", path);
@@ -14800,6 +15105,14 @@ fn build_into_cache(
         ));
     }
 
+    // Derivatives bind exact installed bytes, including the normal source stamp.
+    // Other packages retain their established later stamping order.
+    if policy == ResolvePolicy::SourceOnlyV1 && target.kind == ManifestKind::Program
+        && shared_memory_outputs::enabled(target) {
+        stamp_program_outputs(target, &tmp, repo_root, abi_version, cache_key_sha)?;
+    }
+    shared_memory_outputs::finalize(target, &tmp, arch, false)?;
+
     // Kind-aware validation. Library and program manifests carry a
     // declared outputs list (libs/headers/pkgconfig/files or program wasms)
     // that `validate_outputs` checks one-by-one. Source manifests have
@@ -14873,123 +15186,10 @@ fn build_into_cache(
         work.cleanup_source_only().map_err(|error| {
             format!("{}: clean package work scratch before publication: {error}", target.spec())
         })?;
-        if target.kind == ManifestKind::Program {
-            let stamp_key = hex_to_32(cache_key_sha).map_err(|error| {
-                format!(
-                    "{}: cache_key_sha is not a valid sha256 hex digest: {error}",
-                    target.spec()
-                )
-            })?;
-            // Sibling of the build key: the ABI-contract digest
-            // (the program digest, `local_abi_identity`) this artifact was built
-            // against. Stamped on EVERY program (kernel, userspace, and every
-            // guest) so the host can compare a guest's stamp against the
-            // running kernel's own kandelo.abi.contract stamp at exec and
-            // refuse a stale guest even when the ABI version numbers coincide.
-            // This is the same digest folded into the SourceOnlyV1 cache key,
-            // so it is reliable, not best-effort: propagate errors like the
-            // build-key stamp.
-            let abi_contract_digest =
-                crate::local_abi_identity::local_abi_contract_digest(repo_root, abi_version)
-                    .map_err(|error| {
-                        format!(
-                            "{}: compute ABI contract digest for stamp: {error}",
-                            target.spec()
-                        )
-                    })?;
-            for output in &target.program_outputs {
-                let member = tmp.join(&output.wasm);
-                let bytes = std::fs::read(&member).map_err(|error| {
-                    format!(
-                        "{}: read built wasm output {}: {error}",
-                        target.spec(),
-                        member.display()
-                    )
-                })?;
-                // Both the build-key and abi-contract stamps are wasm custom
-                // sections: they only apply to a loadable wasm module. Some
-                // `program` packages declare non-wasm outputs (e.g. a lazy VFS
-                // archive `*.zip`/`*.zst` or a data blob) whose bytes have no
-                // wasm magic; there is nothing to stamp on them, and feeding
-                // them to the wasm stamper would fail on a bad magic header.
-                // Skip those members -- they carry no ABI/build identity and
-                // are never loaded as a module (verify-fresh and the belt
-                // check only ever read `.wasm` members).
-                if !bytes.starts_with(b"\0asm") {
-                    continue;
-                }
-                let stamped = crate::build_stamp::stamp_program_output(
-                    &bytes,
-                    &stamp_key,
-                    &abi_contract_digest,
-                )
-                .map_err(|error| {
-                    format!(
-                        "{}: stamp ABI contract digest on wasm output {}: {error}",
-                        target.spec(),
-                        member.display()
-                    )
-                })?;
-                // The built member may be read-only: a `make install` binary
-                // is commonly mode 0555, the fork-instrument step deliberately
-                // preserves that mode, and the resolver-scratch copy inherits
-                // it. This stamp is the authoritative writer of the final bytes
-                // into the pre-publication build stage, so overwrite in place
-                // (preserving the inode, which some packages hard-link, e.g.
-                // mandoc's `man` -> `mandoc`): temporarily restore owner-write,
-                // then re-apply the original mode so the published artifact
-                // keeps its executable/read-only bits.
-                #[cfg(unix)]
-                let restore_mode = {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mode = std::fs::metadata(&member)
-                        .map_err(|error| {
-                            format!(
-                                "{}: stat stamped wasm output {}: {error}",
-                                target.spec(),
-                                member.display()
-                            )
-                        })?
-                        .permissions()
-                        .mode();
-                    if mode & 0o200 == 0 {
-                        std::fs::set_permissions(
-                            &member,
-                            std::fs::Permissions::from_mode(mode | 0o200),
-                        )
-                        .map_err(|error| {
-                            format!(
-                                "{}: make stamped wasm output writable {}: {error}",
-                                target.spec(),
-                                member.display()
-                            )
-                        })?;
-                        Some(mode)
-                    } else {
-                        None
-                    }
-                };
-                std::fs::write(&member, stamped).map_err(|error| {
-                    format!(
-                        "{}: write stamped wasm output {}: {error}",
-                        target.spec(),
-                        member.display()
-                    )
-                })?;
-                #[cfg(unix)]
-                if let Some(mode) = restore_mode {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&member, std::fs::Permissions::from_mode(mode))
-                        .map_err(|error| {
-                            format!(
-                                "{}: restore stamped wasm output mode {}: {error}",
-                                target.spec(),
-                                member.display()
-                            )
-                        })?;
-                }
-            }
+        if target.kind == ManifestKind::Program && !shared_memory_outputs::enabled(target) {
+            stamp_program_outputs(target, &tmp, repo_root, abi_version, cache_key_sha)?;
         }
+
     }
 
     if policy == ResolvePolicy::Default {
@@ -15789,6 +15989,14 @@ fn wasm_artifact_policy_failures_for(
     fork_instrumentation: ForkInstrumentationPolicy,
     required_exports: &[&str],
 ) -> Vec<String> {
+    wasm_artifact_policy_failures_with_extensions(bytes, fork_instrumentation, required_exports,
+        wasm_artifact::program_extensions::IMPLEMENTED)
+}
+
+fn wasm_artifact_policy_failures_with_extensions(
+    bytes: &[u8], fork_instrumentation: ForkInstrumentationPolicy,
+    required_exports: &[&str], supported: &[&str],
+) -> Vec<String> {
     if !is_wasm_bytes(bytes) {
         if required_exports.is_empty() {
             return Vec::new();
@@ -15826,7 +16034,7 @@ fn wasm_artifact_policy_failures_for(
     // executable/side module uses the shared process import audit, including
     // cache admission and direct installation, before publication.
     if required_exports != wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS {
-        match crate::package_imports::failures(bytes, &crate::repo_root()) {
+        match crate::package_imports::failures_with_extensions(bytes, &crate::repo_root(), supported) {
             Ok(import_failures) => failures.extend(import_failures),
             Err(error) => failures.push(format!("process import audit: {error}")),
         }
@@ -17288,6 +17496,7 @@ pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Res
                     out.fork_instrumentation,
                     required_exports_for_program_output(target, out),
                 )?;
+                shared_memory_outputs::validate(target, out, dir)?;
                 if let Some(original) = &out.original_wasm {
                     let original_path = validate_declared_artifact(target, dir, original,
                         "original Wasm", "missing from cache entry", true)?;
@@ -17431,6 +17640,7 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
                     out.fork_instrumentation,
                     required_exports_for_program_output(target, out),
                 )?;
+                shared_memory_outputs::validate(target, out, out_dir)?;
             }
             for runtime_file in &target.runtime_files {
                 validate_declared_artifact(
@@ -18977,6 +19187,9 @@ fn install_local_artifact(
         session,
     )?;
 
+    if !claimed_before_member {
+        shared_memory_outputs::finalize(manifest, &generation, arch, true)?;
+    }
     let present = validate_local_generation_tree(manifest, &generation, &expected)?;
     if present < expected.len() {
         if claimed_before_member {
@@ -26115,6 +26328,76 @@ spdx = "TestLicense"
         .unwrap()
     }
 
+    #[test]
+    fn cache_key_sha_covers_declared_fictions_but_not_their_reason() {
+        let root = tempdir("sha-prog-fictions");
+        let reg = Registry { roots: vec![root.clone()] };
+        let outputs = "[[outputs]]\nname = \"app\"\nwasm = \"app.wasm\"\n";
+        let declare = |reason: &str, config: &str| {
+            format!("{outputs}\n[[fictions]]\nname = \"mprotect\"\nreason = \"{reason}\"\nconfig = {config}\n")
+        };
+        write_program_manifest(&root, "app", "1.0", outputs);
+        let none = sha_of(&reg, "app");
+        write_program_manifest(&root, "app", "1.0", &declare("guards", "{ prot_none = \"accept-unenforced\" }"));
+        let declared = sha_of(&reg, "app");
+        assert_ne!(none, declared, "declaring a fiction must change the key");
+        write_program_manifest(&root, "app", "1.0", &declare("other words", "{ prot_none = \"accept-unenforced\" }"));
+        assert_eq!(declared, sha_of(&reg, "app"), "the reason is free text");
+        write_program_manifest(
+            &root,
+            "app",
+            "1.0",
+            &declare("guards", "{ prot_none = \"accept-unenforced\", prot_none_max = 65536 }"),
+        );
+        assert_ne!(declared, sha_of(&reg, "app"), "the config must change the key");
+    }
+
+    #[test]
+    fn fiction_declarations_are_checked_against_the_registry() {
+        use crate::pkg_manifest::FictionDeclaration;
+        let repo = repo_root();
+        let declaration = |config: &str| FictionDeclaration {
+            name: "mprotect".into(),
+            reason: "r".into(),
+            config: toml::from_str(config).unwrap(),
+        };
+        assert_eq!(
+            fiction_declaration_selection(
+                &declaration("prot_none = \"accept-unenforced\"\nprot_none_max = 65536"),
+                &repo
+            )
+            .unwrap(),
+            "mprotect:prot_none=accept-unenforced,prot_none_max=65536"
+        );
+        let error = |config: &str| fiction_declaration_selection(&declaration(config), &repo).unwrap_err();
+        assert!(error("exec = \"accept-unenforced\"").contains("no config key"));
+        assert!(error("prot_none = \"yes\"").contains("one of enotsup, accept-unenforced"));
+        assert!(error("prot_none_max = \"64k\"").contains("byte count"));
+        let unknown = FictionDeclaration { name: "mmap".into(), ..declaration("a = \"b\"") };
+        assert!(fiction_declaration_selection(&unknown, &repo).unwrap_err().contains("not a declared fiction"));
+    }
+
+    /// Every registry package's declarations name real fictions with valid
+    /// configuration, so a typo fails here rather than in a long build.
+    #[test]
+    fn registry_fiction_declarations_are_valid() {
+        let repo = repo_root();
+        let registry = repo.join("packages/registry");
+        let mut declared = 0;
+        for entry in fs::read_dir(&registry).unwrap() {
+            let manifest_path = entry.unwrap().path().join("package.toml");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let manifest = DepsManifest::load(&manifest_path).unwrap();
+            if let Some(selections) = fiction_selections(&manifest, &repo).unwrap() {
+                declared += 1;
+                assert!(!selections.is_empty());
+            }
+        }
+        assert!(declared > 0, "no registry package declares a fiction");
+    }
+
     /// The exact failure mode from PR #384: a program changes its
     /// declared output filename (e.g. `lamp.vfs` → `lamp.vfs.zst`) but
     /// nothing else. Before the fix, cache_key_sha was unchanged so
@@ -26207,6 +26490,97 @@ spdx = "TestLicense"
             sha_before, sha_after,
             "changing a program output's fork instrumentation policy must invalidate the cache key"
         );
+    }
+
+    #[test]
+    fn shared_memory_sources_receive_final_identity_before_derivation() {
+        let root = tempdir("shared-final-source-identity");
+        write_program_manifest(&root, "probe", "1.0.0", r#"[[outputs]]
+name = "probe"
+wasm = "probe.wasm"
+[[outputs]]
+name = "shared"
+wasm = "shared.zip"
+shared_memory_from = "probe"
+fork_instrumentation = "disabled"
+"#);
+        let registry = Registry { roots: vec![root.clone()] };
+        let target = registry.load("probe").unwrap();
+        let output = root.join("output");
+        std::fs::create_dir(&output).unwrap();
+        let source = output.join("probe.wasm");
+        let raw = minimal_executable_wasm();
+        std::fs::write(&source, &raw).unwrap();
+        let key = "a".repeat(64);
+        stamp_program_outputs(&target, &output, &crate::repo_root(), wasm_posix_shared::ABI_VERSION, &key).unwrap();
+        let finalized = std::fs::read(&source).unwrap();
+        assert_ne!(Sha256::digest(&raw), Sha256::digest(&finalized));
+        assert_eq!(crate::build_stamp::read_build_key(&finalized).unwrap(), Some([0xaa; 32]));
+        stamp_program_outputs(&target, &output, &crate::repo_root(), wasm_posix_shared::ABI_VERSION, &key).unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), finalized);
+        assert!(!output.join("shared.zip").exists());
+    }
+
+    #[test]
+    fn shared_memory_import_admission_requires_explicit_backend_policy() {
+        let supported = super::shared_memory_outputs::grouped_program_extensions();
+        for (name, memory, allowed) in [
+            ("memory", "memory 1 2 shared", true),
+            ("wrong", "memory 1 2 shared", false),
+            ("memory", "memory i64 1 2 shared", false),
+            ("memory", "global i32", false),
+        ] {
+            let bytes = wat::parse_str(format!(r#"(module (import "kandelo.memory-group.v3" "{name}" ({memory})))"#)).unwrap();
+            assert!(!wasm_artifact_policy_failures_for(&bytes, ForkInstrumentationPolicy::Auto, &[]).is_empty());
+            assert_eq!(wasm_artifact_policy_failures_with_extensions(&bytes, ForkInstrumentationPolicy::Auto, &[], &supported).is_empty(), allowed);
+        }
+    }
+
+    #[test]
+    fn shared_memory_growth_import_requires_exact_grouped_policy() {
+        use wasm_posix_shared::program_extensions::memory_group_growth_v1 as growth;
+        let supported = super::shared_memory_outputs::grouped_program_extensions();
+        for (module, name, declaration, allowed) in [
+            (growth::MODULE, growth::IMPORT, "func (param i32) (result i32)", true),
+            (growth::MODULE, growth::IMPORT, "func (param i64) (result i32)", false),
+            (growth::MODULE, growth::IMPORT, "func (param i32) (result i64)", false),
+            (growth::MODULE, growth::IMPORT, "global i32", false),
+            (growth::MODULE, "wrong", "func (param i32) (result i32)", false),
+            ("kandelo.memory-group-growth.v2", growth::IMPORT, "func (param i32) (result i32)", false),
+        ] {
+            let bytes = wat::parse_str(format!(r#"(module
+                (import "kandelo.memory-group.v3" "memory" (memory 1 2 shared))
+                (import "{module}" "{name}" ({declaration})))"#)).unwrap();
+            let ordinary = wat::parse_str(format!(r#"(module
+                (import "{module}" "{name}" ({declaration}))
+                (memory 1 2 shared))"#)).unwrap();
+            assert!(!wasm_artifact_policy_failures_for(&ordinary, ForkInstrumentationPolicy::Auto, &[]).is_empty());
+            assert_eq!(wasm_artifact_policy_failures_with_extensions(&bytes,
+                ForkInstrumentationPolicy::Auto, &[], &supported).is_empty(), allowed);
+        }
+    }
+
+    #[test]
+    fn shared_memory_source_binding_changes_cache_identity() {
+        let root = tempdir("shared-source-cache-key");
+        write_program_manifest(&root, "probe", "1.0.0", r#"[[outputs]]
+name = "one"
+wasm = "one.wasm"
+[[outputs]]
+name = "two"
+wasm = "two.wasm"
+[[outputs]]
+name = "shared"
+wasm = "shared.zip"
+shared_memory_from = "one"
+fork_instrumentation = "disabled"
+"#);
+        let registry = Registry { roots: vec![root.clone()] };
+        let before = sha_of(&registry, "probe");
+        let path = root.join("probe/package.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace(r#"shared_memory_from = "one""#, r#"shared_memory_from = "two""#)).unwrap();
+        assert_ne!(before, sha_of(&registry, "probe"));
     }
 
     #[test]

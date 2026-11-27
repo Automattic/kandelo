@@ -51,6 +51,12 @@ kandelo_package_stage_primary_source openssl "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 echo "==> Configuring OpenSSL for $TARGET_ARCH..."
+# no-secure-memory: the secure heap (crypto/mem_sec.c) brackets its arena
+# with PROT_NONE guard pages, which WebAssembly memory cannot enforce, and
+# would link mprotect() into every consumer of libcrypto. Without it,
+# CRYPTO_secure_malloc_init() reports the secure heap unavailable (0) and
+# OPENSSL_secure_malloc() is ordinary heap memory, as on other platforms
+# without one. See README.md.
 CC="$CC" AR="$AR" RANLIB="$RANLIB" \
 CFLAGS="-O2" \
 perl Configure "$CONFIGURE_TARGET" \
@@ -69,6 +75,7 @@ perl Configure "$CONFIGURE_TARGET" \
     no-tests \
     no-apps \
     no-posix-io \
+    no-secure-memory \
     --prefix=/usr \
     --openssldir=/etc/ssl \
     --libdir=lib

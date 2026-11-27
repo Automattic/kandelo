@@ -311,6 +311,18 @@ pub fn stat(handle: i64, host: &mut dyn HostIO) -> Result<WasmStat, Errno> {
     Ok(stat)
 }
 
+/// The public executable is the ordinary source for SDK group derivations.
+/// Execution and commit still retain the private implementation pair.
+pub(crate) fn visible_executable_handle(handle: i64) -> Result<i64, Errno> {
+    if !is_executable_handle(handle) { return Ok(handle); }
+    EXECUTABLES.with(|table| {
+        let pair = table.get(index(handle)?).ok_or(Errno::EBADF)?;
+        Ok(if pair.source_binding.is_some_and(|binding| binding.expose_source) {
+            pair.source.handle
+        } else { handle })
+    })
+}
+
 pub fn source_handle(handle: i64) -> Result<i64, Errno> {
     Ok(constituents(handle)?.0.handle)
 }

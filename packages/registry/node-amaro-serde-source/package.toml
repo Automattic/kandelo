@@ -1,0 +1,12 @@
+kind = "source"
+name = "node-amaro-serde-source"
+version = "0.6.5"
+
+[source]
+provider = "archive"
+url = "https://static.crates.io/crates/serde-wasm-bindgen/serde-wasm-bindgen-0.6.5.crate"
+sha256 = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/RReverser/serde-wasm-bindgen/blob/v0.6.5/LICENSE"

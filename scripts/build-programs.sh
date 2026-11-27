@@ -13,15 +13,19 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # current directory -- findSysroot and findGlueDir, both through
 # projectRootOrSdk/find_project_root in crates/kandelo-cc/src/toolchain.rs -- not from
 # this script's location. Invoked with a cwd inside a different Kandelo
-# checkout, it would silently compile against THAT checkout's sysroot while
-# the prerequisite check below validated this one. Pin the cwd so both agree.
-#
-# Do not "fix" this by exporting WASM_POSIX_SYSROOT instead: findSysroot()
-# returns that value before its arch-aware lookup, which would hand the
-# wasm64 build the wasm32 sysroot.
+# checkout, it could use that checkout's SDK inputs. Pin the cwd so package
+# resolves and the wasm64 compiler use this checkout.
 cd "$REPO_ROOT"
+SDK_SYSROOT="$REPO_ROOT/sysroot"
+# Fixture links and source builds such as gtk3 need the full SDK.
+for archive in libc libdrm libgbm libEGL libGLESv2; do
+    if [ ! -f "$SDK_SYSROOT/lib/$archive.a" ]; then
+        echo "Error: SDK sysroot is missing $SDK_SYSROOT/lib/$archive.a. Run ./run.sh setup first." >&2
+        exit 1
+    fi
+done
+
 python3 "$REPO_ROOT/scripts/build-program-baseline.py"
-SYSROOT="$REPO_ROOT/sysroot"
 BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
 BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
 # shellcheck source=/dev/null
@@ -169,22 +173,26 @@ LLVM_BIN="$(find_llvm_bin)"
 # name -- so `CC=.../wasm32posix-cc` would reach every child process,
 # including the host `cargo run -p xtask` calls below, whose cc-rs build
 # scripts would then try to compile host objects with a wasm cross-compiler.
-WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 WASM64_CC="$REPO_ROOT/sdk/bin/wasm64posix-cc"
-WASM32_CXX="$REPO_ROOT/sdk/bin/wasm32posix-c++"
 WASM64_CXX="$REPO_ROOT/sdk/bin/wasm64posix-c++"
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 
-# Verify prerequisites
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
-    exit 1
-fi
+# Stage fixture libraries over a fresh SDK copy so package builds see only
+# their declared dependencies and the shared SDK. Dereference any links in
+# the copy so staging cannot write through them into the shared tree.
+SYSROOT="$(mktemp -d "$TEST_FIXTURE_DIR/.sysroot-wasm32.XXXXXX")"
+trap 'rm -rf "$SYSROOT"' EXIT
+cp -RL "$SDK_SYSROOT/." "$SYSROOT/"
+
+# Scope the override to wasm32 fixture compiles. Package resolves and wasm64
+# fixture compiles continue to select their own SDK sysroots.
+WASM32_CC=(env "WASM_POSIX_SYSROOT=$SYSROOT" "$REPO_ROOT/sdk/bin/wasm32posix-cc")
+WASM32_CXX=(env "WASM_POSIX_SYSROOT=$SYSROOT" "$REPO_ROOT/sdk/bin/wasm32posix-c++")
 
 # Everything the SDK already supplies is deliberately absent here. Its
 # compile_flags() (crates/kandelo-cc/src/flags.rs) owns --target, -matomics,
 # -mbulk-memory, -mexception-handling, -fno-trapping-math and the -mllvm SjLj
-# / modern-EH pair; cc.ts adds --sysroot from the resolved toolchain; its
+# / modern-EH pair and adds --sysroot from the selected toolchain; its
 # executable link injects the syscall glue (channel_syscall.c, compiler_rt.c,
 # cxxrt.c), crt1.o, the sysroot libc.a and link_flags(). Per-program archives
 # passed after the sources still land BEFORE libc.a: the SDK forwards caller
@@ -250,12 +258,7 @@ build_program() {
     # unless the program references them, so this is a no-op for
     # non-GL programs even if the archives are appended.
     if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](EGL|GLES[23]?)/' "$src" 2>/dev/null; then
-        if [ -f "$SYSROOT/lib/libEGL.a" ] && [ -f "$SYSROOT/lib/libGLESv2.a" ]; then
-            extra_libs+=("$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a")
-        else
-            echo "  Skipping $name: GL archives missing — run scripts/build-gles-stubs.sh." >&2
-            return 0
-        fi
+        extra_libs+=("$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a")
     fi
 
     echo "  Compiling $name..."
@@ -265,7 +268,7 @@ build_program() {
     # Bash 3.2 (macOS system bash) under `set -u` treats expansion of
     # an empty array as unbound; the `${arr[@]+...}` guard suppresses
     # that when extra_libs is empty.
-    "$WASM32_CC" "${CFLAGS[@]}" "$src" \
+    "${WASM32_CC[@]}" "${CFLAGS[@]}" "$src" \
         ${extra_libs[@]+"${extra_libs[@]}"} \
         -o "$raw_wasm"
 
@@ -300,7 +303,7 @@ build_cpp_program() {
     # C++ compile (docs/sdk-guide.md, "C++ exceptions"), so these fixtures,
     # including the fork-in-try/catch ones, build the way user software does.
     # shellcheck disable=SC2046
-    "$WASM32_CXX" \
+    "${WASM32_CXX[@]}" \
         -O2 \
         $(libcxx_flags "$LIBCXX_PREFIX_32") \
         "$src" \
@@ -312,7 +315,7 @@ build_cpp_program() {
     if [ "$name" = "sjlj_noexcept_boundary" ]; then
         mkdir -p "$TEST_FIXTURE_DIR/wasm32"
         # shellcheck disable=SC2046
-        "$WASM32_CXX" \
+        "${WASM32_CXX[@]}" \
             -O2 \
             -DKANDELO_SJLJ_NO_FORK_ANCHOR \
             $(libcxx_flags "$LIBCXX_PREFIX_32") \
@@ -330,14 +333,7 @@ build_cpp_program() {
     rm -f "$raw_wasm"
 }
 
-# Copy one resolved artifact into the shared sysroot as a regular file.
-#
-# Never symlink it: kandelo_package_require_regular_input_tree rejects any
-# private-sysroot seed that contains a symlink, so one symlink planted here
-# fails every later package that seeds its private sysroot from this one
-# (kandelo-sdk first). `rm -f` first matters too -- cp onto an existing
-# symlink writes THROUGH it, into the resolver cache it points at. This is
-# the same rm-then-cp shape the SDL2 staging uses.
+# Copy resolved artifacts into the fixture sysroot as regular files.
 stage_sysroot_file() {
     rm -f "$2"
     cp "$1" "$2"
@@ -406,9 +402,8 @@ if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
         build-deps resolve sdl2 >/dev/null)
     SDL2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask \
         --target "$HOST_TRIPLE" --quiet -- build-deps path sdl2)"
-    cp "$SDL2_PREFIX/lib/libSDL2.a" "$SYSROOT/lib/libSDL2.a"
-    rm -rf "$SYSROOT/include/SDL2"
-    cp -R "$SDL2_PREFIX/include/SDL2" "$SYSROOT/include/SDL2"
+    stage_sysroot_file "$SDL2_PREFIX/lib/libSDL2.a" "$SYSROOT/lib/libSDL2.a"
+    stage_sysroot_tree "$SDL2_PREFIX/include/SDL2" "$SYSROOT/include/SDL2"
 fi
 
 # Resolve libwayland (+ its deps libffi + wayland-protocols) and copy
@@ -945,7 +940,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # shows up where it belongs: these fixtures must FAIL to link on
             # exactly those symbols. If one ever links, revisit the boundary.
             local_log="$(mktemp)"
-            if "$WASM32_CC" "${CFLAGS[@]}" "$src" \
+            if "${WASM32_CC[@]}" "${CFLAGS[@]}" "$src" \
                     -o "$(mktemp -d)/ucontext.wasm" >"$local_log" 2>&1; then
                 echo "Error: $(basename "$src") linked, but ucontext is documented as unsupported" >&2
                 rm -f "$local_log"; exit 1
@@ -976,7 +971,7 @@ done
 if [ -n "$LIBINPUT_REAL_PREFIX" ] && [ -f "$REPO_ROOT/programs/libinput_smoke.c" ]; then
     libinput_wasm="$OUT_DIR_32/libinput_smoke.wasm"
     echo "  Compiling libinput_smoke (real libinput 1.25.0)..."
-    "$WASM32_CC" "${CFLAGS[@]}" "-I$LIBINPUT_REAL_PREFIX/include" \
+    "${WASM32_CC[@]}" "${CFLAGS[@]}" "-I$LIBINPUT_REAL_PREFIX/include" \
         "$REPO_ROOT/programs/libinput_smoke.c" \
         "$LIBINPUT_REAL_PREFIX/lib/libinput.a" \
         "$LIBINPUT_LIBEVDEV_PREFIX/lib/libevdev.a" \
@@ -1142,7 +1137,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     else
         comp_wasm="$OUT_DIR_32/wlcompositor.wasm"
         echo "  Compiling wlcompositor (server)..."
-        "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
+        "${WASM32_CC[@]}" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
             "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
             "$WLC_GEN/xdg-shell-protocol.c" \
             "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
@@ -1176,7 +1171,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Client.
     client_wasm="$OUT_DIR_32/wlclient-test.wasm"
     echo "  Compiling wlclient-test (client)..."
-    "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+    "${WASM32_CC[@]}" "${CFLAGS[@]}" "-I$WLC_GEN" \
         "$REPO_ROOT/programs/wlcompositor/wlclient-test.c" \
         "$WLC_GEN/xdg-shell-protocol.c" \
         "$WLC_GEN/xdg-decoration-v1-protocol.c" \
@@ -1201,7 +1196,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     if [ -f "$REPO_ROOT/programs/wlcompositor/kwlctl.c" ]; then
         kwlctl_wasm="$OUT_DIR_32/kwlctl.wasm"
         echo "  Compiling kwlctl (control CLI)..."
-        "$WASM32_CC" "${CFLAGS[@]}" \
+        "${WASM32_CC[@]}" "${CFLAGS[@]}" \
             "$REPO_ROOT/programs/wlcompositor/kwlctl.c" \
             -o "$kwlctl_wasm"
         "$FORK_INSTRUMENT" "$kwlctl_wasm" -o "$kwlctl_wasm.instr"
@@ -1215,7 +1210,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     if [ -f "$REPO_ROOT/programs/wlcompositor/wlclip-test.c" ]; then
         clip_wasm="$OUT_DIR_32/wlclip-test.wasm"
         echo "  Compiling wlclip-test (clipboard client)..."
-        "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+        "${WASM32_CC[@]}" "${CFLAGS[@]}" "-I$WLC_GEN" \
             "$REPO_ROOT/programs/wlcompositor/wlclip-test.c" \
             "$WLC_GEN/xdg-shell-protocol.c" \
             "$WLC_GEN/wlr-data-control-v1-protocol.c" \
@@ -1235,7 +1230,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     if [ -f "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" ]; then
         dmabuf_wasm="$OUT_DIR_32/wldmabuf-test.wasm"
         echo "  Compiling wldmabuf-test (dmabuf client)..."
-        "$WASM32_CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+        "${WASM32_CC[@]}" "${CFLAGS[@]}" "-I$WLC_GEN" \
             "$REPO_ROOT/programs/wlcompositor/wldmabuf-test.c" \
             "$WLC_GEN/xdg-shell-protocol.c" \
             "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
@@ -1281,7 +1276,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
         package_owns_program_output wasm32 "$kwl_app.wasm" && continue
         kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
         echo "  Compiling $kwl_app (libkwl client)..."
-        "$WASM32_CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+        "${WASM32_CC[@]}" "${CFLAGS[@]}" "-I$KWL_GEN" \
             "$REPO_ROOT/programs/$kwl_app.c" \
             "$KWL_GEN/xdg-shell-protocol.c" \
             "$KWL_GEN/xdg-decoration-v1-protocol.c" \
@@ -1314,7 +1309,7 @@ if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1 &&
     fi
     echo "==> Building wlterm (libkwl terminal + VT100 + forkpty)..."
     wlterm_wasm="$OUT_DIR_32/wlterm.wasm"
-    "$WASM32_CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+    "${WASM32_CC[@]}" "${CFLAGS[@]}" "-I$KWL_GEN" \
         "$REPO_ROOT/programs/wlterm/wlterm.c" \
         "$REPO_ROOT/programs/wlterm/vt100.c" \
         "$KWL_GEN/xdg-shell-protocol.c" \
@@ -1392,7 +1387,7 @@ PY
         echo "  Skipping sdl2: package resolver owns wasm32/sdl2.wasm"
     else
         echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
-        "$WASM32_CC" "${CFLAGS[@]}" -I"$REPO_ROOT/third_party" "${sdl2_sources[@]}" \
+        "${WASM32_CC[@]}" "${CFLAGS[@]}" -I"$REPO_ROOT/third_party" "${sdl2_sources[@]}" \
             "$SYSROOT/lib/libSDL2.a" \
             "$SYSROOT/lib/libwayland-client.a" \
             "$SYSROOT/lib/libwayland-egl.a" \
@@ -1411,6 +1406,9 @@ fi
 echo "Building example programs..."
 for src in "$REPO_ROOT/examples/"*.c; do
     [ -f "$src" ] || continue
+    # Skip mprotect_fiction_test.c — mprotect() does not link by default, so
+    # host/test/mprotect-fiction.test.ts builds it once per fiction selection
+    [ "$(basename "$src")" = "mprotect_fiction_test.c" ] && continue
     build_program "$src" "$REPO_ROOT/examples"
 done
 

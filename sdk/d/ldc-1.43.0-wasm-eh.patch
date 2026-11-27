@@ -1,3 +1,33 @@
+# LDC 1.43.0: keep D and C++ Wasm exception handling apart in one program.
+#
+# Applied by sdk/d/build.sh after ldc-1.43.0-kandelo.patch.
+#
+# Purpose: LLVM lowers every Wasm catch to calls to
+# _Unwind_CallPersonality and to the __wasm_lpad_context TLS slot.
+# DRuntime defines those names itself (rt/dwarfeh.d) with the D
+# personality, and LLVM's libunwind, linked with libc++abi, defines them
+# with the C++ personality. A program that links both cannot link, or
+# would dispatch one language's exceptions through the other's
+# personality.
+#
+# - driver/toobj.cpp: for a Kandelo Wasm target, after LLVM's WasmEHPrepare
+#   pass, rename those references in D code to __ldc_d_wasm_call_personality
+#   and __ldc_d_wasm_lpad_context.
+# - rt/dwarfeh.d: on Kandelo, DRuntime defines its personality, landing-pad
+#   context and delete function under those private names.
+# - ldc/eh_asm.S, runtime/CMakeLists.txt: D and C++ throw with the one
+#   __cpp_exception tag, so a program needs exactly one definition. With
+#   LLVM 22, objects only reference the tag. DRuntime's eh_asm.S defines it
+#   for D-only programs, and LLVM's libunwind (Unwind-wasm.c) defines it
+#   too, so linking both failed with a duplicate symbol (ldc2 itself). On
+#   Kandelo, DRuntime's definition is weak and libunwind's wins.
+#
+# Justification: LLVM has no per-function personality for Wasm (the
+# upstream TODO this patch replaces). That is a toolchain limit, not a
+# Kandelo gap. sdk/d/test/mixed_exceptions.{d,cpp} cover both languages
+# throwing and catching in one executable. Drop this patch when LLVM's Wasm
+# EH lowering takes the personality from the function, as it does on other
+# targets.
 --- a/driver/toobj.cpp
 +++ b/driver/toobj.cpp
 @@ -34,6 +34,7 @@
@@ -80,6 +110,40 @@
 
    // Add internal analysis passes from the target machine.
    Passes.add(
+--- a/runtime/CMakeLists.txt
++++ b/runtime/CMakeLists.txt
+@@ -262,6 +262,13 @@
+     )
+ endif()
+
++# Kandelo links D with the C++ unwinder, which also defines the Wasm
++# exception tag; see src/ldc/eh_asm.S.
++if("${TARGET_SYSTEM}" MATCHES "Kandelo")
++    set_source_files_properties(${RUNTIME_DIR}/src/ldc/eh_asm.S PROPERTIES
++        COMPILE_DEFINITIONS LDC_KANDELO_WEAK_CPP_EXCEPTION_TAG)
++endif()
++
+ if(PHOBOS2_DIR)
+     # Phobos D parts
+     file(GLOB_RECURSE PHOBOS2_D_ETC ${PHOBOS2_DIR}/etc/*.d)
+--- a/runtime/druntime/src/ldc/eh_asm.S
++++ b/runtime/druntime/src/ldc/eh_asm.S
+@@ -54,7 +54,15 @@
+
+ // TODO: remove this when we can link against libunwind
+ #if __wasm__
++#ifdef LDC_KANDELO_WEAK_CPP_EXCEPTION_TAG
++// Kandelo: D and C++ throw with this one tag. Since LLVM 22, objects only
++// reference it, and LLVM's libunwind (Unwind-wasm.c) defines it. A D-only
++// program does not link libunwind, so DRuntime still supplies the tag; a
++// program that also links the C++ unwinder uses libunwind's definition.
++.weak __cpp_exception
++#else
+ .globl __cpp_exception
++#endif
+
+ #if defined(__wasm32__)
+     .tagtype __cpp_exception i32
 --- a/runtime/druntime/src/rt/dwarfeh.d
 +++ b/runtime/druntime/src/rt/dwarfeh.d
 @@ -652,11 +652,20 @@

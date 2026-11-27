@@ -1,0 +1,61 @@
+# Kandelo patch rationale (S39)
+# Judgment: Supported. Keep the measurement accessor because the inspected
+# stock statistics omit the profiler-owned memory that Node’s API must
+# report.
+#
+# Node's engine statistics need actual profiler-label and source-table
+# memory usage. The inspected stock statistics do not expose this complete
+# quantity. Keep a small engine measurement instead of a guessed or
+# constant bridge value; the OS cannot distinguish these internal owners.
+# Prefer adding the same measurement to a standard engine statistics API
+# when possible.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/js/src/vm/GeckoProfiler.h
++++ b/js/src/vm/GeckoProfiler.h
+@@ -8,6 +8,7 @@
+ #include "mozilla/Attributes.h"
+ #include "mozilla/BaseProfilerMarkersPrerequisites.h"
+ #include "mozilla/DebugOnly.h"
++#include "mozilla/MemoryReporting.h"
+ #include "mozilla/TimeStamp.h"
+
+ #include <stddef.h>
+@@ -170,6 +171,10 @@
+       const char* markerName, uint64_t flowId,
+       JS::ProfilingCategoryPair jsPair = JS::ProfilingCategoryPair::JS);
+
++  // Native memory reporting; counts owned tables and labels, not retained
++  // ScriptSource payloads already covered by the runtime source reporter.
++  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
++
+   // Test interface. Don't call these in normal code.
+   size_t stringsCount();
+   void stringsReset();
+--- a/js/src/vm/GeckoProfiler.cpp
++++ b/js/src/vm/GeckoProfiler.cpp
+@@ -425,6 +425,23 @@
+       profilingStack_->frames[i].trace(trc);
+     }
+   }
++}
++
++size_t GeckoProfilerRuntime::sizeOfExcludingThis(
++    mozilla::MallocSizeOf mallocSizeOf) {
++  size_t bytes = scriptSources_.readLock()->shallowSizeOfExcludingThis(mallocSizeOf);
++  for (AllZonesIter zone(rt); !zone.done(); zone.next()) {
++    if (!zone->profilerStrings) {
++      continue;
++    }
++    bytes += mallocSizeOf(zone->profilerStrings.get());
++    const ProfileStringMap& strings = zone->profilerStrings->get();
++    bytes += strings.shallowSizeOfExcludingThis(mallocSizeOf);
++    for (auto iter = strings.iter(); !iter.done(); iter.next()) {
++      bytes += mallocSizeOf(iter.get().value().get());
++    }
++  }
++  return bytes;
+ }
+
+ size_t GeckoProfilerRuntime::stringsCount() {

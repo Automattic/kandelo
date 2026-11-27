@@ -27,6 +27,9 @@ pub fn compile_flags(arch: WasmArch) -> Vec<String> {
             "-mllvm",
             "-wasm-use-legacy-eh=false",
             "-fno-trapping-math",
+            // An upstream -Werror build still gets a diagnostic for this cast.
+            "-Wcast-function-type-strict",
+            "-Wno-error=cast-function-type-strict",
         ]
         .map(String::from),
     );
@@ -257,10 +260,12 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
     let len = chars.len();
     let mut tokens = Vec::new();
     let mut token = String::new();
+    // Quotes can start an empty argument; payload length alone loses it.
+    let mut token_started = false;
 
     let mut i = 0;
     while i < len {
-        if token.is_empty() {
+        if !token_started {
             while i < len && is_gnu_response_whitespace(chars[i]) {
                 i += 1;
             }
@@ -270,6 +275,9 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
         }
 
         let c = chars[i];
+        if !is_gnu_response_whitespace(c) {
+            token_started = true;
+        }
         if c == '\\' && i + 1 < len {
             i += 1;
             token.push(chars[i]);
@@ -295,8 +303,9 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
         }
 
         if is_gnu_response_whitespace(c) {
-            if !token.is_empty() {
+            if token_started {
                 tokens.push(std::mem::take(&mut token));
+                token_started = false;
             }
             i += 1;
             continue;
@@ -306,7 +315,7 @@ pub fn tokenize_gnu_response_file(source: &str) -> Vec<String> {
         i += 1;
     }
 
-    if !token.is_empty() {
+    if token_started {
         tokens.push(token);
     }
     tokens
@@ -553,6 +562,33 @@ pub fn link_flags(
 }
 
 /// Link flags for building shared Wasm libraries (.so side modules).
+/// The visibility a compile gets unless the caller chooses one.
+///
+/// Unix visibility for code that can only end up in an executable. Clang
+/// gives WebAssembly symbols hidden visibility unless told otherwise, so
+/// -rdynamic and -Wl,--export-dynamic, which export default-visibility
+/// symbols, exported nothing a plugin could call. An executable's code is
+/// the same either way: only its export set under --export-dynamic
+/// changes. A caller's own -fvisibility, later on the command line, wins.
+///
+/// Position-independent compiles (-fPIC, -fpic, -shared) keep Clang's
+/// hidden default, because such code may become a side module: wasm-ld
+/// imports a side module's own weak default-visibility definitions (inline
+/// functions, template instances, implicit virtual destructors) so another
+/// module's copy can win, and the loader resolves imports only against the
+/// program and other modules. Hidden, the module binds them to its own
+/// copies, as it always has. PIC code linked into an executable is
+/// therefore not exported unless it declares default visibility.
+pub fn default_visibility_flags(parsed: &ParsedArgs) -> Vec<String> {
+    let position_independent =
+        parsed.pic || parsed.shared || parsed.forwarded_args.iter().any(|arg| arg == "-fpic");
+    if position_independent {
+        Vec::new()
+    } else {
+        vec!["-fvisibility=default".to_string()]
+    }
+}
+
 pub fn shared_link_flags() -> Vec<String> {
     [
         // Side modules keep --allow-undefined: their undefined symbols are
@@ -586,7 +622,6 @@ const IGNORED_EXACT: &[&str] = &[
     // regardless of command-line order. Meson emits them.
     "-Wl,--start-group",
     "-Wl,--end-group",
-    "-rdynamic",
     "-Wl,-Bsymbolic",
     "-Wl,-z,noexecstack",
     "-Wl,-z,text",
@@ -642,6 +677,14 @@ pub fn filter_args(args: &[String], arch: WasmArch) -> FilterResult {
             i += 1;
             continue;
         }
+        // -rdynamic: export the executable's symbols to the modules it
+        // loads. wasm-ld spells that --export-dynamic; it exports
+        // default-visibility symbols, which compile_flags makes the default.
+        if arg == "-rdynamic" {
+            filtered.push("-Wl,--export-dynamic".into());
+            i += 1;
+            continue;
+        }
         if WARN_FLAGS.contains(&arg.as_str()) {
             warnings.push(format!(
                 "{prefix}-cc: warning: {arg} is not supported for Wasm targets (ignored)"
@@ -665,6 +708,8 @@ pub struct ParsedArgs {
     pub pic: bool,
     pub link_dl: bool,
     pub thread_slots: Option<i64>,
+    /// `--kandelo-fiction` selections, unvalidated (`crate::fictions`).
+    pub fictions: Vec<String>,
     pub output_file: Option<String>,
     pub source_files: Vec<String>,
     pub object_files: Vec<String>,
@@ -740,6 +785,17 @@ pub fn parse_args(args: &[String]) -> Result<ParsedArgs> {
                 Some(value),
                 "--wasm-posix-thread-slots",
             )?);
+        } else if arg == crate::fictions::FLAG {
+            i += 1;
+            match args.get(i) {
+                Some(value) => result.fictions.push(value.clone()),
+                None => return Err(format!("{arg} requires a fiction selection")),
+            }
+        } else if let Some(value) = arg
+            .strip_prefix(crate::fictions::FLAG)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            result.fictions.push(value.to_string());
         } else if arg == "-E" {
             result.preprocess_only = true;
         } else if arg == "-S" {
@@ -791,7 +847,9 @@ pub fn needs_linking(parsed: &ParsedArgs) -> bool {
     {
         return true;
     }
-    !parsed.source_files.is_empty() || !parsed.object_files.is_empty()
+    !parsed.source_files.is_empty()
+        || !parsed.object_files.is_empty()
+        || !parsed.archive_files.is_empty()
 }
 
 pub const THREAD_SLOT_USE_HOST_DEFAULT: i64 = -1;
@@ -1003,6 +1061,16 @@ mod tests {
             strings(&["unterminated"])
         );
         assert_eq!(tokenize_gnu_response_file("x\\"), strings(&["x\\"]));
+    }
+
+    #[test]
+    fn tokenizer_preserves_empty_quoted_arguments() {
+        assert_eq!(
+            tokenize_gnu_response_file(r#"-I "" source.c '' 'a'"" ""b '' ''"#),
+            strings(&["-I", "", "source.c", "", "a", "b", "", ""])
+        );
+        assert_eq!(tokenize_gnu_response_file(r#""""#), strings(&[""]));
+        assert_eq!(tokenize_gnu_response_file("  \n\t"), Vec::<String>::new());
     }
 
     #[test]

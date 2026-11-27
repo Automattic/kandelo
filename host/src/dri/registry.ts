@@ -16,11 +16,16 @@ function mappingMemoryBuffer(memory: WebAssembly.Memory): ArrayBuffer {
  * Address-space retirement removes mappings only; only the kernel's final
  * destroy notification releases storage.
  *
- * Wasm memories cannot alias the same bytes. At map/unmap, device submission,
- * cursor/scanout presentation and imported-read readiness boundaries, merge
- * changed bytes from each mapping's private snapshot into canonical storage.
- * An unchanged reader cannot overwrite a newer writer. Overlapping unsynchronized
- * writes have no ordering guarantee; applications must synchronize their writers.
+ * Ordinary process memories cannot alias the same bytes. At map/unmap,
+ * device submission, cursor/scanout presentation and imported-read readiness
+ * boundaries, merge each ordinary mapping's changes into canonical storage.
+ * An unchanged reader cannot overwrite a newer writer.
+ *
+ * Grouped mappings already alias a kernel-owned object. Their bindings hold
+ * virtual-address metadata only: device reads copy that object into independent
+ * staging, and device writes publish to the object directly. Never interpret
+ * those virtual addresses as physical Memory offsets or write staging back over
+ * newer guest stores. Applications must synchronize overlapping writers.
  */
 export type GbmBoCreateInput = {
   pid: number;
@@ -32,7 +37,7 @@ export type GbmBoCreateInput = {
 };
 
 export type GbmBoBinding = {
-  /** Offset within the process's wasm Memory. */
+  /** Guest virtual address; grouped bindings never index raw Memory with it. */
   addr: number;
   /** Exact process mapping length, including permitted trailing page padding.
    * Coherence copies are independently clipped to canonical BO storage. */
@@ -110,6 +115,12 @@ type MappingLineage = {
   memory: WebAssembly.Memory | null;
   fragments: Set<InternalBinding>;
 };
+export type GroupBoBacking = Readonly<{ resource: bigint; pages: readonly number[]; length: number }>;
+export type GroupBoObjectIO = {
+  read: (backing: GroupBoBacking, offset: number, output: Uint8Array) => number;
+  write: (backing: GroupBoBacking, offset: number, input: Uint8Array) => number;
+};
+
 type InternalEntry = {
   bo_id: number;
   size: number;
@@ -128,6 +139,8 @@ type InternalEntry = {
   writes: number;
   /** Legacy mutable pixel views cannot report later writes; keep their readers conservative. */
   exposedPixels: boolean;
+  groupBacking?: GroupBoBacking;
+  ordinaryStorage?: boolean;
 };
 
 /** Consulted only for a NEW mapping admission. Later coherence and cleanup
@@ -157,6 +170,28 @@ export class GbmBoRegistry {
   private bindingCounts = new Map<number, number>();
   /** External change observers may inspect but not reenter a staged mutation. */
   private mutating = false;
+  private groupObjectIO: GroupBoObjectIO | null = null;
+
+  setGroupObjectIO(io: GroupBoObjectIO): void { this.groupObjectIO = io; }
+
+  /** Refresh bounded device staging from authoritative group bytes. It is
+   * never a guest alias or a source for a later writeback into the object. */
+  private refreshGroupBytes(entry: InternalEntry, limit = entry.size): void {
+    if (!entry.groupBacking) return;
+    const length = Math.min(entry.size, limit);
+    const canonical = new Uint8Array(entry.sab);
+    const scratch = new Uint8Array(Math.min(65536, length));
+    let changed = false;
+    for (let at = 0; at < length;) {
+      const count = Math.min(scratch.length, length - at);
+      const part = scratch.subarray(0, count);
+      if (this.groupObjectIO?.read(entry.groupBacking, at, part) !== count)
+        this.fault(`GBM BO ${entry.bo_id}: grouped device storage is unavailable`);
+      if (mergeChangedByteRuns(part, 0, canonical, at, canonical, at, count)) changed = true;
+      at += count;
+    }
+    if (changed) entry.writes++;
+  }
 
   private stageLineages(removed: InternalBinding[], added: InternalBinding[]): Map<MappingLineage, Set<InternalBinding>> {
     const staged = new Map<MappingLineage, Set<InternalBinding>>();
@@ -271,6 +306,16 @@ export class GbmBoRegistry {
 
   bind(pid: number, bo_id: number, addr: number, len: number, boOffset = 0,
     allocationLength?: number): number {
+    return this.admitMapping(pid, bo_id, addr, len, boOffset, allocationLength);
+  }
+
+  bindGroup(pid: number, bo_id: number, addr: number, len: number, boOffset: number,
+    allocationLength: number, backing: GroupBoBacking): number {
+    return this.admitMapping(pid, bo_id, addr, len, boOffset, allocationLength, backing);
+  }
+
+  private admitMapping(pid: number, bo_id: number, addr: number, len: number, boOffset: number,
+    allocationLength?: number, backing?: GroupBoBacking): number {
     const entry = this.bos.get(bo_id);
     if (this.mutating || !entry || !Number.isSafeInteger(addr) || !Number.isSafeInteger(len) ||
         !Number.isSafeInteger(boOffset) || addr < 0 || len < 0 || boOffset < 0 ||
@@ -278,6 +323,15 @@ export class GbmBoRegistry {
     if (allocationLength !== undefined && (!Number.isSafeInteger(allocationLength) ||
         allocationLength <= 0 || allocationLength < len || !Number.isSafeInteger(addr + allocationLength))) return -1;
 
+    if (backing) {
+      if (!this.groupObjectIO || typeof backing.resource !== "bigint" || backing.resource <= 0n || backing.resource > 0xffffffffffffffffn ||
+          backing.pages.length * 65536 !== backing.length || backing.pages.some(page => !Number.isInteger(page) || page <= 0 || page >= 16384) ||
+          !Number.isSafeInteger(backing.length) || backing.length !== Math.ceil(entry.size / 65536) * 65536 ||
+          boOffset + len > backing.length || entry.ordinaryStorage ||
+          (entry.groupBacking && (entry.groupBacking.resource !== backing.resource ||
+            entry.groupBacking.length !== backing.length || entry.groupBacking.pages.some((page, at) => page !== backing.pages[at])))) return -1;
+    } else if (entry.groupBacking) return -1;
+    const firstGroupMap = backing && !entry.groupBacking;
     const previousBos = this.bos, previousCounts = this.bindingCounts;
     this.mutating = true;
     let committed = false;
@@ -329,15 +383,17 @@ export class GbmBoRegistry {
       }
       const target = cloneEntry(entry);
       target.pids.add(pid);
+      if (backing) target.groupBacking = Object.freeze({...backing, pages: Object.freeze([...backing.pages])});
+      else target.ordinaryStorage = true;
       // Same-address admission without a VMA replacement is still a new
       // generation. Publish/detach the old object, never silently overwrite it.
       const previous = target.bindingsByPid.get(pid)!.get(addr);
       if (previous) { retiring.push({entry,binding:previous}); unbound.add(bo_id); }
-      const lineage: MappingLineage = {memory:this.getProcessMemory?.(pid) ?? null,
+      const lineage: MappingLineage = {memory:backing ? null : this.getProcessMemory?.(pid) ?? null,
         fragments:new Set()};
       if (lineage.memory) mappingMemoryBuffer(lineage.memory);
-      const admitted: InternalBinding = {pid,addr,len,boOffset,primed:false,lineage,
-        ...allocateByteSnapshot(Math.max(0,Math.min(len,entry.size-boOffset)),lineage.memory)};
+      const admitted: InternalBinding = {pid,addr,len,boOffset,primed:!!backing,lineage,
+        ...allocateByteSnapshot(backing ? 0 : Math.max(0,Math.min(len,entry.size-boOffset)),lineage.memory)};
       target.bindingsByPid.get(pid)!.set(addr, admitted);
       const stagedLineages = this.stageLineages(retiring.map(value => value.binding),
         [...fragments.map(value => value.binding), admitted]);
@@ -361,6 +417,10 @@ export class GbmBoRegistry {
           next.pendingReaders.delete(pid);
         }
       }
+      // The first map transfers any earlier device writes once. A failed
+      // constructor owns an unpublished object that Rust will cancel; an
+      // existing group's live bytes are never replaced from this staging SAB.
+      if (firstGroupMap && this.groupObjectIO!.write(backing!, 0, new Uint8Array(entry.sab)) !== entry.size) return -1;
       this.bos = nextBos;
       this.bindingCounts = nextCounts;
       for (const oldBo of unbound) for (const listener of this.listeners) listener(pid,oldBo,"unbind");
@@ -507,6 +567,7 @@ export class GbmBoRegistry {
     try {
       const e = this.bos.get(bo_id);
       if (!e) return false;
+      if (e.groupBacking) return false; // Direct mappings are already aliased, never primed from a raw Memory.
       const binding = addr === undefined ? this.latestBinding(e,pid) : e.bindingsByPid.get(pid)?.get(addr);
       if (!binding || this.mutating || (binding.lineage.memory !== null && binding.lineage.memory !== memory)) return false;
       const copyLen = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
@@ -539,6 +600,7 @@ export class GbmBoRegistry {
       const targets: {entry: InternalEntry; binding: InternalBinding;
         destination: Uint8Array; source: Uint8Array; length: number}[] = [];
       for (const entry of this.bos.values()) {
+        if (entry.groupBacking) continue;
         const aliases = entry.bindingsByPid.get(pid);
         if (!aliases) continue;
         this.syncToSab(entry.bo_id);
@@ -574,7 +636,7 @@ export class GbmBoRegistry {
     binding: InternalBinding,
     byteLimit = Infinity,
   ): void {
-    if (!binding.primed) return;
+    if (e.groupBacking || !binding.primed) return;
     // Messages are built only on the fault path: this runs at every
     // publication boundary (submit, scanout, readiness).
     const mem = binding.lineage.memory;
@@ -624,19 +686,22 @@ export class GbmBoRegistry {
   /** The canonical bytes' write count (see InternalEntry.writes); call
    * syncToSab first to merge pending CPU writes. Undefined for unknown bos. */
   writeCount(bo_id: number): number | undefined {
-    return this.bos.get(bo_id)?.writes;
+    const entry = this.bos.get(bo_id);
+    return entry?.writes;
   }
 
   /** Direct view onto a bo's canonical pixel SAB. Undefined for unknown bos. */
   pixelView(bo_id: number): Uint8Array | undefined {
     const e = this.bos.get(bo_id);
     if (!e) return undefined;
+    if (e.groupBacking) throw new Error("Direct grouped BO writes require publishDevicePixels");
     e.exposedPixels = true;
     return new Uint8Array(e.sab);
   }
 
   /** Borrow canonical bytes for synchronous device reads. Callers must not
    * mutate or retain this view as a writer; device writes use publishDevicePixels.
+   * syncToSab imports guest CPU changes before consumption, for either backend.
    * pixelView retains the conservative contract for unrestricted mutable views. */
   readPixelView(bo_id: number): Uint8Array | undefined {
     const e = this.bos.get(bo_id);
@@ -650,6 +715,12 @@ export class GbmBoRegistry {
   publishDevicePixels(bo_id: number, pixels: Uint8Array): boolean {
     const e = this.bos.get(bo_id);
     if (!e || pixels.byteLength !== e.size) return false;
+    if (e.groupBacking) {
+      if (this.groupObjectIO?.write(e.groupBacking, 0, pixels) !== e.size) return false;
+      new Uint8Array(e.sab).set(pixels);
+      e.writes++;
+      return true;
+    }
     try {
       const canonical = new Uint8Array(e.sab);
       const targets: {pid: number; length: number; view: Uint8Array; source: Uint8Array; snapshot: Uint8Array}[] = [];
@@ -701,6 +772,7 @@ export class GbmBoRegistry {
   syncToSab(bo_id: number, byteLimit = Infinity): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
+    if (e.groupBacking) { this.refreshGroupBytes(e, byteLimit); return; }
     for (const binding of this.bindings(e)) this.flushMemoryToSab(e, binding, byteLimit);
   }
 
@@ -719,6 +791,7 @@ export class GbmBoRegistry {
     // few processes taking part in buffer sharing.
     if (!this.bindingCounts.has(pid)) return false;
     for (const e of this.bos.values()) {
+      if (e.groupBacking) continue;
       const aliases = e.bindingsByPid.get(pid);
       if (!aliases || ![...aliases.values()].some(binding => binding.primed)) continue;
       if (e.bindingsByPid.size > 1 || aliases.size > 1 || e.pendingReaders.has(pid)) return true;
@@ -730,6 +803,7 @@ export class GbmBoRegistry {
    * view and baseline at a readiness boundary. */
   syncImportsForPid(pid: number, memory: WebAssembly.Memory): void {
     for (const e of this.bos.values()) {
+      if (e.groupBacking) continue;
       const aliases = e.bindingsByPid.get(pid);
       if (!aliases) continue;
       this.syncToSab(e.bo_id);

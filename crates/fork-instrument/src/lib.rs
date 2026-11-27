@@ -15,6 +15,7 @@ pub mod call_graph;
 pub mod contract_inventory;
 pub mod debug_info;
 pub mod facts;
+pub mod indirect_call_report;
 pub mod instrument;
 mod limits;
 pub mod linked_frames;
@@ -187,6 +188,16 @@ pub struct SinkReport {
 /// module outside any fork transaction reports an empty set.
 pub fn sink_report(input: &[u8], opts: &Options) -> Result<SinkReport> {
     native::reports::sinks(input, opts)
+}
+
+/// Why each named function is instrumented: the shortest call chain from it
+/// to the fork entry through instrumented functions, as `(name, edge)` pairs
+/// where `edge` (`call`, `tail-call` or `indirect`) leads to the next entry.
+/// `None` when the function is unknown or not instrumented. Diagnosis only.
+pub type Explanation = (String, Option<Vec<(String, &'static str)>>);
+
+pub fn sink_explain(input: &[u8], opts: &Options, functions: &[String]) -> Result<Vec<Explanation>> {
+    native::reports::explain(input, opts, functions)
 }
 
 fn module_state_descriptor(pointer_width: linked_frames::PointerWidth) -> Vec<u8> {

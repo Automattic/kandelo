@@ -1,0 +1,140 @@
+# Kandelo patch rationale (S34)
+#
+# Node may reuse a compiled cache with a different filename or source
+# origin. Keep the source-map pragma and metadata reset/access operations
+# needed to update real compiler data without reparsing. The complete
+# coordinate-mapping algorithm now lives in bridge code and openly depends
+# on pinned private frontend interfaces. Changing stack strings alone, or
+# rejecting all reusable caches, would change Node behavior.
+#
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
+
+--- a/js/src/vm/JSScript.h
++++ b/js/src/vm/JSScript.h
+@@ -1136,6 +1136,9 @@
+
+   SharedImmutableTwoByteString displayURL_;
+   SharedImmutableTwoByteString sourceMapURL_;
++  // Retain the parser pragma independently when an option overrides it, so
++  // decoded code can apply a different option without recovering source tokens.
++  SharedImmutableTwoByteString sourceMapCommentURL_;
+
+   // A string indicating how this source code was introduced into the system.
+   // This is a constant, statically allocated C string, so does not need memory
+@@ -1293,6 +1296,10 @@
+   [[nodiscard]] bool setSourceMapURL(FrontendContext* fc, const char16_t* url);
+   [[nodiscard]] bool setSourceMapURL(FrontendContext* fc,
+                                      UniqueTwoByteChars&& url);
++  [[nodiscard]] bool setSourceMapCommentURL(FrontendContext* fc,
++                                             const char16_t* url);
++  [[nodiscard]] bool resetDecodedOrigin(
++      FrontendContext* fc, const JS::ReadOnlyCompileOptions& options);
+   bool hasSourceMapURL() const { return bool(sourceMapURL_); }
+   const char16_t* sourceMapURL() { return sourceMapURL_.chars(); }
+
+--- a/js/src/vm/JSScript.cpp
++++ b/js/src/vm/JSScript.cpp
+@@ -2230,6 +2230,34 @@
+
+   displayURL_ = getOrCreateStringZ(fc, std::move(url));
+   return bool(displayURL_);
++}
++
++bool ScriptSource::setSourceMapCommentURL(FrontendContext* fc,
++                                          const char16_t* url) {
++  if (!setSourceMapURL(fc, url)) {
++    return false;
++  }
++  sourceMapCommentURL_ = sourceMapURL_.clone();
++  return true;
++}
++
++bool ScriptSource::resetDecodedOrigin(
++    FrontendContext* fc, const ReadOnlyCompileOptions& options) {
++  // Only an unpublished decoded source may use this reset. Source data and
++  // function parameter boundaries remain independently owned and unchanged.
++  filename_ = SharedImmutableString();
++  introducerFilename_ = SharedImmutableString();
++  filenameHash_ = 0;
++  introductionOffset_.reset();
++  if (!initFromOptions(fc, options)) {
++    return false;
++  }
++  sourceMapURL_ = sourceMapCommentURL_ ? sourceMapCommentURL_.clone()
++                                      : SharedImmutableTwoByteString();
++  if (options.sourceMapURL() && !setSourceMapURL(fc, options.sourceMapURL())) {
++    return false;
++  }
++  return true;
+ }
+
+ bool ScriptSource::setSourceMapURL(FrontendContext* fc, const char16_t* url) {
+--- a/js/src/frontend/Parser.cpp
++++ b/js/src/frontend/Parser.cpp
+@@ -341,7 +341,7 @@
+
+   if (anyChars.hasSourceMapURL()) {
+     MOZ_ASSERT(!ss->hasSourceMapURL());
+-    if (!ss->setSourceMapURL(fc_, anyChars.sourceMapURL())) {
++    if (!ss->setSourceMapCommentURL(fc_, anyChars.sourceMapURL())) {
+       return false;
+     }
+   }
+--- a/js/src/frontend/StencilXdr.cpp
++++ b/js/src/frontend/StencilXdr.cpp
+@@ -1300,6 +1300,7 @@
+   static constexpr uint8_t HasDisplayURL = 1 << 1;
+   static constexpr uint8_t HasSourceMapURL = 1 << 2;
+   static constexpr uint8_t MutedErrors = 1 << 3;
++  static constexpr uint8_t HasSourceMapCommentURL = 1 << 4;
+
+   uint8_t flags = 0;
+   if (mode == XDR_ENCODE) {
+@@ -1311,6 +1312,9 @@
+     }
+     if (source->hasSourceMapURL()) {
+       flags |= HasSourceMapURL;
++    }
++    if (source->sourceMapCommentURL_) {
++      flags |= HasSourceMapCommentURL;
+     }
+     if (source->mutedErrors()) {
+       flags |= MutedErrors;
+@@ -1363,7 +1367,24 @@
+     }
+   }
+
+-  MOZ_ASSERT(source->parameterListEnd_ == 0);
++  if (flags & HasSourceMapCommentURL) {
++    XDRTranscodeString<char16_t> chars;
++    if (mode == XDR_ENCODE) {
++      chars.construct<const char16_t*>(source->sourceMapCommentURL_.chars());
++    }
++    MOZ_TRY(xdr->codeCharsZ(chars));
++    if (mode == XDR_DECODE) {
++      source->sourceMapCommentURL_ = source->getOrCreateStringZ(
++          fc, std::move(chars.ref<UniqueTwoByteChars>()));
++      if (!source->sourceMapCommentURL_) {
++        return xdr->fail(JS::TranscodeResult::Throw);
++      }
++    }
++  }
++
++  // Standalone function stencils need their original parameter boundary after
++  // decode, just as ordinary CompileFunction sets it before publication.
++  MOZ_TRY(xdr->codeUint32(&source->parameterListEnd_));
+
+   if (flags & MutedErrors) {
+     if (mode == XDR_DECODE) {
+--- a/js/src/frontend/SourceNotes.h
++++ b/js/src/frontend/SourceNotes.h
+@@ -418,6 +418,8 @@
+   }
+
+  public:
++  static unsigned arity(const SrcNote* sn) { return sn->arity(); }
++
+   // Return the operand of source note `sn`, specified by `which`.
+   static ptrdiff_t getOperand(const SrcNote* sn, unsigned which) {
+     const SrcNote* head = getOperandHead(sn, which);

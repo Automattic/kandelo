@@ -1,0 +1,373 @@
+{
+  "scope": "Bounded prototype Chromium Sway ABBA comparison; raw milliseconds include frame/screenshot observation. Not rebased landing-source timing or hardware input-to-photon latency.",
+  "scalarCommit": "8b47c44cdda74c228ab53fea7578519770bd633f",
+  "scannerCommit": "f419eb8a688ebb9eb5570588d4cb3e9d37a4914b",
+  "scalarKernelSha256": "e0f443018858cde49858f88480163dafb1a127a07dad1d5cab2d55aaec4a3cd3",
+  "scannerKernelSha256": "87145a22794224ea681c4997b144ed9dfe1bf8c7e4069b725ee50d21628fdc2c",
+  "partialShellSha256": "744deac9153eea6368fc7a50848fdbb07f3de84e96ec24d2e4cb225867a0a8bc",
+  "otherArtifactDifference": "Image-module bytes also differed after normal producer rebuild. Same partial image and program archives.",
+  "summary": {
+    "old": {
+      "opens": {
+        "n": 12,
+        "median": 1618.0,
+        "p95": 1729,
+        "max": 1729
+      },
+      "closes": {
+        "n": 12,
+        "median": 327.5,
+        "p95": 632,
+        "max": 632
+      },
+      "focus": {
+        "n": 60,
+        "median": 66.68250000476837,
+        "p95": 197.9399999976158,
+        "max": 230.35499995946884
+      }
+    },
+    "current": {
+      "opens": {
+        "n": 12,
+        "median": 1188.5,
+        "p95": 1268,
+        "max": 1268
+      },
+      "closes": {
+        "n": 12,
+        "median": 254.0,
+        "p95": 370,
+        "max": 370
+      },
+      "focus": {
+        "n": 60,
+        "median": 48.754999965429306,
+        "p95": 116.08499997854233,
+        "max": 133.87999999523163
+      }
+    }
+  },
+  "arms": [
+    {
+      "arm": "old",
+      "index": 0,
+      "browserName": "chromium",
+      "loadBefore": [
+        6.33544921875,
+        8.26123046875,
+        8.013671875
+      ],
+      "opens": [
+        1496,
+        1497,
+        1656,
+        1630,
+        1635,
+        1548
+      ],
+      "closes": [
+        632,
+        529,
+        336,
+        313,
+        364,
+        303
+      ],
+      "errors": [],
+      "scope": "Observed rendered focused title and prompt, including capture/readback or screenshot polling. Same partial shell image and qualified source baseline, kernel scanner candidate vs scalar baseline; both Vite development.",
+      "renderer": [
+        "MODESET \u00b7 /DEV/DRI/CARD0 \u00b7 CRTC 1\n1600\u00d7892 \u00b7 7 FLIPS \u00b7 113730\u039cS \u00b7 WEBGL2-GL"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0.5,
+        "width": 1600,
+        "height": 892
+      },
+      "passed": true,
+      "loadAfter": [
+        6.8154296875,
+        8.22607421875,
+        8.0107421875
+      ],
+      "focusMs": [
+        197.9399999976158,
+        50.705000042915344,
+        63.269999980926514,
+        66.16500002145767,
+        49.64999997615814,
+        78.44499999284744,
+        51.55500000715256,
+        79.23499995470047,
+        48.955000042915344,
+        82.46999996900558,
+        46.764999985694885,
+        66.22000002861023,
+        51.47999995946884,
+        80.11500000953674,
+        48.355000019073486,
+        80.83999997377396,
+        48.105000019073486,
+        100.18500000238419,
+        185.28500002622604,
+        114.82499998807907,
+        213.48500001430511,
+        80.11000001430511,
+        51.435000002384186,
+        77.53999996185303,
+        52.294999957084656,
+        78.87999999523163,
+        47.924999952316284,
+        66.55500000715256,
+        51.27999997138977,
+        78.51999998092651
+      ],
+      "focusChecks": {
+        "count": 30,
+        "allFocused": true,
+        "allTrusted": true
+      }
+    },
+    {
+      "arm": "current",
+      "index": 1,
+      "browserName": "chromium",
+      "loadBefore": [
+        6.8154296875,
+        8.22607421875,
+        8.0107421875
+      ],
+      "opens": [
+        1190,
+        1215,
+        1187,
+        1115,
+        999,
+        993
+      ],
+      "closes": [
+        232,
+        198,
+        233,
+        263,
+        368,
+        370
+      ],
+      "errors": [],
+      "scope": "Observed rendered focused title and prompt, including capture/readback or screenshot polling. Same partial shell image and qualified source baseline, kernel scanner candidate vs scalar baseline; both Vite development.",
+      "renderer": [
+        "MODESET \u00b7 /DEV/DRI/CARD0 \u00b7 CRTC 1\n1600\u00d7892 \u00b7 8 FLIPS \u00b7 16745\u039cS \u00b7 WEBGL2-GL"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0.5,
+        "width": 1600,
+        "height": 892
+      },
+      "passed": true,
+      "loadAfter": [
+        7.92626953125,
+        8.36279296875,
+        8.0625
+      ],
+      "focusMs": [
+        104.09500002861023,
+        77.00999999046326,
+        47.639999985694885,
+        52.764999985694885,
+        47.0450000166893,
+        47.52999997138977,
+        49.15000003576279,
+        63.7049999833107,
+        48.67500001192093,
+        51.110000014305115,
+        46.43000000715256,
+        49.18000000715256,
+        47.955000042915344,
+        49.764999985694885,
+        46.77500003576279,
+        50.6599999666214,
+        48.25,
+        48.0450000166893,
+        48.87999999523163,
+        48.63499999046326,
+        47.814999997615814,
+        48.689999997615814,
+        127.43500000238419,
+        81.44999998807907,
+        133.87999999523163,
+        47.09999996423721,
+        48.73499995470047,
+        47.99500000476837,
+        49.235000014305115,
+        46.6700000166893
+      ],
+      "focusChecks": {
+        "count": 30,
+        "allFocused": true,
+        "allTrusted": true
+      }
+    },
+    {
+      "arm": "current",
+      "index": 2,
+      "browserName": "chromium",
+      "loadBefore": [
+        7.92626953125,
+        8.36279296875,
+        8.0625
+      ],
+      "opens": [
+        1211,
+        1246,
+        1246,
+        1268,
+        1178,
+        1156
+      ],
+      "closes": [
+        251,
+        253,
+        248,
+        255,
+        312,
+        308
+      ],
+      "errors": [],
+      "scope": "Observed rendered focused title and prompt, including capture/readback or screenshot polling. Same partial shell image and qualified source baseline, kernel scanner candidate vs scalar baseline; both Vite development.",
+      "renderer": [
+        "MODESET \u00b7 /DEV/DRI/CARD0 \u00b7 CRTC 1\n1600\u00d7892 \u00b7 9 FLIPS \u00b7 22605\u039cS \u00b7 WEBGL2-GL"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0.5,
+        "width": 1600,
+        "height": 892
+      },
+      "passed": true,
+      "loadAfter": [
+        11.1279296875,
+        9.12451171875,
+        8.34765625
+      ],
+      "focusMs": [
+        116.12000000476837,
+        47.7950000166893,
+        49.6700000166893,
+        47.93000000715256,
+        50.2849999666214,
+        48.689999997615814,
+        48.52499997615814,
+        48.39500004053116,
+        49.060000002384186,
+        47.23499995470047,
+        49.90499997138977,
+        46.50999999046326,
+        50.84500002861023,
+        48.6700000166893,
+        48.564999997615814,
+        48.63499999046326,
+        47.310000002384186,
+        49.93000000715256,
+        48.94999998807907,
+        46.69999998807907,
+        48.97499996423721,
+        81.40499997138977,
+        102.08999997377396,
+        59.935000002384186,
+        82.94500005245209,
+        116.08499997854233,
+        48.77499997615814,
+        51.16500002145767,
+        47.12000000476837,
+        46.9099999666214
+      ],
+      "focusChecks": {
+        "count": 30,
+        "allFocused": true,
+        "allTrusted": true
+      }
+    },
+    {
+      "arm": "old",
+      "index": 3,
+      "browserName": "chromium",
+      "loadBefore": [
+        11.1279296875,
+        9.12451171875,
+        8.34765625
+      ],
+      "opens": [
+        1729,
+        1533,
+        1595,
+        1619,
+        1617,
+        1628
+      ],
+      "closes": [
+        377,
+        319,
+        314,
+        313,
+        301,
+        370
+      ],
+      "errors": [],
+      "scope": "Observed rendered focused title and prompt, including capture/readback or screenshot polling. Same partial shell image and qualified source baseline, kernel scanner candidate vs scalar baseline; both Vite development.",
+      "renderer": [
+        "MODESET \u00b7 /DEV/DRI/CARD0 \u00b7 CRTC 1\n1600\u00d7892 \u00b7 7 FLIPS \u00b7 60355\u039cS \u00b7 WEBGL2-GL"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0.5,
+        "width": 1600,
+        "height": 892
+      },
+      "passed": true,
+      "loadAfter": [
+        10.81982421875,
+        9.2099609375,
+        8.39990234375
+      ],
+      "focusMs": [
+        150.4800000190735,
+        79.5,
+        82.05000001192093,
+        50.27500003576279,
+        80.0799999833107,
+        47.519999980926514,
+        82.7600000500679,
+        48.58499997854233,
+        82.12999999523163,
+        48.730000019073486,
+        81.83499997854233,
+        47.0799999833107,
+        66.81000000238419,
+        49.405000030994415,
+        80.88999998569489,
+        48.62999999523163,
+        81.66500002145767,
+        65.05500000715256,
+        201.63999998569489,
+        95.86000001430511,
+        230.35499995946884,
+        52.75499999523163,
+        79.6700000166893,
+        48.32499998807907,
+        65.44500005245209,
+        51.605000019073486,
+        77.96499997377396,
+        51.37999999523163,
+        79.84499996900558,
+        48.719999969005585
+      ],
+      "focusChecks": {
+        "count": 30,
+        "allFocused": true,
+        "allTrusted": true
+      }
+    }
+  ]
+}

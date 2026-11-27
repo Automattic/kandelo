@@ -1675,10 +1675,10 @@ jobs:
       - name: Test validation artifact lifecycle
         run: bash scripts/dev-shell.sh python3 evals/build-waiting/test_agent_job.py
 
-      - name: Check executables link only against the host-import allowance
+      - name: Check SDK ownership of executable link flags
         run: |
-          bash scripts/test-check-no-allow-undefined.sh
-          bash scripts/check-no-allow-undefined.sh
+          bash scripts/test-check-sdk-link-contract.sh
+          python3 scripts/check-sdk-link-contract.py
 
       - name: Test package publish flow
         if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'

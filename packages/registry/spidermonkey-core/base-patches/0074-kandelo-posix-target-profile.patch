@@ -1,0 +1,86 @@
+# Kandelo patch rationale (S25)
+# Judgment: Supported. Keep the target profile because SpiderMonkey must
+# recognize Kandelo’s actual operating-system capabilities without
+# pretending it is Linux or WASI.
+#
+# Mozilla configure must recognize Kandelo's actual OS and wasm32 target
+# before it can select platform code. The runtime bridge cannot change
+# target detection, and pretending Kandelo is Linux or WASI misstates its
+# capabilities. Keep the honest target profile until upstream supports it
+# or a supported configuration supplies the same identity without changing
+# engine algorithms.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+--- a/python/mozbuild/mozbuild/configure/constants.py
++++ b/python/mozbuild/mozbuild/configure/constants.py
+@@ -37,6 +37,7 @@
+         "FreeBSD",
+         "GNU",
+         "iOS",
++        "Kandelo",
+         "NetBSD",
+         "OpenBSD",
+         "OSX",
+@@ -52,6 +53,7 @@
+         "DragonFly",
+         "FreeBSD",
+         "kFreeBSD",
++        "Kandelo",
+         "Linux",
+         "NetBSD",
+         "OpenBSD",
+@@ -141,6 +143,7 @@
+     "DragonFly": "__DragonFly__",
+     "FreeBSD": "__FreeBSD__",
+     "kFreeBSD": "__FreeBSD_kernel__",
++    "Kandelo": "__kandelo__",
+     "Linux": "__linux__",
+     "NetBSD": "__NetBSD__",
+     "OpenBSD": "__OpenBSD__",
+--- a/build/moz.configure/init.configure
++++ b/build/moz.configure/init.configure
+@@ -485,6 +485,8 @@
+     if "android" in os:
+         canonical_os = "Android"
+         canonical_kernel = "Linux"
++    elif os == "kandelo":
++        canonical_os = canonical_kernel = "Kandelo"
+     elif os.startswith("linux"):
+         canonical_os = "GNU"
+         canonical_kernel = "Linux"
+@@ -585,7 +587,7 @@
+     elif cpu == "sh4":
+         canonical_cpu = "sh4"
+         endianness = "little"
+-    elif cpu == "wasm32" and allow_wasi:
++    elif cpu == "wasm32" and (allow_wasi or canonical_kernel == "Kandelo"):
+         canonical_cpu = "wasm32"
+         endianness = "little"
+     else:
+@@ -910,6 +912,15 @@
+
+
+ @depends(target)
++def target_is_kandelo(target):
++    if target.kernel == "Kandelo":
++        return True
++
++
++set_define("XP_KANDELO", target_is_kandelo)
++
++
++@depends(target)
+ def target_is_linux_or_wasi(target):
+     if (target.kernel == "Linux" and target.os == "GNU") or target.kernel == "WASI":
+         return True
+--- a/build/autoconf/config.sub
++++ b/build/autoconf/config.sub
+@@ -2025,6 +2025,7 @@
+ 	| ironclad* \
+ 	| isc* \
+ 	| its* \
++	| kandelo* \
+ 	| l4re* \
+ 	| libertybsd* \
+ 	| lites* \

@@ -60,7 +60,7 @@ test("sealed read-only images can be refreshed repeatedly without changing sourc
 
 test("the public copy of a sealed image stays writable for the image builder", () => {
   // The benchmark copies sealed (read-only) package bytes into
-  // apps/browser-demos/public/, where `./run.sh build mariadb-vfs` writes the
+  // apps/browser-demos/public/, where standalone image builders can write the
   // same file. A read-only public copy made that rebuild fail with EACCES.
   const root = mkdtempSync(join(tmpdir(), "kandelo-benchmark-public-mode-"));
   try {

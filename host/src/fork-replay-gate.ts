@@ -208,7 +208,7 @@ export function observeForkReplayWorker(
   pid: number,
   isCurrentGeneration: () => boolean,
   retireWithProcessExit = false,
-): void {
+): () => void {
   // Ordinary fork may join its independent child's exit owner. vfork keeps
   // its borrower-specific completion and address-space containment protocol.
   if (retireWithProcessExit) observedReplays.set(worker, coordinator);
@@ -216,7 +216,7 @@ export function observeForkReplayWorker(
     coordinator.cancel(new Error(`${coordinator.context}: ${detail}`));
   };
 
-  worker.on("message", (raw: unknown) => {
+  const onMessage = (raw: unknown): void => {
     const message = raw as Partial<WorkerToHostMessage>;
     if (message.type === "fork_replay_ready") {
       if (message.pid !== pid) {
@@ -246,14 +246,21 @@ export function observeForkReplayWorker(
         );
       }
     }
-  });
+  };
 
-  worker.on("error", (error: Error) => {
+  const onError = (error: Error): void => {
     protocolFailure(
       `Worker error before replay readiness: ${error.message || String(error)}`,
     );
-  });
-  worker.on("exit", (code: number) => {
+  };
+  const onExit = (code: number): void => {
     protocolFailure(`Worker exited before replay readiness (code=${code})`);
-  });
+  };
+  worker.on("message", onMessage);
+  worker.on("error", onError);
+  worker.on("exit", onExit);
+  return () => {
+    worker.off("message", onMessage); worker.off("error", onError); worker.off("exit", onExit);
+    if (observedReplays.get(worker) === coordinator) observedReplays.delete(worker);
+  };
 }

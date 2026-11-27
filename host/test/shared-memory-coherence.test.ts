@@ -90,6 +90,7 @@ function anonymousHarness() {
     seenVersion: 0,
   });
   const channel = (pid: number, memory: WebAssembly.Memory) => ({
+    source: memory,
     pid,
     memory,
     channelOffset: 0,
@@ -106,9 +107,9 @@ function anonymousHarness() {
       [peerPid, new Map([[mapAddr, mapping()]])],
     ]),
     processes: new Map([
-      [parentPid, { pid: parentPid, memory: parentMemory, channels: [parentChannel] }],
-      [peerPid, { pid: peerPid, memory: peerMemory, channels: [peerChannel] }],
-      [childPid, { pid: childPid, memory: childMemory, channels: [childChannel] }],
+      [parentPid, { pid: parentPid, memory: parentMemory, source: parentMemory, channels: [parentChannel] }],
+      [peerPid, { pid: peerPid, memory: peerMemory, source: peerMemory, channels: [peerChannel] }],
+      [childPid, { pid: childPid, memory: childMemory, source: childMemory, channels: [childChannel] }],
     ]),
   });
   installKernelWorkerTestScratch(
@@ -223,7 +224,7 @@ describe("anonymous MAP_SHARED coherence", () => {
     const replacement = sharedMemory();
     (h.kw as any).processes.set(h.parentPid, {
       pid: h.parentPid,
-      memory: replacement,
+      memory: replacement, source: replacement,
       channels: [],
     });
     new Uint8Array(h.parentMemory.buffer)[h.mapAddr + 1] = 0xff;
@@ -373,7 +374,7 @@ function sysvHarness(options: SysvMirrorStubOptions = {}) {
   const sysv = createKernelSharedMappingStub(options);
   const processes = new Map(pids.map((pid) => {
     const memory = memories.get(pid)!;
-    return [pid, { pid, memory, channels: [{ pid, memory, channelOffset: 0 }] }];
+    return [pid, { pid, memory, source: memory, channels: [{ pid, memory, source: memory, channelOffset: 0 }] }];
   }));
   const kw = Object.assign(createCentralizedKernelWorkerTestDouble(), {
     currentHandlePid: 0,
@@ -643,6 +644,7 @@ describe("kernel-owned shared-mapping boundary failures", () => {
       const sibling = {
         pid: channel.pid,
         memory: channel.memory,
+        source: channel.source,
         channelOffset: siblingOffset,
         i32View: new Int32Array(channel.memory.buffer, siblingOffset, 1),
       };

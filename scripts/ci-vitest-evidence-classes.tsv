@@ -62,6 +62,8 @@ host/test/compiler-builtins-guest.test.ts	prepared-product
 host/test/composer-file.test.ts	source-only
 host/test/concurrent-launch.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
+host/test/connected-names-file.test.ts	source-only
+host/test/connected-names-kernel.test.ts	prepared-product
 host/test/core-image-identity.test.ts	prepared-product
 host/test/cors-proxy-session.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
@@ -131,6 +133,7 @@ host/test/exec-memory-refusal.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	prepared-product
 host/test/exec.test.ts	prepared-product
+host/test/execution-backend.test.ts	source-only
 host/test/fetch-backend.test.ts	source-only
 host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-read-buffer.test.ts	source-only
@@ -218,6 +221,16 @@ host/test/go-in-guest.test.ts	prepared-product
 host/test/go-sdk.test.ts	prepared-product
 host/test/gobject-callback-contract.test.ts	prepared-product
 host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
+host/test/group-memory-kernel.test.ts	prepared-product
+host/test/group-memory-resources.test.ts	source-only
+host/test/group-memory-transport.test.ts	source-only
+host/test/group-memory-worker-boundary.test.ts	prepared-product
+host/test/grouped-root-launch.test.ts	prepared-product
+host/test/grouped-sdk-execution.test.ts	prepared-product
+host/test/grouped-session-exit-publication.test.ts	source-only
+host/test/grouped-session-runtime.test.ts	prepared-product
+host/test/grouped-worker-initialization.test.ts	source-only
+host/test/grouped-worker-objects.test.ts	source-only
 host/test/gtk3-smoke.test.ts	prepared-product
 host/test/guest-autotools.test.ts	prepared-product
 host/test/guest-bash-subshells.test.ts	prepared-product
@@ -226,6 +239,7 @@ host/test/guest-build-make.test.ts	prepared-product
 host/test/guest-build-run.test.ts	prepared-product
 host/test/guest-cmake.test.ts	prepared-product
 host/test/guest-meson.test.ts	prepared-product
+host/test/guest-plugins.test.ts	prepared-product
 host/test/guest-program-preparation.test.ts	prepared-product
 host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
@@ -302,6 +316,7 @@ host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
 host/test/kifs-v3-guest.test.ts	prepared-product
 host/test/klogctl.test.ts	prepared-product
+host/test/kms-bitmap-relay.test.ts	source-only
 host/test/kmsg-poll.test.ts	prepared-product
 host/test/labwc-smoke.test.ts	prepared-product
 host/test/lazy-fetch-bytes.test.ts	source-only
@@ -328,6 +343,10 @@ host/test/man-shell-lazy-archive.test.ts	prepared-product
 host/test/mariadb-image-helpers.test.ts	prepared-product
 host/test/mariadb-test-source-copy.test.ts	prepared-product
 host/test/masked-wait-wake.test.ts	prepared-product
+host/test/memory-group-admission.test.ts	source-only
+host/test/memory-group-import-guard.test.ts	source-only
+host/test/memory-group-protocol.test.ts	source-only
+host/test/memory-group-usage.test.ts	source-only
 host/test/migration/channel-chunked.test.ts	source-only
 host/test/migration/codec.test.ts	source-only
 host/test/mkdir-existing-directory.test.ts	prepared-product
@@ -336,6 +355,8 @@ host/test/mmap-shared.test.ts	prepared-product
 host/test/mmap-tracking.test.ts	source-only
 host/test/module-base-image.test.ts	prepared-product
 host/test/mouse-integration.test.ts	prepared-product
+host/test/mprotect-fiction.test.ts	prepared-product
+host/test/mprotect-opt-in.test.ts	prepared-product
 host/test/mqueue.test.ts	prepared-product
 host/test/mremap-madvise-guest.test.ts	prepared-product
 host/test/mtdev-smoke.test.ts	prepared-product
@@ -417,8 +438,10 @@ host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/positioned-image-targets.test.ts	source-only
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
+host/test/prepared-memory-group-execution.test.ts	prepared-product
 host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
+host/test/process-address-space.test.ts	source-only
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-generation-observation.test.ts	source-only
@@ -426,8 +449,10 @@ host/test/process-group-leader-timer.test.ts	prepared-product
 host/test/process-memory-allocator.test.ts	source-only
 host/test/process-memory-async-allocation.test.ts	source-only
 host/test/process-memory-creator-gate.test.ts	source-only
+host/test/process-memory-descriptor.test.ts	source-only
 host/test/process-memory-reclamation-rss.test.ts	prepared-product
 host/test/process-memory-retained-wrapper.test.ts	source-only
+host/test/process-memory-views.test.ts	source-only
 host/test/process-memory.test.ts	source-only
 host/test/process-native-layout.test.ts	prepared-product
 host/test/process-snapshot-comparator.test.ts	source-only
@@ -496,6 +521,7 @@ host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product
 host/test/scummvm-cli-smoke.test.ts	prepared-product
+host/test/sdk-plugin-modules.test.ts	prepared-product
 host/test/sdl2-editor-unit.test.ts	source-only
 host/test/sdl2-evdev-smoke.test.ts	prepared-product
 host/test/sdl2-kmsdrm-smoke.test.ts	prepared-product
@@ -506,7 +532,9 @@ host/test/select-signal-guest.test.ts	prepared-product
 host/test/select-signal-outcome.test.ts	source-only
 host/test/sendmsg-iovec-gather.test.ts	prepared-product
 host/test/service-activities.test.ts	prepared-product
+host/test/shared-desktop-image.test.ts	prepared-product
 host/test/shared-memory-coherence.test.ts	source-only
+host/test/shared-memory-program.test.ts	source-only
 host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only
@@ -744,6 +772,7 @@ packages/registry/ffmpeg/test/ffmpeg-process-runtime.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-tier1.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-tier2-bbb.test.ts	prepared-product
 packages/registry/ffmpeg/test/fixtures-manifest.test.ts	source-only
+packages/registry/file/test/magic-database.test.ts	prepared-product
 packages/registry/freeciv/test/runtime.test.ts	prepared-product
 packages/registry/git/test/git.test.ts	prepared-product
 packages/registry/grep/test/grep.test.ts	prepared-product
@@ -752,6 +781,7 @@ packages/registry/librsvg/test/librsvg.test.ts	prepared-product
 packages/registry/libxml2/test/libxml2-layout.test.ts	prepared-product
 packages/registry/mandoc/test/mandoc-smoke.test.ts	prepared-product
 packages/registry/nginx/test/nginx.test.ts	prepared-product
+packages/registry/node-browser-bundle/test/npm-smoke.test.ts	prepared-product
 packages/registry/openssl/test/certificates.test.ts	prepared-product
 packages/registry/openssl/test/ssl-basic.test.ts	prepared-product
 packages/registry/php/test/php-concurrent-sqlite.test.ts	prepared-product
@@ -762,6 +792,7 @@ packages/registry/php/test/php-pdo-column-metadata.test.ts	prepared-product
 packages/registry/posix-utils-lite/test/gencat.test.ts	prepared-product
 packages/registry/posix-utils-lite/test/process-tools.test.ts	prepared-product
 packages/registry/rsvg-convert/test/rsvg-convert.test.ts	prepared-product
+packages/registry/ruby/test/fibers.test.ts	prepared-product
 packages/registry/ruby/test/posix-spawn.test.ts	prepared-product
 packages/registry/sdl2/test/runtime.test.ts	prepared-product
 packages/registry/sed/test/sed.test.ts	prepared-product

@@ -15,28 +15,44 @@ CREATE TABLE IF NOT EXISTS extra_start_name (name INTEGER PRIMARY KEY) WITHOUT R
 CREATE TABLE IF NOT EXISTS extra_start (name INTEGER,ty INTEGER,PRIMARY KEY(name,ty)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS extra_cast (src INTEGER,dst INTEGER,PRIMARY KEY(src,dst)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS conversion_name (name INTEGER PRIMARY KEY) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS conversion_reach (name INTEGER,ty INTEGER,PRIMARY KEY(name,ty)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS expanded_conversion_reach (name INTEGER,ty INTEGER,PRIMARY KEY(name,ty)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS old_conversion_name (name INTEGER PRIMARY KEY) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS old_conversion_reach (name INTEGER,ty INTEGER,PRIMARY KEY(name,ty)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS conversion_edge (src INTEGER,dst INTEGER,PRIMARY KEY(src,dst)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS conversion_seed (name INTEGER,ty INTEGER,PRIMARY KEY(name,ty)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS flow_edge (src INTEGER,dst INTEGER,PRIMARY KEY(src,dst)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS flow_edge_dst ON flow_edge(dst);
 CREATE TABLE IF NOT EXISTS flow_origin (slot INTEGER,origin INTEGER,PRIMARY KEY(slot,origin)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS link_shape (ty INTEGER,parameter INTEGER,name INTEGER,src INTEGER,dst INTEGER,
   PRIMARY KEY(ty,parameter,name)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS reach_group (id INTEGER PRIMARY KEY, contents BLOB NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS group_type (group_id INTEGER,ty INTEGER,PRIMARY KEY(group_id,ty)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS function_group (name INTEGER PRIMARY KEY,group_id INTEGER) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS function_group (name INTEGER PRIMARY KEY,group_id INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS old_function_group (name INTEGER PRIMARY KEY,group_id INTEGER NOT NULL) WITHOUT ROWID;
+CREATE VIEW IF NOT EXISTS conversion_reach AS
+  SELECT f.name,t.ty FROM function_group f JOIN group_type t ON t.group_id=f.group_id
+  UNION ALL SELECT name,ty FROM expanded_conversion_reach;
 CREATE TABLE IF NOT EXISTS group_join (group_id INTEGER,parameter INTEGER,slot INTEGER,
   PRIMARY KEY(group_id,parameter)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS slot_alias (ty INTEGER,parameter INTEGER,slot INTEGER,
+  PRIMARY KEY(ty,parameter)) WITHOUT ROWID;
 
 DELETE FROM known_function; DELETE FROM return_slot;
 DELETE FROM pass_parameter; DELETE FROM pass_other; DELETE FROM pass_walk; DELETE FROM pass_edge;
 DELETE FROM record_closure; DELETE FROM record_functions; DELETE FROM record_types;
 DELETE FROM extra_start; DELETE FROM extra_start_name; DELETE FROM extra_cast;
-DELETE FROM conversion_name; DELETE FROM conversion_reach;
-DELETE FROM old_conversion_name; DELETE FROM old_conversion_reach;
+DELETE FROM conversion_name; DELETE FROM expanded_conversion_reach;
+DELETE FROM old_conversion_name; DELETE FROM old_function_group;
 DELETE FROM conversion_edge; DELETE FROM conversion_seed;
 DELETE FROM flow_edge; DELETE FROM flow_origin;
 DELETE FROM link_shape; DELETE FROM reach_group; DELETE FROM group_type;
-DELETE FROM function_group; DELETE FROM group_join;
+DELETE FROM function_group; DELETE FROM group_join; DELETE FROM slot_alias;
+
+-- Origins are consumed only by the read-back queries. Share each distinct
+-- origin set across all read slots that see it.
+CREATE TABLE IF NOT EXISTS flow_slot_group (slot INTEGER PRIMARY KEY, group_id INTEGER) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS flow_group_origin (group_id INTEGER,origin INTEGER,
+  PRIMARY KEY(group_id,origin)) WITHOUT ROWID;
+CREATE VIEW IF NOT EXISTS read_origin AS
+  SELECT s.slot,o.origin FROM flow_slot_group s JOIN flow_group_origin o ON o.group_id=s.group_id
+  UNION ALL SELECT slot,origin FROM flow_origin;
+DELETE FROM flow_slot_group; DELETE FROM flow_group_origin;

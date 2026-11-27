@@ -14,7 +14,7 @@ import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bashBinary =
-  tryResolveBinary("programs/bash.wasm") ??
+  tryResolveBinary("programs/bash/bash.wasm") ??
   join(__dirname, "../../../../packages/registry/bash/bin/bash.wasm");
 
 const hasBash = existsSync(bashBinary);
@@ -36,6 +36,19 @@ describe.skipIf(!hasBash)("bash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("hello world");
+  });
+
+  // Kandelo's bash is built without loadable builtins (build-bash.sh), so
+  // `enable -f` says dynamic loading is not available instead of trying.
+  it("reports that loadable builtins are not available", async () => {
+    const result = await runCentralizedProgram({
+      programPath: bashBinary,
+      argv: ["bash", "-c", "enable -f /tmp/nosuch.so nosuch"],
+      env: bashEnv,
+      timeout: 20_000,
+    });
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("dynamic loading not available");
   });
 
   it("supports [[ ... ]] extended test", async () => {

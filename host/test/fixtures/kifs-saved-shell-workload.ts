@@ -75,6 +75,7 @@ export async function compareSavedShell(
   measureTmpfs = false,
   profileReads = false,
   reverseOrder = false,
+  measureWatchers = false,
 ) {
   const saved = new Map<"original" | "control", string>();
   let matchingObjects: string | undefined;
@@ -128,6 +129,7 @@ export async function compareSavedShell(
       const operationDetails = [];
       const kernelStatNs = [];
       const kernelStatComponents = [];
+      const watchSamples: Record<"watched" | "unwatched", number[][]> = { watched: [], unwatched: [] };
       if (phase === "legacy" || phase === "v3") {
         // Instrumented runs diagnose I/O. Keep the three timing samples in
         // the uninstrumented comparison independent of the observer cost.
@@ -142,6 +144,18 @@ export async function compareSavedShell(
           const match = result.match(/^guest-io-ns (\d+) (\d+) (\d+) (\d+) (\d+)$/m);
           if (!match) throw new Error("missing guest timings: " + output);
           samples.push(match.slice(1).map(Number));
+        }
+        if (measureWatchers) {
+          for (let i = 0; i < 3; i++) {
+            const modes = (i % 2 === 0) !== reverseOrder
+              ? ["unwatched", "watched"] as const : ["watched", "unwatched"] as const;
+            for (const mode of modes) {
+              const result = await run(`compare-${mode}`);
+              const match = result.match(/^guest-watch-ns (\d+) (\d+) (\d+)$/m);
+              if (!match) throw new Error("missing watcher timings: " + result);
+              watchSamples[mode].push(match.slice(1).map(Number));
+            }
+          }
         }
       }
       const tmpfsSamples = [];
@@ -208,7 +222,8 @@ export async function compareSavedShell(
       round = { phase, bootMs, bootPages, finalPages: await host.getKernelMemoryPages(),
         ...(bootRss === undefined ? {} : { bootRss, finalRss: processResidentBytes!() }),
         transport: await host.getStorageMetadataMemoryUsage(), geometry: geometry.slice(1),
-        samples, operationDetails, ...(kernelStatNs.length ? { kernelStatNs } : {}), ...(kernelStatComponents.length ? { kernelStatComponents } : {}), ...(measureTmpfs ? { tmpfsSamples, pathControl } : {}), ...(checkPermissions ? { permissionsVerified: true } : {}), profile, entryWorkload };
+        samples, operationDetails, ...(kernelStatNs.length ? { kernelStatNs } : {}), ...(kernelStatComponents.length ? { kernelStatComponents } : {}), ...(measureTmpfs ? { tmpfsSamples, pathControl } : {}), ...(checkPermissions ? { permissionsVerified: true } : {}),
+        ...(measureWatchers ? { watchSamples } : {}), profile, entryWorkload };
     } finally { await host.destroy(); }
     const failure = host.getPersistenceShutdownFailure();
     if (failure !== null) throw new Error(String(failure));

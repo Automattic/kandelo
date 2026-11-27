@@ -214,18 +214,18 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "mariadb", dependency: "mariadb", resolverPath: "programs/mariadb/mariadb.wasm", vfsPath: "/usr/bin/mariadb", symlinks: ["/usr/bin/mysql"] },
   {
     id: "coreutils",
-    resolverPath: "programs/coreutils.wasm",
+    resolverPath: "programs/coreutils/coreutils.wasm",
     vfsPath: "/bin/coreutils",
     symlinks: [...COREUTILS_NAMES, "["].map(coreutilsCommandPath),
   },
   {
     id: "grep",
-    resolverPath: "programs/grep.wasm",
+    resolverPath: "programs/grep/grep.wasm",
     vfsPath: "/bin/grep", symlinks: ["/bin/egrep", "/bin/fgrep"],
   },
   {
     id: "sed",
-    resolverPath: "programs/sed.wasm",
+    resolverPath: "programs/sed/sed.wasm",
     vfsPath: "/bin/sed", symlinks: [],
   },
   { id: "bc", resolverPath: "programs/bc.wasm", vfsPath: "/usr/bin/bc", symlinks: [] },
@@ -234,7 +234,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "m4", resolverPath: "programs/m4.wasm", vfsPath: "/usr/bin/m4", symlinks: [] },
   { id: "make", resolverPath: "programs/make.wasm", vfsPath: "/usr/bin/make", symlinks: [] },
   { id: "tar", resolverPath: "programs/tar.wasm", vfsPath: "/bin/tar", symlinks: [] },
-  { id: "curl", resolverPath: "programs/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: [] },
+  { id: "curl", resolverPath: "programs/curl/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: [] },
   {
     id: "netcat",
     resolverPath: "programs/netcat/nc.wasm",
@@ -252,7 +252,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "ffprobe", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffprobe.wasm", vfsPath: "/usr/bin/ffprobe", symlinks: [] },
   { id: "ffplay", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffplay.wasm", vfsPath: "/usr/bin/ffplay", symlinks: [] },
   {
-    id: "git-remote-http",
+    id: "git-remote-http", dependency: "git",
     resolverPath: "programs/git/git-remote-http.wasm",
     vfsPath: "/usr/bin/git-remote-http", symlinks: ["/usr/bin/git-remote-https", "/usr/bin/git-remote-ftp", "/usr/bin/git-remote-ftps"],
   },
@@ -279,7 +279,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "zip", resolverPath: "programs/zip.wasm", vfsPath: "/usr/bin/zip", symlinks: [] },
   {
     id: "unzip",
-    resolverPath: "programs/unzip.wasm",
+    resolverPath: "programs/unzip/unzip.wasm",
     vfsPath: "/usr/bin/unzip", symlinks: ["/usr/bin/zipinfo", "/usr/bin/funzip"],
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: [] },
@@ -291,7 +291,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "hexdump", dependency: "zigcli", resolverPath: "programs/zigcli/hexdump.wasm", vfsPath: "/usr/bin/hexdump", symlinks: [] },
   // The Omarchy desktop's terminal. Large, so it stays lazy: no other
   // machine sharing this image pays to fetch it.
-  { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/bin/foot", symlinks: [] },
+  { id: "foot", resolverPath: "programs/foot/foot.wasm", vfsPath: "/usr/bin/foot", symlinks: [] },
   { id: "love", resolverPath: "programs/love/love.wasm", vfsPath: "/usr/bin/love", symlinks: [] },
   // The cage kiosk compositor (the cage machine's command).
   { id: "cage", resolverPath: "programs/cage/cage.wasm", vfsPath: "/usr/bin/cage", symlinks: [] },
@@ -329,7 +329,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
     mode: 0o644,
   },
   // swaybg draws the wallpaper sway's config names; sway execs it by name.
-  { id: "swaybg", resolverPath: "programs/swaybg.wasm", vfsPath: "/usr/bin/swaybg", symlinks: [] },
+  { id: "swaybg", resolverPath: "programs/swaybg/swaybg.wasm", vfsPath: "/usr/bin/swaybg", symlinks: [] },
   // Shared desktop panel, its real loadable app menu, configuration and
   // launchers. Keep optional desktop bytes lazy in the ordinary shell image.
   { id: "sfwbar", resolverPath: "programs/sfwbar/sfwbar.wasm", vfsPath: "/usr/bin/sfwbar", symlinks: [] },
@@ -340,14 +340,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/bin/kandelo-sfwbar",
     symlinks: [],
     mode: 0o755,
-  },
-  {
-    id: "sfwbar-appmenu",
-    dependency: "sfwbar",
-    resolverPath: "programs/sfwbar/appmenu.so",
-    vfsPath: "/usr/lib/sfwbar/appmenu.so",
-    symlinks: [],
-    mode: 0o644,
   },
   {
     id: "sfwbar-config",
@@ -397,47 +389,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [],
     mode: 0o644,
   },
-  {
-    id: "sfwbar-wayland-demo-desktop",
-    dependency: "sfwbar",
-    resolverPath: "programs/sfwbar/wayland-demo.desktop",
-    vfsPath: "/usr/share/applications/wayland-demo.desktop",
-    symlinks: [],
-    mode: 0o644,
-  },
   // The stacking desktop and its notification client stay lazy like sway.
-  { id: "labwc", resolverPath: "programs/labwc/labwc.wasm", vfsPath: "/usr/bin/labwc", symlinks: [] },
-  {
-    id: "labnag",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labnag.wasm",
-    vfsPath: "/usr/bin/labnag",
-    symlinks: [],
-  },
-  {
-    id: "labwc-config",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labwc-rc.xml",
-    vfsPath: "/etc/xdg/labwc/rc.xml",
-    symlinks: [],
-    mode: 0o644,
-  },
-  {
-    id: "labwc-menu",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labwc-menu.xml",
-    vfsPath: "/etc/xdg/labwc/menu.xml",
-    symlinks: [],
-    mode: 0o644,
-  },
-  {
-    id: "labwc-foot-config",
-    dependency: "labwc",
-    resolverPath: "programs/labwc/labwc-foot.ini",
-    vfsPath: "/etc/xdg/labwc/foot.ini",
-    symlinks: [],
-    mode: 0o644,
-  },
   {
     id: "sway-config",
     dependency: "sway",
@@ -497,6 +449,14 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/share/scummvm/fonts.dat", symlinks: [],
     mode: 0o644,
   },
+  // Explicit static variant; separate paths let both package forms coexist.
+  { id: "scummvm-static", resolverPath: "programs/scummvm-static/scummvm-static.wasm", vfsPath: "/usr/libexec/scummvm-static", symlinks: [] },
+  ...["scummremastered.zip", "scummmodern.zip", "scummclassic.zip", "gui-icons.dat", "fonts.dat"].map(file => ({
+    id: `scummvm-static-data-${file}`, dependency: "scummvm-static",
+    resolverPath: `programs/scummvm-static/share/scummvm-static/${file}`,
+    vfsPath: `/usr/share/scummvm-static/${file}`, symlinks: [],
+  })),
+
   // ScummVM's engine plugins (the package's lib/scummvm runtime files).
   // ScummVM dlopen()s only the engine a game needs, so each is its own lazy
   // file: a machine downloads the engines of the games it plays.
@@ -563,61 +523,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
     symlinks: [],
     mode: 0o644,
   },
-  // The Omarchy shell (omarchydesktop starts it) and the Qt client the
-  // launcher offers. quickshell.wasm alone is 82 MB.
-  { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/bin/quickshell", symlinks: [] },
-  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/bin/qtgallery", symlinks: [] },
-  {
-    id: "dbus",
-    resolverPath: "programs/dbus/dbus-daemon.wasm",
-    vfsPath: "/usr/bin/dbus-daemon", symlinks: [],
-  },
-  // The Wayland desktops' in-tree programs. The desktops' launchers exec them
-  // by name from PATH; a lazy file is an ordinary executable there, so only a
-  // machine that starts a desktop fetches them. notify-send statically links
-  // glib and gio (~5.8 MB), which alone would outweigh much of the eager image.
-  {
-    id: "wlcompositor",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlcompositor.wasm",
-    vfsPath: "/usr/bin/wlcompositor", symlinks: [],
-  },
-  {
-    id: "wlterm",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlterm.wasm",
-    vfsPath: "/usr/bin/wlterm", symlinks: [],
-  },
-  {
-    id: "wlclock",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlclock.wasm",
-    vfsPath: "/usr/bin/wlclock", symlinks: [],
-  },
-  {
-    id: "wlpaint",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/wlpaint.wasm",
-    vfsPath: "/usr/bin/wlpaint", symlinks: [],
-  },
-  {
-    id: "klauncher",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/klauncher.wasm",
-    vfsPath: "/usr/bin/klauncher", symlinks: [],
-  },
-  {
-    id: "notify-send",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/notify-send.wasm",
-    vfsPath: "/usr/bin/notify-send", symlinks: [],
-  },
-  {
-    id: "kclipd",
-    dependency: "wayland-demo",
-    resolverPath: "programs/wayland-demo/kclipd.wasm",
-    vfsPath: "/usr/bin/kclipd", symlinks: [],
-  },
   // The single-program machines' workloads. Each machine's profile command
   // execs its program, which is the first read of these bytes.
   {
@@ -662,7 +567,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // (packages/registry/shell/eager-budget.json) is what every visitor
   // downloads before the first prompt. The cost is a fetch on the boot path;
   // a machine that cannot fetch it boots without logging and says so.
-  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
+  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/sysklogd/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
   ...LLVM_BINARY_TOOL_SPECS,
   // pkgconf, Bison, gperf, install-info, gettext and CMake
   // (images/vfs/lib/init/dev-tools.ts).

@@ -1,20 +1,22 @@
 kind = "program"
 name = "node"
 version = "0.1.0"
-kernel_abi = 7
-depends_on = ["spidermonkey@153.7.0esr"]
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["spidermonkey-node@153.7.0esr-node.1"]
 
 [source]
-url = "https://github.com/brandonpayton/kandelo"
+url = "https://github.com/Automattic/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 provider = "repository"
 
 [license]
-spdx = "MPL-2.0"
+spdx = "GPL-2.0-or-later AND MPL-2.0 AND MIT AND BSD-3-Clause"
 url = "https://www.mozilla.org/MPL/2.0/"
 
 [build]
-script_path = "packages/registry/spidermonkey-node/build-spidermonkey-node.sh"
+toolchain = "none"
+script_path = "packages/registry/node/build-node-alias.sh"
 
 [[outputs]]
 name = "node"

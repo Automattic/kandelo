@@ -584,7 +584,7 @@ pub(super) fn statfs() -> Result<WasmStatfs, Errno> {
 
 pub(super) fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     if resizable_persistence_enabled() && flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
-        let handle = super::open(path, flags & !O_TRUNC, mode, uid, gid)?;
+        let handle = super::open_mutation(path, flags & !O_TRUNC, mode, uid, gid)?;
         if let Err(error) = truncate_handle_inner(handle, 0, |_, _| Err(Errno::EIO)) {
             release_handle(handle);
             return Err(error);
@@ -656,6 +656,9 @@ pub(super) fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Re
                     return Err(Errno::EEXIST);
                 }
                 let inode = state.get(existing).ok_or(Errno::ENOENT)?;
+                if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY && inode.group_read_leases != 0 {
+                    return Err(Errno::EOPNOTSUPP);
+                }
                 if matches!(inode.kind, InodeKind::Symlink(_)) {
                     // The caller resolves symlinks before open; a symlink reaching
                     // here means O_NOFOLLOW on the final component.

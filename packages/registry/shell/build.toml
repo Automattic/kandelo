@@ -1,5 +1,10 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
+  "images/vfs/scripts/shared-memory-outputs.ts",
+  "images/vfs/scripts/read-build-inputs.ts",
+  "host/src/shared-memory-program.ts",
+  "packages/registry/rootfs/package.toml",
+  "scripts/source-rootfs-shell-dependency-contract.mjs",
   "images/vfs/scripts/shell-rust-sdk-manifest.ts",
   "images/vfs/scripts/rust-sdk-manifest.py",
   "sdk/guest-rust/src/sdk-components.json",
@@ -81,7 +86,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 105
+revision = 112
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

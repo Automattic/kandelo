@@ -230,10 +230,8 @@ describe.skipIf(!available)(
         ["1 swaymsg", /Send messages to a running instance of sway/],
         ["1 swaybg", /Background for Wayland/],
         ["1 cage", /a Wayland kiosk compositor/],
-        ["1 labwc", /a Wayland stacking compositor/],
         // The TERM default that foot's build fills into the page.
         ["5 foot.ini", /environment variable TERM to\.\s+Default:\s+foot\b/],
-        ["1 dbus-daemon", /Message bus daemon/],
         ["1 ffmpeg", /ffmpeg media converter/],
         ["1 ffmpeg-filters", /FFmpeg filters/],
         ["8 sudo", /execute a command as another user/],

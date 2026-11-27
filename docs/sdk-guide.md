@@ -44,8 +44,12 @@ post-link job is decided by the same code.
    `--arch wasm64posix` selects the other architecture. `--core-only`
    omits graphics refresh during dependency resolution to avoid recursion.
    Without `--ensure`, the command always rebuilds musl. After libc changes,
-   also rebuild linked programs and fixtures before testing; `setup --all` refreshes
-   package programs, while `scripts/build-programs.sh` builds test fixtures.
+   also rebuild linked programs and fixtures before testing. `setup --all`
+   refreshes package programs, and `scripts/build-programs.sh` builds test
+   fixtures. The fixture build needs the full SDK, including its graphics
+   libraries. It stages fixture headers and libraries such as GTK, glib
+   and SDL2 into a temporary copy of the wasm32 sysroot and uses that copy
+   for wasm32 fixture builds only.
    (`bash build.sh` still works as a deprecated delegator to the same
    command.)
 
@@ -289,10 +293,10 @@ normal static archive resolution.
 ### With dynamic loading (dlopen)
 
 ```bash
-# Build main program with dlopen support
-wasm32posix-cc -ldl main.c -o main.wasm
+# Build the main program; -rdynamic exports its symbols to the modules it loads
+wasm32posix-cc -rdynamic main.c -o main.wasm
 
-# Build shared library
+# Build a shared library (a side module)
 wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 ```
 
@@ -300,12 +304,98 @@ Use `wasm64posix-cc` for both commands to build a memory64 executable and
 side module. Do not mix wasm32 and wasm64 artifacts in one process: memory and
 table imports, pointer globals, and GOT entries are width-specific.
 
-Executables that expose their own symbols to loaded modules or resolve them
-through `dlopen(NULL, ...)` / `dlsym(RTLD_DEFAULT, ...)` must also link with
-`-Wl,--export-dynamic`. Symbols intended for lookup must have default
-visibility, either through `__attribute__((visibility("default")))` on the
-public API or a scoped `-fvisibility=default` build flag. `RTLD_NEXT` lookup is
-not currently supported.
+`dlopen`, `dlsym`, `dlclose` and `dlerror` are in libc, as on other musl
+systems: a program that calls them gets Kandelo's loader with or without
+`-ldl`. `RTLD_NEXT` lookup is not currently supported.
+
+#### Plugin modules and the programs that load them
+
+A side module carries no libc: every symbol it does not define, libc's
+included, resolves against the program that loads it, and `dlopen()` fails
+with a `dlerror()` naming the first symbol nothing provides. A program
+that loads plugins links with `-rdynamic` (or `-Wl,--export-dynamic`,
+`-Wl,-E`), as on any Unix, to export what they call. The build systems'
+switches produce it: CMake's `ENABLE_EXPORTS`, Meson's
+`export_dynamic: true` and Libtool's `-export-dynamic`.
+
+How the SDK makes that work:
+
+- **The loader comes with dlopen.** The SDK links its loader
+  (`libc/glue/dlopen.c`) into every executable as a lazy member ahead of
+  the first `libc.a`: after the caller's inputs, or just before a libc the
+  caller names itself (librsvg's pkg-config file adds `-lc`). It is not
+  placed ahead of every input because wasm-ld links an invalid module when
+  a lazy definition precedes a reference with another signature, which
+  Autoconf's `char dlopen (void);` checks make
+  ([runtime workaround entry](../tests/runtime-workarounds/WASM-LD-LAZY-SIGNATURE-MISMATCH/entry.md)).
+  A program that calls `dlopen`, `dlsym`, `dlclose` or `dlerror` gets it
+  instead of musl's static stubs ("Dynamic loading not supported"); a
+  program that never calls them gets none of it, and `-ldl` changes
+  nothing. Configure probes therefore see working functions in libc:
+  Meson's `dependency('dl')` is built in, and Autoconf's
+  `AC_SEARCH_LIBS([dlopen], [dl])` answers `none required`.
+  The loader's imports are among the host imports every program may use
+  (`libc/glue/kandelo-host-imports.txt`). A fork-capable program that
+  imports any of them is instrumented as a dynamic-linking program (fork
+  capability bit 0x02, plus a dlopen contract), which costs code size.
+  With clang 21.1.7 the growth was 0.1% for Vim, 1.1% for notify-send and
+  13% for waybar. In bash, 5.9 KB of it was the loader's code and 4.6 KB
+  the instrumentation; in a large program like waybar it is mostly
+  instrumentation. A package whose program reaches
+  `dlopen` only through a feature Kandelo does not have builds without
+  that feature: bash without loadable builtins, SDL without its dynamic
+  API (which looks for a replacement SDL shared library) and SDL2 without
+  Vulkan (which opens libvulkan). Programs that do load modules keep the
+  loader: waybar's CFFI modules, GLib's GModule, Qt plugins, MariaDB
+  plugins, CPython's extension-module import, Vim.
+- **`-rdynamic` exports.** Unix build systems add `-rdynamic` for the same
+  reason, so a program's modules can call it; bash's configure and
+  NetHack's Linux hints do. It now exports every default-visibility symbol
+  the program links, and each export is kept and instrumented (bash had
+  3,700). A package that loads no modules drops it.
+- **Executable code has Unix visibility.** Clang gives WebAssembly symbols
+  hidden visibility unless told otherwise, which left `--export-dynamic`,
+  which exports default-visibility symbols, nothing to export. The SDK
+  compiles code that is not position-independent with
+  `-fvisibility=default` (a caller's own `-fvisibility` still wins), and
+  musl's `libc.a` is built the same way, with musl's internals hidden by
+  musl's own annotations. An executable's code is the same either way; only
+  the export set under `--export-dynamic` changes.
+- **Module code keeps hidden visibility.** A compile with `-fPIC`, `-fpic`
+  or `-shared` may become a side module, and wasm-ld imports a side
+  module's own weak default-visibility definitions (inline functions,
+  template instances, implicit virtual destructors) so that another
+  module's copy can win; Kandelo's loader resolves imports only against the
+  program and other modules, so such a module would not load. Hidden, a
+  module binds them to its own copies, as it always has. The cost: PIC code
+  linked into an executable (a Libtool convenience library, a Meson static
+  library under its default `b_staticpic`) is not exported by `-rdynamic`
+  unless it declares default visibility.
+- **Exporting does not make the program fork-capable.** The SDK's glue
+  (the syscall channel, the `fork` entry, compiler builtins) is compiled
+  hidden, so `--export-dynamic` neither exports it nor keeps `fork`, and
+  with it the kernel's fork import, in a program that never calls `fork`.
+  The loader's four public functions are default, so a plugin can call
+  `dlopen` too. `-Wl,--export-all` is different: it exports and keeps
+  every symbol of every linked object, the glue's `fork` included, so the
+  program must then be fork-instrumented.
+
+What `-rdynamic` exports is what the program links. A plugin that calls a
+libc function the program never uses fails to load, because a static
+program contains only the libc members it references; link and export it
+with `-Wl,--export=<symbol>`. Calling `fork` from a plugin likewise needs a
+program that links `fork` and is fork-instrumented.
+
+Libtool, CMake and Meson build plugin modules natively inside Kandelo:
+see [GNU build tools](#gnu-build-tools) and
+[CMake inside Kandelo](#cmake-inside-kandelo).
+`host/test/guest-plugins.test.ts` builds a program and a plugin that calls
+back into it and into libc with each of them, and runs it.
+`host/test/sdk-plugin-modules.test.ts` checks the SDK contract above with
+the build machine's `cc`: `-rdynamic` without `-ldl`, the export set, no
+fork import, no loader in a program that never calls `dlopen`, a C++ plugin
+that binds its own inline, virtual and template definitions, and a plugin
+that needs a libc function the program does not link.
 
 ## What the SDK Does
 
@@ -321,6 +411,11 @@ not currently supported.
 -mllvm -wasm-use-legacy-eh=false   # Modern wasm-EH (try_table/catch_ref);
                                    # LLVM 21 defaults to the legacy form
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
+-Wcast-function-type-strict        # Warn about incompatible function pointer casts
+-Wno-error=cast-function-type-strict # Keep the warning nonfatal under -Werror
+-fvisibility=default               # Non-PIC compiles only: Unix symbol
+                                   # visibility (see "Plugin modules");
+                                   # the caller's -fvisibility wins
 -fwasm-exceptions                  # Compiles with C++ input only (see
                                    # "C++ exceptions")
 --sysroot=<path>                   # musl sysroot
@@ -346,6 +441,32 @@ dependency prefixes when those paths must also be reproducible.
 The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
 leave unresolved host imports in linked programs.
+
+A direct cast between incompatible callback types gets a Clang warning.
+A cast through `void *` can erase the information Clang needs. Give callback
+parameters their actual function-pointer types so Clang can also check callers.
+Some C type differences, such as two different pointer parameter types, have
+the same Wasm representation. A warning alone does not establish that the
+program will trap.
+
+In the completed supported-registry run at `d4b37e705b`, the compiler emitted
+this warning in 55 of 338 package names, across 58 package/architecture
+builds. Of 359 scheduled nodes, 329 succeeded, 29 used cached source packages
+or composed products, and one failed. The failed package, `graphics-cts`,
+emitted warnings during compilation and reached its fork-instrumentation
+budget after linking.
+Repeated header and generated-code diagnostics can dominate the output.
+For example, wasm32 libffi emitted 6,289 warnings in its generated dispatch
+code, where a runtime signature selects the typed call.
+
+A source review of 61 distinct wasm32 diagnostics across basu, Bison, FBDoom,
+gperf, nano, SDL2 and SDL3 found one call with a mismatched Wasm signature.
+SDL2's test timeout registers a no-argument function with a timer API that
+invokes it with two arguments and expects an integer result. Of the other
+60 diagnostics, 53 retained the same Wasm signature and seven involved
+callback identity checks or storage for those checks. These seven packages
+were selected for source review. Their counts do not estimate a registry-wide
+defect rate.
 
 ### Compiler facts for fork instrumentation
 
@@ -513,6 +634,7 @@ package that accepts the boundary names them explicitly.
 | Library | Provides | Behavior |
 |---|---|---|
 | `-lkandelo-ucontext-unsupported` | `getcontext`, `setcontext`, `makecontext`, `swapcontext` | Writes `<function>: ucontext is not supported on Kandelo` to stderr and aborts (`SIGABRT`). |
+| `-lkandelo-mprotect` | `mprotect` | Accepts a request that keeps read and write access (`PROT_READ\|PROT_WRITE`, with or without `PROT_EXEC`) and fails with `ENOTSUP` for one that would remove read or write access; `EINVAL` for unknown protection bits. |
 
 ucontext is unsupported (see `docs/posix-status.md`), so by default a program
 that calls it fails to link. PHP opts in because Zend always compiles Fibers on
@@ -522,6 +644,34 @@ stand-ins abort instead of returning `-1`/`ENOSYS` because PHP ignores those
 return values, so an error return would let a Fiber run on an uninitialized
 context. Do not link these libraries to make a link error go away unless the
 program is known not to depend on the API.
+
+WebAssembly memory has no page protection, so libc.a defines no public
+`mprotect` and a program that calls it fails to link; the SDK driver adds a
+note naming `-lkandelo-mprotect` to that link error. Link it when the program
+uses `mprotect()` only to make memory readable and writable, such as committing
+pages of a `PROT_NONE` reservation. A program that relies on `mprotect()` to
+make memory read-only or inaccessible (guard pages, write barriers, W^X JITs)
+gets `ENOTSUP` from it and must handle that or use another strategy.
+`config.site` reports `mprotect` absent, and build systems that probe by linking
+(Meson, CMake) find it absent too unless the library is added to their link.
+
+A static library that calls `mprotect()` fails the link of every program that
+pulls in the calling archive member, including programs that never reach the
+call. Prefer a build option that compiles the protection-dependent feature out
+(OpenSSL is built `no-secure-memory`, so its secure heap is unavailable rather
+than unguarded). When the library's calls only make memory readable and
+writable, record `-lkandelo-mprotect` in the library's own link metadata
+(pkg-config `Libs.private`, the CMake link interface, libtool `.la`) so
+consumers link it without naming it: Qt6Core and Qt6Qml carry it in their
+CMake link interface.
+
+Software that cannot run unless such a request reports success (a fiber pool
+that refuses to work without a guard page, an allocator that crashes when
+decommit fails) can declare the `mprotect` fiction instead: the request
+succeeds without effect, within a declared class and size, and the program
+records that it was built that way. Select it with
+`--kandelo-fiction=mprotect:...` or `KANDELO_FICTIONS`, or in a package with
+`[[fictions]]`; see "Declared fictions" in `docs/package-management.md`.
 
 #### Why an 8 MiB main-thread stack
 
@@ -588,8 +738,12 @@ The pinned LLD 23.1.3 accepts the lld forms `-z stack-size=<bytes>` and
 decimal, leading-zero or `0o` octal, `0x`/`0X` hexadecimal, and `0b`/`0B`
 binary.
 
-Clang expands its response files when producing the trace. The SDK expands any
-remaining lld response files, including nested `@file` references, using LLVM's
+The SDK expands compiler `@file` arguments before applying its normal target,
+flag and glue policy, so Meson/Ninja response-file links obey the same contract
+as command-line links. Caller files remain unchanged. Long normalized Clang
+commands use a private temporary response file, removed after the invocation,
+to stay below host argument-size limits. The SDK also expands any remaining
+lld response files, including nested `@file` references, using LLVM's
 POSIX response-file tokenization rules. Expansion uses an iterative work stack,
 not a nesting cutoff: the driver inspects chains accepted by LLVM and rejects
 missing or recursive response files before the real link. To bound hostile or
@@ -599,7 +753,7 @@ explicit resource limits; exhausting one never falls back to the 8 MiB floor.
 This keeps quoted or escaped paths distinct from linker options and prevents
 object filenames containing `stack-size=` from changing the stack. Bare
 `stack-size=<bytes>` tokens, `-z=stack-size=<bytes>`, and options after `--` are
-not stack requests. Response-file contents are never rewritten.
+not stack requests. Caller response-file contents are never rewritten.
 The SDK accepts LLVM's UTF-8, UTF-16LE-BOM, and UTF-16BE-BOM response
 encodings, inside Kandelo as on the build machine.
 Invalid spellings stay visible to LLVM so it can reject them; a valid stack
@@ -615,11 +769,12 @@ live in `crates/kandelo-cc/src/flags.rs`, shared by both SDK builds.
 When linking an executable (not compile-only), the SDK adds:
 - `libc/glue/channel_syscall.c` — syscall dispatcher
 - `libc/glue/compiler_rt.c` — soft-float and 64-bit builtins
-- `libc/glue/dlopen.c` — the dynamic loader, with `-ldl`
 - `libc/glue/cxxrt_entry.cpp` — the C++ runtime's entries (see "C++
   exceptions"), when the link includes libc++abi: the C++ driver adds it, or
   the caller names `-lc++abi` or `libc++abi.a`
 - `sysroot/lib/crt1.o` — C runtime startup
+- `libc/glue/dlopen.c` — the dynamic loader, a lazy member a program gets
+  when it calls `dlopen`, `dlsym`, `dlclose` or `dlerror`
 - `libc/glue/cxxrt.c` — a minimal C++ runtime (`operator new`/`delete`,
   `__cxa_pure_virtual`) for C++ code linked without libc++ and libc++abi,
   as a lazy member (`--start-lib`) after the caller's inputs and the C++
@@ -713,7 +868,7 @@ These flags are common in build systems but irrelevant for Wasm:
 - `-lpthread` (pthread symbols are provided by musl's `libc.a`)
 - `-fPIE`, `-pie` (no position-independent executables in Wasm)
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
-- `-rdynamic`, `-Wl,-Bsymbolic`
+- `-Wl,-Bsymbolic`
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
 - `-Wl,--start-group`, `-Wl,--end-group` (wasm-ld rejects them; like ELF lld it
   resolves archive members regardless of command-line order)
@@ -772,12 +927,10 @@ and the kernel implements them; the limits that remain (`mremap` refuses to
 grow a `MAP_PRIVATE` file mapping, and `madvise` refuses advice it cannot carry out) are listed
 in [POSIX status](posix-status.md).
 
-Dynamic loading is an important exception to link-only detection. Musl carries
-weak `dlopen`/`dlsym` stubs that link but only report that dynamic loading is
-unsupported. `config.site` therefore directs `AC_SEARCH_LIBS` checks for the
-dlfcn API to `-ldl`; the SDK compiler wrapper interprets that library request
-by linking Kandelo's functional Wasm dynamic-loading glue. A configure result
-of `none required` for those searches would select the nonfunctional stubs.
+Dynamic loading needs no preset. Musl's `libc.a` carries weak `dlopen`/`dlsym`
+stubs that only report that dynamic loading is unsupported, but the SDK links
+its loader ahead of them into any program that calls the dlfcn functions, so a
+configure result of `none required` selects working functions.
 
 ### Example: building dash
 
@@ -793,29 +946,30 @@ make
 
 ## CMake Projects
 
-For CMake, create a toolchain file:
-
-```cmake
-# wasm32-posix-toolchain.cmake
-set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_SYSTEM_PROCESSOR wasm32)
-
-set(CMAKE_C_COMPILER wasm32posix-cc)
-set(CMAKE_CXX_COMPILER wasm32posix-c++)
-set(CMAKE_AR wasm32posix-ar)
-set(CMAKE_RANLIB wasm32posix-ranlib)
-
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-```
-
-Then:
+Use the SDK's cross toolchain, `sdk/cmake/kandelo-toolchain.cmake` for wasm32
+or `sdk/cmake/kandelo-wasm64-toolchain.cmake` for wasm64. Both set
+`CMAKE_SYSTEM_NAME=Kandelo` and `UNIX=1`. CMake discovers the target's
+pointer size and gives executables a `.wasm` suffix.
 
 ```bash
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=wasm32-posix-toolchain.cmake
+KANDELO_REPO=/path/to/kandelo
+source "$KANDELO_REPO/sdk/activate.sh"
+export WASM_POSIX_SYSROOT="$KANDELO_REPO/sysroot"
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$KANDELO_REPO/sdk/cmake/kandelo-toolchain.cmake"
 cmake --build build
 ```
+
+For wasm64, select the wasm64 toolchain and set `WASM_POSIX_SYSROOT` to
+`"$KANDELO_REPO/sysroot64"` or your private wasm64 sysroot.
+
+The toolchains link CMake's `try_compile` probes as executables. The SDK
+reports an unresolved function as a link error, so CMake's function and
+library checks can distinguish available symbols from missing ones. Run
+probes still require an emulator or a verified target answer.
+
+The SDK is the sole owner of the executable link contract used by recipes.
+Recipes that use these toolchains declare the entry file,
+`kandelo-toolchain-common.cmake`, and `Platform/Kandelo.cmake` in their build inputs.
 
 ### Example: building Redis
 
@@ -944,6 +1098,38 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 
 ## Inspecting build output
 
+In the dev shell, `cargo xtask wasm-indirect-call-report FILE.wasm [FILE.wasm ...]`
+produces one JSON record per linked module. Add `--show-compatible` before the
+paths to include the compatible targets for auditing. Each record counts indirect-call
+groups (caller, table and expected type), groups with a resolved target, and
+resolved paths. Several paths can reach the same group. A finding gives
+the caller and target function indices, table slot, expected and actual Wasm
+type indices, and the evidence for the slot. Findings are informational.
+
+The prototype recognizes a literal slot, a literal final argument carried
+through one direct call, and an immediate store and reload at the same
+constant address. A finding describes what happens if execution follows that
+path with the table's initial binding. Exported tables can be changed by the
+embedding host, and another thread can replace a value in shared memory.
+The report skips dynamic-linker, imported and guest-written tables. Callbacks
+stored on a heap list, including Toybox's exit handlers, can remain unresolved.
+A module with zero findings can still trap.
+
+Two overlapping samples of packaged wasm32 executables at `d4b37e705b`
+were deduplicated by content within each sample. The registry sample includes
+every published program of at most 2 MiB present when the sample was taken.
+
+| Sample | Executables | Indirect-call groups | Groups with a resolved target | False positives / verified compatible paths |
+| --- | ---: | ---: | ---: | ---: |
+| Partial shell build | 40 | 1,323 | 25 | 0 / 25 |
+| Registry build, programs up to 2 MiB | 126 | 126,633 | 71 | 0 / 246 |
+
+Independent WABT disassembly and table dumps confirmed the slot, caller and
+target type for every resolved path. Neither sample produced a mismatch,
+so precision among naturally occurring alerts is unknown. A separate SDK-built
+terminal test guest produced one finding. Correcting its handler parameter
+removed the finding at that same table slot.
+
 SDK output is WebAssembly, not ELF. The Kandelo shell carries two sets of
 tools for reading it: LLVM's binary tools (`objdump`, `nm`, `ar`, `size`,
 `strip`, `llvm-readobj`, ..., from the `clang` package) and `wasm-tools`.
@@ -1058,10 +1244,7 @@ The archive's sysroot holds only the SDK's declared content: the files in
 the musl output receipt (checked against their recorded digests), the
 other files `scripts/build-musl.sh` installs, the
 [platform graphics libraries](#sysroot-platform-libraries), and libc++
-from the declared `libcxx` dependency. The build machine's `sysroot/` is
-shared and also holds libraries other tools stage there, such as the
-GTK, glib and SDL2 archives `scripts/build-programs.sh` copies in for its
-fixtures. `images/vfs/scripts/stage-sdk-sysroot.sh` leaves those behind.
+from the declared `libcxx` dependency.
 The `kandelo-sdk` image's package build stages its sysroot through the
 same script and passes the `libcxx` output separately. Its image builder,
 `images/vfs/scripts/build-kandelo-sdk-vfs-image.sh`, has no default
@@ -1253,22 +1436,36 @@ differs from the SDK's cross files, which say `linux` for cross builds.
 Meson would name executables `<name>.js` on a system whose name starts
 with `wasm`, an Emscripten convention, so a package patch keeps Kandelo's
 unsuffixed. As with Libtool, build static libraries: `library()` defaults
-to shared, and linking an executable against a shared library fails, so
-use `static_library()` or `-Ddefault_library=static`. Kandelo reports one
+to shared, and a Kandelo program cannot be linked against a shared
+library, so use `static_library()` or `-Ddefault_library=static`. Meson
+refuses an executable's `link_with` of a shared library with a message
+that says so (a package patch); without it the link would fail with
+"attempted static link of dynamic object". `shared_module()` builds a
+side module that `dlopen()` loads, and an executable's
+`export_dynamic: true` exports its symbols to it. Kandelo reports one
 online processor, so Ninja runs two jobs and `meson test` one test at a
 time unless told otherwise. `packages/registry/meson/README.md` and
 `packages/registry/ninja/README.md` have the detail.
 
-**Libtool** builds static libraries only. A Kandelo executable cannot be
-linked against a shared library (`cc` builds `-shared` side modules for
-`dlopen`, but linking a program against one fails with "attempted static
-link of dynamic object"). Given the `linux-musl` identity, upstream
-libtool would build `libfoo.so` and fail to link programs against it, so
-the shipped `libtool.m4` reports no dynamic linker on Kandelo (a package
-patch), and `libtool` installs `.a` archives whatever `LT_INIT` asks for.
-A release tarball whose bundled `libtool.m4` predates this needs
-`--disable-shared`, or `autoreconf -fi`. Libtool cannot build `dlopen`
-modules (`-module`) on Kandelo; build those with `cc -shared`.
+**Libtool** builds `dlopen` modules shared and every other library
+static. A Kandelo executable cannot be linked against a shared library
+(linking a program against one fails with "attempted static link of
+dynamic object"), but `dlopen()` loads the side modules `cc -shared`
+builds. Given the `linux-musl` identity, upstream libtool would build
+`libfoo.so` for every library and fail to link programs against it, so
+the shipped `libtool.m4` and `ltmain.sh` describe Kandelo's loader (a
+package patch): `configure` reports the dynamic linker as `Kandelo dlopen
+(modules only)`, a `-module` library (or one whose link passes
+`-shared`) becomes an unversioned side module, `NAME.so`, with no soname,
+run path or libc of its own, and every other installed library is a `.a`
+archive whatever `LT_INIT` asks for. A program's `-export-dynamic` becomes
+`-Wl,--export-dynamic`, so its plugins can call it and the libc it links (see
+[Plugin modules](#plugin-modules-and-the-programs-that-load-them)).
+Because shared libraries are enabled, Libtool compiles each library
+source twice, PIC and non-PIC, as on any platform with shared libraries;
+`--disable-shared` compiles once and builds modules static too. A
+release tarball whose bundled `libtool.m4` predates this needs
+`--disable-shared`, or `autoreconf -fi`.
 
 **`ld`** is `/usr/bin/ld`, a script that runs the SDK's `wasm-ld`. It
 is not a symlink because LLD picks which linker to be from the name it
@@ -1328,13 +1525,22 @@ names the machine `Kandelo` (`CMAKE_SYSTEM_NAME` and
 Linux to CMake either: projects that branch on `Linux` take their generic
 Unix path.
 
-**Static libraries only.** CMake's `Platform/Kandelo` module says the
-platform has no shared libraries, for the reason Libtool builds none
-above. Under policy CMP0164 (`cmake_minimum_required(VERSION 3.30)` or
-later), `add_library(... SHARED)` and `add_library(... MODULE)` stop with
-"the target platform does not support dynamic linking"; older projects
-get CMake's warning and a static library. `find_library()` finds `.a`
-files only. Build `dlopen` side modules with `cc -shared`.
+**Modules, not shared libraries.** CMake's `Platform/Kandelo` module says
+the platform cannot link programs against shared libraries, for the
+reason Libtool builds none above, but loads modules. Under policy CMP0164
+(`cmake_minimum_required(VERSION 3.30)` or later),
+`add_library(... SHARED)` stops with "the target platform does not
+support dynamic linking"; older projects get CMake's warning and a static
+library. `add_library(... MODULE)` builds a side module,
+`lib<name>.so`, that `dlopen()` loads; as on every platform, no target
+can link against a `MODULE` library. A package patch lets CMake admit
+`MODULE` libraries through a new global property,
+`TARGET_SUPPORTS_MODULE_LIBS`, while `TARGET_SUPPORTS_SHARED_LIBS` stays
+false. `ENABLE_EXPORTS` on an executable links it with
+`-Wl,--export-dynamic` so its modules can call it, and `CMAKE_DL_LIBS` is
+empty: `dlopen` is in libc (see
+[Plugin modules](#plugin-modules-and-the-programs-that-load-them)).
+`find_library()` finds `.a` files only.
 
 **C++ exceptions** need no flag: the SDK enables them for every C++
 compile (see [C++ exceptions](#c-exceptions)), so `try`/`catch` works in a
@@ -1355,3 +1561,113 @@ download at configure time.
 configures, builds, tests and packages a C and C++ project with a static
 library, a pkg-config module, configure checks that run, a `SHARED` library
 that falls back to static, `ctest` and `cpack`, in the build image.
+
+## Experimental memory-group translation
+
+`wasm32posix-shared-memory ordinary.wasm -o grouped.wasm` prepares a separate
+memory32 executable for a trusted sharing group. The Node and browser embedding
+launchers accept compatible prepared bytes or installed `spawnFromVfs` paths
+when explicitly configured with `experimentalMemoryGroup`; an ordinary launch
+refuses the required `kandelo.memory-group.v3.memory` import. Path launch keeps
+the kernel's retained executable descriptor and credentials. Compatible
+`posix_spawn` children of grouped parents use the same checked admission.
+Packages may declare a derived ZIP output with `shared_memory_from` in their
+own `package.toml`. The normal resolver prepares it through this SDK command,
+and the shell installs it as a lazy alternative alongside ordinary executables.
+See [producer-owned shared-memory outputs](package-management.md#shared-memory-outputs). Cage, Sway
+and Sway/SFWBar profiles and Activities explicitly select the memory-group
+backend. Other shell launches keep ordinary execution, and normal computer
+file persistence applies. See [the desktop launch contract](shared-memory-groups.md#shell-desktops-and-partial-development-images).
+Ordinary programs, including PHP-FPM, keep their existing build and launch
+behavior. Persistent writable shared mappings remain unsupported.
+
+`NodeKernelHost.getMemoryGroupUsage()` and `BrowserKernel.getMemoryGroupUsage()`
+provide copied admission and backing accounting without creating a group or
+exposing memory. Shared pages are counted once across aliases; backing extent
+is capacity, not measured RAM. See [inspection units and lifetime semantics](shared-memory-groups.md#desktop-first-opt-in).
+
+The command uses this checkout's normal SDK program version, ABI stamp and fork
+instrumenter, then compiles the checked translation helpers and runs
+`crates/shared-memory-instrument`. It retains the ordinary input, refuses stale
+stamps, side modules and already translated input, and validates the emitted
+Wasm. The versioned memory import changes no function, global or table indices;
+fork descriptor identities stay intact. This extension does not change the
+frozen program ABI 56 or permit an ordinary host to substitute `env.memory`.
+
+Before translation, the tool checks exact constant-returning markers in the
+compiled helpers against every Rust layout declaration. Missing, stale or
+malformed markers require a helper rebuild and leave existing output intact.
+Every internal helper also needs its exact parameter/result signature, even
+when the particular input program does not exercise that helper.
+This checks compiled layout agreement without running helper code; it does not
+replace the C memory-operation tests or prove arbitrary helper code correct.
+
+`kandelo.memory-group` records artifact version 3, layout 3, thread attachment 2,
+cooperative stop 3, execution barrier 1, ordered wait queue 2, source/helper hashes, and the original
+logical page limits. Physical memory is group storage; host consumers must use
+explicit virtual-memory operations rather than treat its buffer as guest memory.
+The translator uses outlined checked accesses. Wrappers share an operation,
+alignment and lane while receiving each instruction's original constant offset
+as a private i64 argument. The checked helper still validates the complete
+effective address and permissions; this changes no public artifact interface.
+Other research optimization variants remain separate.
+
+Bulk copies validate both complete virtual ranges before writing. Contiguous
+physical spans use an ordinary Wasm copy. Fragmented ranges can exceed the
+per-replica scratch capacity: a page bitmap proves when chunked moves are safe,
+while physical alias cycles use a bounded graph walk that preserves source
+bytes and repeated destination mappings. If virtual aliases make the visited
+bitmap too large, a compact bitmap can track their distinct physical pages.
+The walk uses only the existing scratch allocation and scalar locals; scratch
+capacity is not a copy-size limit. Very irregular unaligned alias graphs can
+still be expensive when neither bitmap fits. Application performance of that
+fallback remains unmeasured. Its stop checks do not acknowledge a mapping
+barrier while physical cursors remain live.
+
+Passive data initialization also accepts fragmented ranges larger than scratch.
+It validates the whole destination and source before page-sized writes, using
+the native data segment to check bounds and dropped state. Active segments are
+dropped before the original start function runs; attaching a replica replays
+neither active data nor start.
+
+The mechanism fixture covers compiled C scalar, split-page, SIMD, atomic, bulk,
+growth, alias, initialization and stop behavior in disposable Workers. The
+physical pool uses one bitmap for host allocation and translated C growth,
+zeroes reused pages before publication and preserves state on allocation refusal.
+The matching physical-pool primitive and its standalone tests are included to
+check host/C bitmap interoperability. Synthetic grow/retire cycles plateau,
+including concurrent C Workers and host allocation. The pool primitive does not establish complete process retirement.
+
+Version 3 adds an exact per-replica control block, a separate `__vm_replica`
+global and source-function/loop checkpoints. A reversible execution barrier
+does not authorize reclamation: a native waiter can acknowledge that barrier
+while its physical target and wait node remain pinned. Pause preserves the
+original native timeout and notification order; stop targets the exact replica,
+and the returning helper owns node recycling. The exported `__vm_checkpoint`
+also permits process-Worker import adapters to check an admitted root/replica
+before a host call and in its return/failure path. That check must execute the
+native Wasm helper; throwing a JavaScript RuntimeError is catchable by guest
+exception handlers. The integrated Node/browser process import adapters bind
+this check to the admitted execution generation before and after host calls.
+Notifications wake translated guest wait nodes and native kernel listeners on
+the physical status word. Native listeners do not consume the guest wake quota
+or contribute to its return count. Host publication writes the body and status
+before either wake; native listeners are notified after the queue unlocks.
+The internal `__vm_worker_wait32` entry accepts a virtual byte address and an
+exact root/replica binding for JavaScript-generated IPC. It translates and
+checks the address, then uses the same queue and pause/stop checkpoints as a
+source Wasm wait. A worker must bind this entry to its admitted replica; native
+JavaScript waits on physical payload words cannot substitute for guest waits.
+The integrated runtime binds those entries to exact kernel-authorized replicas.
+Its grouped fork, exec, pthread, exit and destruction paths own their execution
+and wait retirement fences. The translator's mechanism tests alone do not prove
+that lifecycle contract; normal SDK/runtime tests exercise it separately.
+
+Historical dynamic physical-growth experiments after peer Worker termination
+fail on WebKit. The current JavaScriptCore backend provisions the complete
+admitted group extent before launching participants; it does not raise the
+group's capacity or allocation budget. Other browser engines grow as needed.
+The developer desktop is usable within its bounded contract, but the combined
+release gates, total-browser resource costs and remaining object/graphics
+semantics are not complete. See [the shared-group contract](shared-memory-groups.md)
+and [current validation and limits](https://github.com/Automattic/kandelo/blob/fb798e1ea88a065b343fcb06a28b0def9c96bc66/docs/measurements/2026-11-20-shared-memory-desktop-current.md).

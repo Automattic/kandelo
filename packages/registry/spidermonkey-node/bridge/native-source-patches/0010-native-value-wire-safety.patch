@@ -1,0 +1,60 @@
+# Kandelo patch rationale (O20)
+#
+# Node serialization reuses the original wire tags and graph routines with
+# bridge-owned buffers and exceptions. Check capacity arithmetic and empty
+# buffer access, and report version errors through the bridge rather than a
+# V8-private factory. The OS cannot validate serializer sizes or create
+# engine exceptions. These are explicit adaptations of reused routines, not
+# a claim of a confirmed upstream defect; review equivalent upstream checks
+# on upgrades.
+#
+# Judgment: Supported. The bridge needs checked buffer arithmetic and its
+# own error transport around the original wire algorithm.
+#
+# Portable wire routines: native version-error transport and checked buffer
+# growth/empty-buffer access. No wire tags or graph algorithms are replaced.
+--- a/deps/v8/src/objects/value-serializer.cc
++++ b/deps/v8/src/objects/value-serializer.cc
+@@ -402,6 +402,10 @@
+
+ Maybe<uint8_t*> ValueSerializer::ReserveRawBytes(size_t bytes) {
+   size_t old_size = buffer_size_;
++  if (bytes > std::numeric_limits<size_t>::max() - old_size) {
++    out_of_memory_ = true;
++    return Nothing<uint8_t*>();
++  }
+   size_t new_size = old_size + bytes;
+   if (V8_UNLIKELY(new_size > buffer_capacity_)) {
+     bool ok;
+@@ -410,13 +414,18 @@
+     }
+   }
+   buffer_size_ = new_size;
+-  return Just(&buffer_[old_size]);
++  return Just(buffer_ ? buffer_ + old_size : nullptr);
+ }
+
+ Maybe<bool> ValueSerializer::ExpandBuffer(size_t required_capacity) {
+   DCHECK_GT(required_capacity, buffer_capacity_);
+-  size_t requested_capacity =
+-      std::max(required_capacity, buffer_capacity_ * 2) + 64;
++  if (required_capacity > std::numeric_limits<size_t>::max() - 64) {
++    out_of_memory_ = true;
++    return Nothing<bool>();
++  }
++  size_t doubled_capacity = buffer_capacity_ > (std::numeric_limits<size_t>::max() - 64) / 2
++      ? required_capacity : buffer_capacity_ * 2;
++  size_t requested_capacity = std::max(required_capacity, doubled_capacity) + 64;
+   size_t provided_capacity = 0;
+   void* new_buffer = nullptr;
+   if (delegate_) {
+@@ -1399,8 +1408,7 @@
+     ReadTag().ToChecked();
+     if (!ReadVarintLoop<uint32_t>().To(&version_) ||
+         version_ > kLatestVersion) {
+-      isolate_->Throw(*isolate_->factory()->NewError(
+-          MessageTemplate::kDataCloneDeserializationVersionError));
++      ReportVersionError();
+       return Nothing<bool>();
+     }
+   }

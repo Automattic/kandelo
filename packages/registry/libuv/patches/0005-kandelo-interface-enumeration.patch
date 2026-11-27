@@ -1,0 +1,100 @@
+# Kandelo patch rationale (O05)
+#
+# Node's network-interface API needs real IP and hardware addresses. Reuse
+# getifaddrs for IP entries and Kandelo's existing hardware-address ioctl
+# for the same interfaces; BSD AF_LINK records are not provided by this
+# ABI. The Node bridge should not implement a second network-interface
+# table, nor should libc invent BSD records solely to avoid a port patch.
+# Prefer a small upstream portable/backend interface if it can consume
+# these same OS records.
+#
+# Judgment: Supported. The backend must read Kandelo interface data through
+# its actual ABI rather than BSD AF_LINK.
+#
+--- a/src/unix/bsd-ifaddrs.c
++++ b/src/unix/bsd-ifaddrs.c
+@@ -27,7 +27,12 @@
+ 
+ #include <ifaddrs.h>
+ #include <net/if.h>
+-#if !defined(__CYGWIN__) && !defined(__MSYS__) && !defined(__GNU__)
++#if defined(UV_PLATFORM_KANDELO)
++#include <sys/ioctl.h>
++#include <unistd.h>
++#endif
++#if !defined(__CYGWIN__) && !defined(__MSYS__) && !defined(__GNU__) && \
++    !defined(UV_PLATFORM_KANDELO)
+ #include <net/if_dl.h>
+ #endif
+ 
+@@ -40,7 +45,8 @@
+     return 1;
+   if (ent->ifa_addr == NULL)
+     return 1;
+-#if !defined(__CYGWIN__) && !defined(__MSYS__) && !defined(__GNU__)
++#if !defined(__CYGWIN__) && !defined(__MSYS__) && !defined(__GNU__) && \
++    !defined(UV_PLATFORM_KANDELO)
+   /*
+    * If `exclude_type` is `UV__EXCLUDE_IFPHYS`, return whether `sa_family`
+    * equals `AF_LINK`. Otherwise, the result depends on the operating
+@@ -57,7 +63,7 @@
+    */
+   if (ent->ifa_addr->sa_family == AF_LINK)
+     return 1;
+-#elif defined(__NetBSD__) || defined(__OpenBSD__)
++#elif defined(__NetBSD__) || defined(__OpenBSD__) || defined(UV_PLATFORM_KANDELO)
+   if (ent->ifa_addr->sa_family != PF_INET &&
+       ent->ifa_addr->sa_family != PF_INET6)
+     return 1;
+@@ -130,7 +136,50 @@
+     address++;
+   }
+ 
+-#if !(defined(__CYGWIN__) || defined(__MSYS__)) && !defined(__GNU__)
++#if defined(UV_PLATFORM_KANDELO)
++  /* Kandelo's getifaddrs supplies real IP entries through the kernel's
++   * interface ioctls. The same interface table owns each hardware address;
++   * it does not provide BSD AF_LINK records. */
++  {
++    struct ifreq request;
++    int fd;
++    int error;
++    int i;
++
++    fd = uv__socket(AF_INET, SOCK_DGRAM, 0);
++    if (fd < 0) {
++      error = fd;
++      goto kandelo_error;
++    }
++    for (i = 0; i < *count; i++) {
++      address = &(*addresses)[i];
++      memset(&request, 0, sizeof(request));
++      if (strlen(address->name) >= sizeof(request.ifr_name)) {
++        error = UV_ENAMETOOLONG;
++        uv__close(fd);
++        goto kandelo_error;
++      }
++      memcpy(request.ifr_name, address->name, strlen(address->name) + 1);
++      if (ioctl(fd, SIOCGIFHWADDR, &request) != 0) {
++        error = UV__ERR(errno);
++        uv__close(fd);
++        goto kandelo_error;
++      }
++      memcpy(address->phys_addr, request.ifr_hwaddr.sa_data,
++             sizeof(address->phys_addr));
++    }
++    uv__close(fd);
++    freeifaddrs(addrs);
++    return 0;
++
++kandelo_error:
++    uv__free(*addresses);
++    *addresses = NULL;
++    *count = 0;
++    freeifaddrs(addrs);
++    return error;
++  }
++#elif !(defined(__CYGWIN__) || defined(__MSYS__)) && !defined(__GNU__)
+   /* Fill in physical addresses for each interface */
+   for (ent = addrs; ent != NULL; ent = ent->ifa_next) {
+     int i;

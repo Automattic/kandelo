@@ -141,7 +141,10 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     let stderr = "";
     const lazy: string[] = [];
     const host = new NodeKernelHost({
-      maxWorkers: 4,
+      // Test the explicit opt-in with its selected prepared image. Production
+      // hosts never infer this capability from image metadata.
+      maxWorkers: 8,
+      experimentalMemoryGroup: { maximumPages: 8192 },
       rootfsImage: imageBytes(),
       onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
       onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
@@ -151,9 +154,9 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
     });
     await host.init(arrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
     try {
-      const fs = KandeloImageFs.create();
-      fs.loadImage(imageBytes());
       if (manifest!.selection.includes("flang-browser-bundle")) {
+        const fs = KandeloImageFs.create();
+        fs.loadImage(imageBytes());
         for (const path of [
           "/usr/bin/flang",
           "/usr/lib/kandelo/fortran/libflang_rt.runtime.a",
@@ -164,20 +167,28 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
         }
         expect(lazy.some((event) => event.includes("flang.zip"))).toBe(false);
       }
-      const bash = fs.readFile("/bin/bash");
-      const exitCode = await host.spawn(arrayBuffer(bash), ["bash", "-c", script], {
+      const ordinary = await host.spawnFromVfs('/bin/bash', ['bash', '-c', script], {
         env: ["PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/maker", "TERM=xterm", "TMPDIR=/tmp"],
         cwd: "/home/maker",
         uid: 1000,
         gid: 1000,
         stdin: new Uint8Array(),
       });
-      expect(exitCode, `stdout=${stdout}\nstderr=${stderr}\nlazy=${lazy.join("\n")}`).toBe(0);
+      expect(await ordinary.exit, `stdout=${stdout}\nstderr=${stderr}\nlazy=${lazy.join("\n")}`).toBe(0);
       expect(stdout).toContain("partial-boot-ok");
       if (manifest!.selection.includes("flang-browser-bundle")) {
         expect(stdout).toMatch(/^fortran-spike-ok 42$/m);
         expect(lazy.some((event) => event.includes("flang.zip"))).toBe(true);
       }
+      // The base shell's compatible outputs come from their producer settings.
+      // This must work even when no compositor or desktop package was selected.
+      const grouped = await host.spawnFromVfs('/bin/bash', ['bash', '-c',
+        "printf 'generic-shared-path\\n' | grep shared | sed 's/generic-shared/producer-shared/'"], {
+        executionBackend: 'memory-group', stdin: new Uint8Array(), env: ['PATH=/bin:/usr/bin'],
+      });
+      expect(await grouped.exit, stderr).toBe(0);
+      expect(stdout).toContain('producer-shared-path');
+      expect((await host.getMemoryGroupUsage())?.admission.tasks).toBe(0);
       if (manifest!.packages.includes("tmux")) expect(stdout).toMatch(/tmux \d/);
       if (manifest!.packages.includes("less")) expect(stdout).toMatch(/less \d+/);
       if (manifest!.packages.includes("fbdoom")) expect(stdout).toContain("fbdoom-wrapper-ok");

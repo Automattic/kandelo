@@ -1,6 +1,7 @@
 //! xtask — repo-local utilities.
 //!
 //! Subcommands:
+//!   wasm-indirect-call-report  Report resolvable indirect-call type mismatches in linked Wasm.
 //!   dump-abi              Regenerate `abi/snapshot.json` from authoritative sources.
 //!   bundle-program        Zip-bundle one program's binary + runtime + LICENSE.
 //!   build-deps            Wasm library dep-graph resolver (see docs/dependency-management.md).
@@ -97,6 +98,8 @@ mod partial_image;
 mod pkg_manifest;
 mod program_env_imports;
 mod program_extensions;
+mod group_memory_scan;
+mod wasm_indirect_call_report;
 mod package_imports;
 mod recipe_tree_guard;
 mod remote_fetch;
@@ -117,7 +120,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, test-failures, runtime-workarounds check|list|run"
+                "subcommands: vfs, wasm-indirect-call-report, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, test-failures, runtime-workarounds check|list|run"
             );
             return ExitCode::from(2);
         }
@@ -147,6 +150,8 @@ fn main() -> ExitCode {
         "dump-abi" => dump_abi::run(rest),
         "check-program-env-imports" => program_env_imports::run(rest),
         "program-extensions" => program_extensions::run(rest),
+        "wasm-indirect-call-report" => wasm_indirect_call_report::run(&rest),
+        "group-memory-scan" => group_memory_scan::run(&rest),
         "check-package-imports" => package_imports::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),

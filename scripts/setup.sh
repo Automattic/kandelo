@@ -7,4 +7,6 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 export PATH="$KANDELO_DEV_SHELL_TOOL_PATH"
 host_target="$(rustc -vV | awk '/^host/{print $2}')"
 [ -n "$host_target" ] || { echo "setup.sh: no rustc host target" >&2; exit 1; }
-exec cargo run -p xtask --target "$host_target" -- bootstrap "$@"
+# Match the optimized tool used by build planning and the other run.sh entry
+# points: projection validation hashes complete program and image files.
+exec cargo run --release -p xtask --target "$host_target" -- bootstrap "$@"

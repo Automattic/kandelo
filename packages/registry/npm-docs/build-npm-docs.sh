@@ -8,16 +8,17 @@
 # ...) and its guides (section 7). This ships that same set at
 # /usr/share/man for man(1), and links each page into npm's own man
 # directory (/usr/lib/npm/man), where `npm help` looks pages up.
-# (`npm help` does not run in Kandelo yet: it loads
-# node:readline/promises, which Kandelo's node does not provide.)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-package-man-pages.sh"
-kandelo_man_pages_stage_source "$HERE"
-SRC="$KANDELO_MAN_PAGES_SOURCE"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$HERE" wasm32
+SRC="${WASM_POSIX_DEP_SOURCE_DIR:?}/deps/npm"
+actual_version="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$SRC/package.json")"
+[ "$actual_version" = "${WASM_POSIX_DEP_VERSION:?}" ] || { echo "build-npm-docs: version differs from bundled npm" >&2; exit 1; }
 
 man_dir="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["directories"]["man"])' "$SRC/package.json")"
 [ "$man_dir" = "./man" ] || { echo "build-npm-docs: npm's man directory is now $man_dir" >&2; exit 1; }

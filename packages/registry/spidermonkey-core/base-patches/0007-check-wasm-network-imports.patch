@@ -1,0 +1,37 @@
+# Kandelo patch rationale (S05)
+#
+# Mozilla's original networking check reads ELF files, while Kandelo builds
+# Wasm objects and archives. Select the package-owned Wasm symbol reader but
+# keep the original forbidden-symbol rules. Skipping the check would hide
+# accidental networking imports; the OS and runtime bridge run too late to
+# repair this build-time inspection. Positive/negative format qualification
+# is still required; successful patch application does not qualify it.
+#
+# Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
+# subject to README.md: Future work: platform omissions.
+
+--- a/python/mozbuild/mozbuild/action/check_binary.py
++++ b/python/mozbuild/mozbuild/action/check_binary.py
+@@ -11,6 +11,7 @@
+
+ import buildconfig
+ from mozpack.executables import ELF, UNKNOWN, get_type
++from mozbuild.action.wasm_binary_symbols import iter_wasm_symbols
+ from packaging.version import Version
+
+ IS_ARM64 = buildconfig.substs.get("TARGET_CPU") == "aarch64"
+@@ -247,7 +248,13 @@
+     bad_occurences_names = set()
+
+     try:
+-        for sym in at_least_one(iter_elf_symbols(binary, all=True)):
++        if buildconfig.substs.get("TARGET_CPU") in ("wasm32", "wasm64"):
++            symbols = iter_wasm_symbols(
++                binary, get_output, buildconfig.substs.get("NM", "llvm-nm")
++            )
++        else:
++            symbols = iter_elf_symbols(binary, all=True)
++        for sym in at_least_one(symbols):
+             if sym["addr"] == 0 and sym["name"] in networking_functions:
+                 bad_occurences_names.add(sym["name"])
+     except Empty:

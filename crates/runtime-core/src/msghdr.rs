@@ -217,6 +217,36 @@ pub fn read_msghdr(
     })
 }
 
+/// Validate writable destinations before the queued carrier is consumed.
+/// Header inputs/padding and unused name/control capacity are not outputs.
+/// Counts come from the exact kernel queue, not caller-chosen physical bounds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_receive_outputs(host: &mut dyn HostIO, pid: i32, addr: u64,
+    width: u8, header: &NativeMsghdr, entries: &[NativeIovec], rights: usize, name_len: usize) -> Result<(), Errno> {
+    let layout = msghdr_layout(width)?;
+    let mut check = |address: u64, len: usize| {
+        if len != 0 && host.proc_validate_range(pid, address, len, wasm_posix_shared::ProcessMemoryAccess::Write) < 0 {
+            Err(Errno::EFAULT)
+        } else { Ok(()) }
+    };
+    for entry in entries { check(entry.base, entry.len)?; }
+    for offset in [layout.control_len, layout.flags] {
+        check(addr.checked_add(offset as u64).ok_or(Errno::EFAULT)?, 4)?;
+    }
+    if header.name_addr != 0 {
+        check(addr.checked_add(layout.name_len as u64).ok_or(Errno::EFAULT)?, 4)?;
+        check(header.name_addr, name_len.min(header.name_len as usize))?;
+    }
+    if header.control_addr != 0 {
+        let count = rights.min(control_fd_capacity(width, header.control_len)?);
+        if count != 0 {
+            let bytes = count.checked_mul(SCM_RIGHTS_FD_BYTES).ok_or(Errno::EOVERFLOW)?;
+            check(header.control_addr, control_space(width, bytes)?.min(header.control_len as usize))?;
+        }
+    }
+    Ok(())
+}
+
 /// Publish `recvmsg`'s value-result fields back into the caller's `msghdr`.
 ///
 /// Only the three fields the kernel owns are written, each on its own, rather
@@ -596,6 +626,183 @@ mod tests {
             .unwrap();
         }
         guest.poke(addr, &table);
+    }
+
+    #[test]
+    fn recvmsg_output_faults_preserve_queued_bytes_and_descriptor_ownership() {
+        use crate::{guest_recvmsg::GuestRecvmsg, process::Process, lock::AdvisoryLockManager, syscalls};
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM, SOCK_STREAM, MSG_CMSG_CLOEXEC, MSG_DONTWAIT};
+        for width in [4, 8] { for kind in [SOCK_DGRAM, SOCK_STREAM] { for fault in 0..4 {
+            let mut proc = Process::new(81_160); proc.pointer_width = width;
+            let tid = proc.pid; let mut host = GuestMemoryHost::new(BASE, 4096); host.memory.fill(0xa5);
+            let mut locks = AdvisoryLockManager::new();
+            let (sender, receiver) = syscalls::sys_socketpair(&mut proc, &mut host, AF_UNIX, kind, 0).unwrap();
+            let original = syscalls::sys_memfd_create(&mut proc, b"receive-output-fault", 0).unwrap();
+            syscalls::sys_write(&mut proc, &mut host, original, b"retained").unwrap();
+            let snapshot = syscalls::snapshot_scm_rights_fd(&proc, original).unwrap(); let id = snapshot.ofd_id;
+            assert_eq!(syscalls::sys_sendmsg(&mut proc, &mut host, sender, b"data", 0, None, vec![snapshot]), Ok(4));
+            syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, original).unwrap();
+            let layout = msghdr_layout(width).unwrap(); let payload = BASE + 512; let control = BASE + 768; let name = BASE + 896;
+            let header = NativeMsghdr { name_addr: name, name_len: 2, iov_addr: BASE + 128, iov_count: 2,
+                control_addr: control, control_len: control_space(width, 4).unwrap() as u32, flags: 0 };
+            write_msghdr(&mut host, BASE, width, header);
+            write_iovecs(&mut host, header.iov_addr, width, &[NativeIovec { base: payload, len: 2 }, NativeIovec { base: payload + 2, len: 2 }]);
+            let before = host.memory.clone(); let descriptors = proc.fd_table.iter().count();
+            let address = match fault { 0 => payload + 2, 1 => control, 2 => BASE + layout.flags as u64, _ => BASE + layout.name_len as u64 };
+            host.write_fault = Some(address..address + 1);
+            let result = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, MSG_DONTWAIT)
+                .and_then(|received| received.publish(&mut proc, &mut host, &mut locks));
+            assert_eq!(result, Err(Errno::EFAULT));
+            assert!(host.memory == before, "output modified before refusal at width {width}, kind {kind}, fault {fault}");
+            assert_eq!(proc.fd_table.iter().count(), descriptors);
+            assert!(crate::ofd::has_in_flight_ofd(id));
+            host.write_fault = None;
+            let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, MSG_DONTWAIT | MSG_CMSG_CLOEXEC).unwrap();
+            assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Ok(4));
+            assert_eq!(host.peek(payload, 4), b"data");
+            let output = read_msghdr(&mut host, tid as i32, BASE, width).unwrap();
+            let records = read_control(&mut host, tid as i32, control, output.control_len, width).unwrap();
+            let fd = i32::from_le_bytes(records[0].data[..4].try_into().unwrap());
+            assert_ne!(proc.fd_table.get(fd).unwrap().fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC, 0);
+            let mut bytes = [0; 8]; assert_eq!(syscalls::sys_pread(&mut proc, &mut host, fd, &mut bytes, 0), Ok(8)); assert_eq!(&bytes, b"retained");
+            for fd in [sender, receiver, fd] { syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        } } }
+    }
+
+    #[test]
+    fn recvmsg_ignores_unused_capacity_and_readonly_header_inputs() {
+        use crate::{guest_recvmsg::GuestRecvmsg, process::Process, lock::AdvisoryLockManager, syscalls};
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+        for width in [4, 8] { for unused in 0..3 {
+            let mut proc = Process::new(81_161); proc.pointer_width = width; let tid = proc.pid;
+            let mut host = GuestMemoryHost::new(BASE, 4096); let mut locks = AdvisoryLockManager::new();
+            let (sender, receiver) = syscalls::sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let original = syscalls::sys_memfd_create(&mut proc, b"bounded-control", 0).unwrap();
+            let snapshot = syscalls::snapshot_scm_rights_fd(&proc, original).unwrap();
+            syscalls::sys_sendmsg(&mut proc, &mut host, sender, b"", 0, None, vec![snapshot]).unwrap();
+            let name = BASE + 4000; let control = BASE + 4096 - control_space(width, 4).unwrap() as u64;
+            let header = NativeMsghdr { name_addr: name, name_len: u32::MAX, iov_addr: if width == 4 { u32::MAX as u64 } else { u64::MAX }, iov_count: 0,
+                control_addr: control, control_len: u32::MAX, flags: 0 };
+            write_msghdr(&mut host, BASE, width, header);
+            let layout = msghdr_layout(width).unwrap();
+            host.write_fault = Some(match unused { 0 => BASE + layout.iov as u64..BASE + layout.iov as u64 + width as u64,
+                1 => name + 2..control, _ => control + control_space(width, 4).unwrap() as u64..u64::MAX });
+            let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).unwrap();
+            assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Ok(0));
+            let output = read_msghdr(&mut host, tid as i32, BASE, width).unwrap();
+            assert_eq!(output.name_len, 2); assert_eq!(output.control_len as usize, control_space(width, 4).unwrap());
+            let records = read_control(&mut host, tid as i32, control, output.control_len, width).unwrap();
+            let received = i32::from_le_bytes(records[0].data[..4].try_into().unwrap());
+            for fd in [sender, receiver, original, received] { syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        } }
+    }
+
+    #[test]
+    fn recvmsg_checks_exact_socket_before_guest_metadata_and_keeps_retry_after_fd_reuse() {
+        use crate::{guest_recvmsg::GuestRecvmsg, process::Process, lock::AdvisoryLockManager, syscalls, blocked_retry::BlockingRetryOperation};
+        use wasm_posix_shared::socket::{AF_UNIX, AF_NETLINK, SOCK_DGRAM};
+        for width in [4, 8] {
+            let mut proc = Process::new(81_162); proc.pointer_width = width; let tid = proc.pid;
+            let mut host = GuestMemoryHost::new(BASE, 4096); let mut locks = AdvisoryLockManager::new();
+            let file = syscalls::sys_memfd_create(&mut proc, b"not-a-socket", 0).unwrap();
+            assert_eq!(GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, -1, u64::MAX, 0).err(), Some(Errno::EBADF));
+            assert_eq!(GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, file, u64::MAX, 0).err(), Some(Errno::ENOTSOCK));
+            let (sender, receiver) = syscalls::sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let header = NativeMsghdr { name_addr: 0, name_len: 0, iov_addr: BASE + 128, iov_count: 1, control_addr: 0, control_len: 0, flags: 0 };
+            write_msghdr(&mut host, BASE, width, header); write_iovecs(&mut host, header.iov_addr, width, &[NativeIovec { base: BASE + 512, len: 4 }]);
+            let before = host.memory.clone();
+            assert_eq!(GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).err(), Some(Errno::EAGAIN));
+            assert_eq!(host.memory, before);
+            let token = proc.blocked_retries.token_for(tid, BlockingRetryOperation::Recvmsg).unwrap();
+            syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, receiver).unwrap();
+            let replacement = syscalls::sys_socket(&mut proc, &mut host, AF_NETLINK, SOCK_DGRAM, crate::netlink::NETLINK_KOBJECT_UEVENT).unwrap();
+            assert_eq!(replacement, receiver);
+            syscalls::sys_sendmsg(&mut proc, &mut host, sender, b"kept", 0, None, vec![]).unwrap();
+            proc.blocked_retries.activate(tid, token, BlockingRetryOperation::Recvmsg).unwrap();
+            let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).unwrap();
+            proc.blocked_retries.clear_active();
+            assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Ok(4));
+            assert_eq!(host.peek(BASE + 512, 4), b"kept");
+            syscalls::release_blocking_retry_binding(&mut proc, &mut locks, &mut host, tid, token).unwrap();
+            for fd in [sender, receiver, file] { syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        }
+    }
+
+    #[test]
+    fn recvmsg_peek_and_zero_payload_keep_rights_and_owner_refuses_stale_image() {
+        use crate::{guest_recvmsg::GuestRecvmsg, process::Process, lock::AdvisoryLockManager, syscalls};
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM, MSG_PEEK};
+        for width in [4, 8] {
+            let mut proc = Process::new(81_163); proc.pointer_width = width; let tid = proc.pid;
+            let mut host = GuestMemoryHost::new(BASE, 4096); let mut locks = AdvisoryLockManager::new();
+            let (sender, receiver) = syscalls::sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let original = syscalls::sys_memfd_create(&mut proc, b"peek-and-stale", 0).unwrap();
+            let snapshot = syscalls::snapshot_scm_rights_fd(&proc, original).unwrap(); let id = snapshot.ofd_id;
+            syscalls::sys_sendmsg(&mut proc, &mut host, sender, b"", 0, None, vec![snapshot]).unwrap();
+            syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, original).unwrap();
+            let header = NativeMsghdr { name_addr: 0, name_len: 0, iov_addr: if width == 4 { u32::MAX as u64 } else { u64::MAX }, iov_count: 0,
+                control_addr: BASE + 512, control_len: control_space(width, 4).unwrap() as u32, flags: 0 };
+            write_msghdr(&mut host, BASE, width, header);
+            for _ in 0..2 {
+                let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, MSG_PEEK).unwrap();
+                assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Ok(0));
+                let records = read_control(&mut host, tid as i32, header.control_addr, header.control_len, width).unwrap();
+                let fd = i32::from_le_bytes(records[0].data[..4].try_into().unwrap());
+                syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+                assert!(crate::ofd::has_in_flight_ofd(id));
+            }
+            let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).unwrap();
+            let before = host.memory.clone(); proc.exec_generation += 1;
+            assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Err(Errno::ESRCH));
+            assert_eq!(host.memory, before); assert!(!crate::ofd::has_in_flight_ofd(id));
+            for fd in [sender, receiver] { syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        }
+    }
+
+    #[test]
+    fn recvmsg_staging_admission_refuses_before_removing_a_carrier() {
+        use crate::{guest_recvmsg::GuestRecvmsg, process::Process, lock::AdvisoryLockManager, syscalls};
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+        let mut proc = Process::new(81_164); let tid = proc.pid;
+        let mut host = GuestMemoryHost::new(BASE, 131072); let mut locks = AdvisoryLockManager::new();
+        let (sender, receiver) = syscalls::sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        syscalls::sys_sendmsg(&mut proc, &mut host, sender, b"kept", 0, None, vec![]).unwrap();
+        let header = NativeMsghdr { name_addr: 0, name_len: 0, iov_addr: BASE + 128, iov_count: 1, control_addr: 0, control_len: 0, flags: 0 };
+        write_msghdr(&mut host, BASE, 4, header); write_iovecs(&mut host, header.iov_addr, 4, &[NativeIovec { base: BASE + 4096, len: 65537 }]);
+        let before = host.memory.clone(); let held = crate::io_buffer::IO_MEMORY.usage().0;
+        { let _limit = crate::io_buffer::test_budget(held + 1024);
+          assert_eq!(GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).err(), Some(Errno::ENOMEM)); }
+        assert!(host.memory == before); assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).unwrap();
+        assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Ok(4)); assert_eq!(host.peek(BASE + 4096, 4), b"kept");
+        for fd in [sender, receiver] { syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+    }
+
+    #[test]
+    fn recvmsg_zero_stream_capacity_does_not_consume_the_queued_rights() {
+        use crate::{guest_recvmsg::GuestRecvmsg, process::Process, lock::AdvisoryLockManager, syscalls};
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_STREAM};
+        for width in [4, 8] {
+            let mut proc = Process::new(81_165); proc.pointer_width = width; let tid = proc.pid;
+            let mut host = GuestMemoryHost::new(BASE, 4096); let mut locks = AdvisoryLockManager::new();
+            let (sender, receiver) = syscalls::sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+            let original = syscalls::sys_memfd_create(&mut proc, b"zero-stream", 0).unwrap();
+            let snapshot = syscalls::snapshot_scm_rights_fd(&proc, original).unwrap(); let id = snapshot.ofd_id;
+            syscalls::sys_sendmsg(&mut proc, &mut host, sender, b"x", 0, None, vec![snapshot]).unwrap();
+            syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, original).unwrap();
+            let mut header = NativeMsghdr { name_addr: 0, name_len: 0, iov_addr: 0, iov_count: 0,
+                control_addr: if width == 4 { u32::MAX as u64 } else { u64::MAX }, control_len: 1, flags: 0 };
+            write_msghdr(&mut host, BASE, width, header);
+            let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).unwrap();
+            assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Ok(0)); assert!(crate::ofd::has_in_flight_ofd(id));
+            header.iov_addr = BASE + 128; header.iov_count = 1; header.control_addr = BASE + 512; header.control_len = control_space(width, 4).unwrap() as u32;
+            write_msghdr(&mut host, BASE, width, header); write_iovecs(&mut host, header.iov_addr, width, &[NativeIovec { base: BASE + 1024, len: 1 }]);
+            let received = GuestRecvmsg::receive(&mut proc, &mut host, &mut locks, tid, receiver, BASE, 0).unwrap();
+            assert_eq!(received.publish(&mut proc, &mut host, &mut locks), Ok(1)); assert_eq!(host.peek(BASE + 1024, 1), b"x");
+            let records = read_control(&mut host, tid as i32, header.control_addr, header.control_len, width).unwrap();
+            let fd = i32::from_le_bytes(records[0].data[..4].try_into().unwrap());
+            for fd in [sender, receiver, fd] { syscalls::sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+        }
     }
 
     #[test]

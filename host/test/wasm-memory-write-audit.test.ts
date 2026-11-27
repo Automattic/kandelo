@@ -42,6 +42,34 @@ function auditVirtual(
 }
 
 describe("WebAssembly memory write audit", () => {
+  it("matches exact allowances with literal asterisks without wildcard behavior", () => {
+    const source = "const memory = new WebAssembly.Memory({ initial: 2 * 2 /* private fixture */ });";
+    const options = (text: string, allowances: readonly AuditAllowance[] = []) => ({
+      ...virtualAuditOptions({ "case.ts": text }, [], allowances),
+      auditWasmAuthorityOrigins: true,
+    });
+    const original = auditWasmMemoryWrites(options(source));
+    expect(original.violations).toHaveLength(1);
+    const allowance: AuditAllowance = {
+      key: original.violations[0]!.key,
+      disposition: "non-kernel",
+      authorityOwner: "process-memory",
+      why: "This virtual fixture constructs independent memory and receives no kernel authority.",
+    };
+    expect(allowance.key).toContain("*");
+    const admitted = auditWasmMemoryWrites(options(source, [allowance]));
+    expect(formatAuditFailures(admitted)).toEqual([]);
+
+    const changed = auditWasmMemoryWrites(options(source.replace("2 * 2", "2 * 3"), [allowance]));
+    expect(changed.violations).toHaveLength(1);
+    expect(changed.unusedAllowances).toHaveLength(1);
+    expect(() => auditWasmMemoryWrites(options(source, [{
+      ...allowance,
+      key: "case.ts::*::wasm-memory-authority::*",
+    }]))).toThrow("audit allowance must be exact");
+  });
+
+
   it("keeps native compiler-fixture authority classifications exact and single-site", () => {
     const sourcePath = "scripts/check-fork-memory-artifact.ts";
     const allowance = nativeForkFixtureMemoryAllowances.find((entry) =>
@@ -292,6 +320,8 @@ describe("WebAssembly memory write audit", () => {
     "const { instance: first, instance: second } = await WebAssembly.instantiate(bytes, {});",
     "const { instance } = WebAssembly.instantiate(bytes, {});",
     "const { instance } = { nested: await WebAssembly.instantiate(bytes, {}) };",
+    "const { instance } = { holder: { nested: await WebAssembly.instantiate(bytes, {}) } };",
+    "const [instance] = [{ nested: await WebAssembly.instantiate(bytes, {}) }];",
     "const { instance } = { instance: new WebAssembly.Instance(module, {}) };",
     "let instance; ({ instance } = { instance: new WebAssembly.Instance(module, {}) });",
     "const { instance } = new WebAssembly.Instance(module, {});",
@@ -5410,6 +5440,43 @@ describe("WebAssembly memory write audit", () => {
         writeFileSync(path.join(root, relative), "export {};\n");
       }
 
+      expect(
+        repositoryRuntimeSourceFiles(root).map((file) =>
+          path.relative(root, file).split(path.sep).join("/"),
+        ),
+      ).toEqual(expected);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps private storage out while retaining tracked and newly authored sources", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kandelo-memory-audit-"));
+    try {
+      execFileSync("git", ["init", "--quiet", root]);
+      writeFileSync(path.join(root, ".gitignore"), "runtime/generated/\n");
+      const expected = [
+        "runtime/.scratch/production.ts",
+        "runtime/generated/tracked.ts",
+        "runtime/new-source.ts",
+      ];
+      for (const relative of [
+        ...expected,
+        ".context/evidence.ts",
+        ".scratch/build-output.ts",
+      ]) {
+        mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+        writeFileSync(path.join(root, relative), "export {};\n");
+      }
+      execFileSync("git", ["-C", root, "add", "--force", expected[1]]);
+      // Cross several query batches, with a tracked source inside an otherwise
+      // ignored build directory. Ignored output must not hide that source.
+      for (let index = 0; index < 2100; index++) {
+        writeFileSync(
+          path.join(root, "runtime/generated", `output-${index}.js`),
+          "export {};\n",
+        );
+      }
       expect(
         repositoryRuntimeSourceFiles(root).map((file) =>
           path.relative(root, file).split(path.sep).join("/"),

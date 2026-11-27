@@ -1,0 +1,15 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const [projectRoot, tarball] = process.argv.slice(2);
+const installed = path.join(projectRoot, 'node_modules/kandelo-install-fixture');
+assert.equal(fs.readFileSync(path.join(installed, 'installed.marker'), 'utf8'), 'real-npm-lifecycle\n');
+assert.deepEqual(require(installed), { answer: 42, kind: 'ordinary-js-package' });
+assert.equal(fs.lstatSync(path.join(projectRoot, 'node_modules/.bin/fixture-hello')).isSymbolicLink(), true);
+const lock = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package-lock.json'), 'utf8'));
+assert.equal(lock.packages['node_modules/kandelo-install-fixture'].version, '0.0.1');
+const integrity = 'sha512-' + crypto.createHash('sha512').update(fs.readFileSync(tarball)).digest('base64');
+assert.equal(lock.packages['node_modules/kandelo-install-fixture'].integrity, integrity);
+console.log('NPM local installation verified');

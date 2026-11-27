@@ -1,0 +1,239 @@
+# Kandelo patch rationale (S43)
+# Judgment: Supported. Keep operation-mode propagation until the object
+# design replaces it because callback failure policy depends on the actual
+# operation rather than script strictness alone.
+#
+# Node property callbacks ask whether failure should throw before taking
+# action. The answer depends on the operation: Reflect and Object.assign
+# can differ even in the same script. Bridge-entry checks or script
+# strictness miss operations performed entirely inside JS. Keep operation-
+# mode propagation until a native-object redesign provides it faithfully;
+# the OS cannot supply it. Nested user calls must not inherit the wrong
+# caller's failure mode.
+#
+# Retained provisionally; see README.md: Future work: platform omissions.
+
+Carry property-operation error policy into native callbacks.
+
+Keep original property algorithms and ordering. Explicit JSAPI/Reflect modes
+and native Throw=true operations override caller strictness; RunScript clears
+the mode for reentrant user code. The context owns no JS edges here.
+
+--- a/js/src/builtin/Object.cpp
++++ b/js/src/builtin/Object.cpp
+@@ -1113,6 +1113,7 @@
+     }
+
+     ObjectOpResult result;
++    JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
+     if (MOZ_UNLIKELY(
+             !SetProperty(cx, to, nextKey, propValue, toReceiver, result))) {
+       return false;
+@@ -1313,6 +1314,7 @@
+   *failedOnWindowProxy = false;
+   for (size_t i = 0, len = descriptors.length(); i < len; i++) {
+     ObjectOpResult result;
++    JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
+     if (!DefineProperty(cx, obj, descriptorKeys[i], descriptors[i], result)) {
+       return false;
+     }
+--- a/js/src/builtin/Reflect.cpp
++++ b/js/src/builtin/Reflect.cpp
+@@ -24,6 +24,7 @@
+
+ /* ES6 26.1.4 Reflect.deleteProperty (target, propertyKey) */
+ static bool Reflect_deleteProperty(JSContext* cx, unsigned argc, Value* vp) {
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   CallArgs args = CallArgsFromVp(argc, vp);
+
+   // Step 1.
+@@ -133,6 +134,7 @@
+
+ /* ES6 26.1.13 Reflect.set(target, propertyKey, V [, receiver]) */
+ static bool Reflect_set(JSContext* cx, unsigned argc, Value* vp) {
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   CallArgs args = CallArgsFromVp(argc, vp);
+
+   // Step 1.
+--- a/js/src/vm/Interpreter.cpp
++++ b/js/src/vm/Interpreter.cpp
+@@ -407,6 +407,7 @@
+ #  pragma optimize("g", off)
+ #endif
+ bool js::RunScript(JSContext* cx, RunState& state) {
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Nothing());
+   if (!cx->checkEmbedderScriptExecution()) {
+     return false;
+   }
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -514,6 +514,7 @@
+   bool brittleMode = false;
+
+  private:
++  mozilla::Maybe<bool> nativePropertyFailureMode_;
+   uint8_t embedderExecutionRestrictions_ = 0;
+   using NativeExecutionFatal = void (*)(const char*);
+   NativeExecutionFatal embedderExecutionFatal_ = nullptr;
+@@ -524,6 +525,25 @@
+     EmbedderCrashOnExecution = 1,
+     EmbedderThrowOnExecution = 2
+   };
++  mozilla::Maybe<bool> nativePropertyFailureMode() const {
++    return nativePropertyFailureMode_;
++  }
++  // Explicit [[Set]]/[[Delete]]/[[DefineOwnProperty]] failure policy belongs to
++  // the operation, not the nearest caller's strictness. A new JS invocation
++  // clears the override so a proxy/getter cannot leak it into reentrant JS.
++  class AutoNativePropertyFailureMode {
++    JSContext* cx_;
++    mozilla::Maybe<bool> saved_;
++   public:
++    AutoNativePropertyFailureMode(JSContext* cx, mozilla::Maybe<bool> mode)
++        : cx_(cx), saved_(cx->nativePropertyFailureMode_) {
++      cx_->nativePropertyFailureMode_ = mode;
++    }
++    ~AutoNativePropertyFailureMode() {
++      cx_->nativePropertyFailureMode_ = saved_;
++    }
++  };
++
+   uint8_t embedderExecutionRestrictions() const {
+     MOZ_ASSERT(js::TlsContext.get() == this);
+     return embedderExecutionRestrictions_;
+--- a/js/src/vm/JSObject.cpp
++++ b/js/src/vm/JSObject.cpp
+@@ -1658,6 +1658,7 @@
+ bool js::DefineProperty(JSContext* cx, HandleObject obj, HandleId id,
+                         Handle<PropertyDescriptor> desc) {
+   ObjectOpResult result;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
+   return DefineProperty(cx, obj, id, desc, result) &&
+          result.checkStrict(cx, obj, id);
+ }
+--- a/js/src/vm/ObjectOperations-inl.h
++++ b/js/src/vm/ObjectOperations-inl.h
+@@ -301,6 +301,7 @@
+                         JS::Handle<jsid> id, JS::Handle<JS::Value> v) {
+   JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
+   JS::ObjectOpResult result;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
+   return SetProperty(cx, obj, id, v, receiver, result) &&
+          result.checkStrict(cx, obj, id);
+ }
+@@ -318,6 +319,7 @@
+   JS::Rooted<jsid> id(cx, NameToId(name));
+   JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
+   JS::ObjectOpResult result;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
+   return SetProperty(cx, obj, id, v, receiver, result) &&
+          result.checkStrict(cx, obj, id);
+ }
+@@ -343,6 +345,7 @@
+                         bool strict) {
+   JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
+   JS::ObjectOpResult result;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(strict));
+   return SetProperty(cx, obj, id, v, receiver, result) &&
+          result.checkStrictModeError(cx, obj, id, strict);
+ }
+--- a/js/src/vm/PropertyAndElement.cpp
++++ b/js/src/vm/PropertyAndElement.cpp
+@@ -52,6 +52,7 @@
+ JS_PUBLIC_API bool JS_DefinePropertyById(
+     JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
+     JS::Handle<JS::PropertyDescriptor> desc, JS::ObjectOpResult& result) {
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return ::DefinePropertyByDescriptor(cx, obj, id, desc, result);
+ }
+
+@@ -59,6 +60,7 @@
+     JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
+     JS::Handle<JS::PropertyDescriptor> desc) {
+   JS::ObjectOpResult result;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
+   return ::DefinePropertyByDescriptor(cx, obj, id, desc, result) &&
+          result.checkStrict(cx, obj, id);
+ }
+@@ -313,6 +315,7 @@
+     return false;
+   }
+   JS::Rooted<jsid> id(cx, AtomToId(atom));
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return ::DefinePropertyByDescriptor(cx, obj, id, desc, result);
+ }
+
+@@ -325,6 +328,7 @@
+   }
+   JS::Rooted<jsid> id(cx, AtomToId(atom));
+   JS::ObjectOpResult result;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(true));
+   return ::DefinePropertyByDescriptor(cx, obj, id, desc, result) &&
+          result.checkStrict(cx, obj, id);
+ }
+@@ -653,6 +657,7 @@
+   CHECK_THREAD(cx);
+   cx->check(obj, id, v, receiver);
+
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return js::SetProperty(cx, obj, id, v, receiver, result);
+ }
+
+@@ -665,6 +670,7 @@
+
+   JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
+   JS::ObjectOpResult ignored;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return js::SetProperty(cx, obj, id, v, receiver, ignored);
+ }
+
+@@ -697,6 +703,7 @@
+
+   JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
+   JS::ObjectOpResult ignored;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return js::SetElement(cx, obj, index, v, receiver, ignored);
+ }
+
+@@ -743,6 +750,7 @@
+   CHECK_THREAD(cx);
+   cx->check(obj, id);
+
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return js::DeleteProperty(cx, obj, id, result);
+ }
+
+@@ -757,6 +765,7 @@
+     return false;
+   }
+   JS::Rooted<jsid> id(cx, AtomToId(atom));
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return js::DeleteProperty(cx, obj, id, result);
+ }
+
+@@ -771,6 +780,7 @@
+     return false;
+   }
+   JS::Rooted<jsid> id(cx, AtomToId(atom));
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return js::DeleteProperty(cx, obj, id, result);
+ }
+
+@@ -781,6 +791,7 @@
+   CHECK_THREAD(cx);
+   cx->check(obj);
+
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(false));
+   return js::DeleteElement(cx, obj, index, result);
+ }
+
+--- a/js/src/vm/SelfHosting.cpp
++++ b/js/src/vm/SelfHosting.cpp
+@@ -572,6 +572,7 @@
+   desc.assertValid();
+
+   ObjectOpResult result;
++  JSContext::AutoNativePropertyFailureMode propertyMode(cx, mozilla::Some(args[5].toBoolean()));
+   if (!DefineProperty(cx, obj, id, desc, result)) {
+     return false;
+   }

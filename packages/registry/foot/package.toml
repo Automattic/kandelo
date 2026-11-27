@@ -5,7 +5,7 @@ kind = "program"
 
 name = "foot"
 version = "1.17.2"
-kernel_abi = 17
+kernel_abi = 56
 depends_on = [
   "fcft@3.1.9",
   "fontconfig@2.15.0",
@@ -45,3 +45,10 @@ script_path = "packages/registry/foot/build-foot.sh"
 [[outputs]]
 name = "foot"
 wasm = "foot.wasm"
+
+# Normal derived output; the ordinary executable remains available.
+[[outputs]]
+name = "foot-shared"
+wasm = "foot-shared.zip"
+shared_memory_from = "foot"
+fork_instrumentation = "disabled"

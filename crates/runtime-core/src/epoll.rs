@@ -724,7 +724,7 @@ pub fn signal_generation(id: OfdId, generations: [Option<u64>; 2]) {
     });
 }
 
-pub fn finish_wait_token(proc: &mut crate::process::Process, tid: u32, token: u64) {
+pub fn finish_wait_token(proc: &mut crate::process::Process, tid: u32, token: u64) -> bool {
     if token != 0
         && proc
             .epoll_waits
@@ -732,7 +732,9 @@ pub fn finish_wait_token(proc: &mut crate::process::Process, tid: u32, token: u6
             .any(|(owner, lease)| *owner == tid && lease.token == token)
     {
         finish_wait(proc, tid);
+        return true;
     }
+    false
 }
 
 #[cfg(test)]

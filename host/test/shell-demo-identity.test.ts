@@ -22,7 +22,7 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 // to know "is a usable bash.wasm available", so any failure means skip.
 let SHELL_WASM: string | null;
 try {
-  SHELL_WASM = tryResolveBinary("programs/bash.wasm");
+  SHELL_WASM = tryResolveBinary("programs/bash/bash.wasm");
 } catch {
   SHELL_WASM = null;
 }

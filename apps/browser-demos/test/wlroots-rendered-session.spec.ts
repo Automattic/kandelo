@@ -23,8 +23,8 @@ for (const compositor of ["cage", "sway"] as const) {
     if (compositor === "sway") files.push(
       { path: "/bin/sh", bytes: bytes("programs/dash.wasm"), mode: 0o755 },
       { path: "/usr/bin/swaymsg", bytes: bytes("programs/sway/swaymsg.wasm"), mode: 0o755 },
-      { path: "/usr/bin/swaybg", bytes: bytes("programs/swaybg.wasm"), mode: 0o755 },
-      { path: "/usr/bin/uname", bytes: bytes("programs/coreutils.wasm"), mode: 0o755 },
+      { path: "/usr/bin/swaybg", bytes: bytes("programs/swaybg/swaybg.wasm"), mode: 0o755 },
+      { path: "/usr/bin/uname", bytes: bytes("programs/coreutils/coreutils.wasm"), mode: 0o755 },
       { path: "/usr/share/fonts/Inconsolata-Regular.ttf", bytes: new Uint8Array(readFileSync(
         new URL("../../../third_party/Inconsolata-Regular.ttf", import.meta.url))), mode: 0o644 },
       { path: "/etc/fonts/fonts.conf", bytes: new TextEncoder().encode(

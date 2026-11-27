@@ -120,7 +120,7 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     // starts with directory metadata supplied by the image, never its files.
     // The rootfs journal also bounds /var/log, so a machine cannot be filled
     // by its own logs; see `rootfs::VAR_LOG_BYTE_LIMIT`.
-    ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: RUN_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
     // prefix, so `/dev/shm` is tmpfs like the rest. `MAP_SHARED` mappings of
@@ -149,6 +149,12 @@ pub(crate) fn mounts() -> impl Iterator<Item = (&'static [u8], u64, &'static str
     SCRATCH_MOUNTS.iter().map(|mount| (mount.prefix, mount.st_dev, mount.fs_type))
 }
 
+// Protected boot-lifetime state for the OS's connected-name publisher. Use the
+// existing tmpfs layout owner so image-less boots also have this directory.
+const RUN_LAYOUT: &[LayoutNode] = &[
+    LayoutNode { path: b"kandelo", type_bits: S_IFDIR, mode: 0o755, uid: 0, gid: 0 },
+];
+
 const EXCHANGE_LAYOUT: &[LayoutNode] = {
     use crate::exchange::EXCHANGE_GID as G;
     &[
@@ -172,6 +178,7 @@ struct DirEntries {
     /// Names in creation order, by cookie.
     by_cookie: BTreeMap<u64, Vec<u8>>,
     next_cookie: u64,
+    watch_version: crate::vfs_events::DirectoryVersion,
 }
 
 impl DirEntries {
@@ -182,6 +189,7 @@ impl DirEntries {
     /// Point `name` at `idx`. A new name gets the next cookie; a replaced
     /// one (rename over an existing entry) keeps its own.
     fn insert(&mut self, name: Vec<u8>, idx: u32) -> Option<u32> {
+        self.watch_version.changed();
         if let Some(entry) = self.by_name.get_mut(&name) {
             return Some(core::mem::replace(&mut entry.0, idx));
         }
@@ -195,6 +203,7 @@ impl DirEntries {
     fn remove(&mut self, name: &[u8]) -> Option<u32> {
         let (idx, cookie) = self.by_name.remove(name)?;
         self.by_cookie.remove(&cookie);
+        self.watch_version.changed();
         Some(idx)
     }
 
@@ -251,7 +260,14 @@ enum InodeKind {
     HostBacked { source: u64, size: u64 },
 }
 
+struct GroupStorage {
+    object: crate::memory::GroupSharedMapping,
+    length: usize,
+    committed: bool,
+}
+
 struct Inode {
+    group_storage: Option<GroupStorage>,
     kind: InodeKind,
     /// Permission bits only (no `S_IFMT`).
     mode: u32,
@@ -289,11 +305,18 @@ struct Inode {
 }
 
 impl Inode {
+    fn discard_abandoned_group_storage(&mut self) {
+        if self.group_storage.as_ref().is_some_and(|g| !g.committed && g.object.only_inode_hold()) {
+            self.group_storage = None;
+        }
+    }
+
     /// Create an inode, stamping all three timestamps with the current
     /// published wall-clock time (see `set_now`).
     fn new(kind: InodeKind, mode: u32, uid: u32, gid: u32, nlink: u32, st_dev: u64, ino: u64) -> Self {
         let (sec, nsec) = now();
         Inode {
+            group_storage: None,
             kind,
             mode,
             uid,
@@ -360,6 +383,7 @@ impl Inode {
             InodeKind::Symlink(target) => target.len() as u64,
             InodeKind::Special(_) => 0,
         };
+        let size = self.group_storage.as_ref().filter(|g| g.committed).map_or(size, |g| g.length as u64);
         WasmStat {
             st_dev: self.st_dev,
             st_ino: self.ino,
@@ -494,8 +518,8 @@ impl TmpfsState {
                 // is something to drain, whatever freed the file.
                 crate::wakeup::push_exchange_pending();
             }
-            if let Some(Some(Inode { kind: InodeKind::Regular(data), st_dev, .. })) = self.inodes.get(idx as usize) {
-                let (st_dev, freed) = (*st_dev, data.len() as u64);
+            if let Some(Some(Inode { kind: InodeKind::Regular(data), st_dev, group_storage, .. })) = self.inodes.get(idx as usize) {
+                let (st_dev, freed) = (*st_dev, group_storage.as_ref().filter(|g| g.committed).map_or(data.len(), |g| g.length) as u64);
                 self.credit(st_dev, freed);
             }
             if let Some(Some(inode)) = self.inodes.get(idx as usize) {
@@ -813,6 +837,13 @@ pub fn lstat(path: &[u8]) -> Result<WasmStat, Errno> {
 /// and honoring the access mode; `open_count` is incremented here and released
 /// via [`release_handle`].
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
+    let path_entry = if flags & (O_CREAT | O_TRUNC) != 0 { crate::vfs_events::Entry::capture(path, lstat) } else { None };
+    let result = open_mutation(path, flags, mode, uid, gid)?;
+    if let Some(entry) = path_entry { entry.committed(flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY); }
+    Ok(result)
+}
+
+fn open_mutation(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     TMPFS.with(|state| {
@@ -823,7 +854,8 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
                     return Err(Errno::EEXIST);
                 }
-                let inode = state.get(existing).ok_or(Errno::ENOENT)?;
+                let inode = state.get_mut(existing).ok_or(Errno::ENOENT)?;
+                inode.discard_abandoned_group_storage();
                 // A socket node cannot be opened as a file; FIFOs are handled by
                 // the fifo path before tmpfs::open is ever reached.
                 if matches!(inode.kind, InodeKind::Special(_)) {
@@ -843,6 +875,7 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 } else if flags & O_DIRECTORY != 0 {
                     return Err(Errno::ENOTDIR);
                 }
+                if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY && inode.group_storage.is_some() { return Err(Errno::EOPNOTSUPP); }
                 if flags & O_TRUNC != 0 && !inode.is_dir() && flags & O_ACCMODE != O_RDONLY {
                     let freed = match state.get(existing).map(|node| (&node.kind, node.st_dev)) {
                         Some((InodeKind::Regular(data), st_dev)) => Some((st_dev, data.len() as u64)),
@@ -915,6 +948,89 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
 /// `(source, offset, buf)`. May return EAGAIN while the host fetches them.
 pub type SourceRead<'a> = dyn FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno> + 'a;
 
+/// The descriptor and each VMA retain this inode; physical pages stay with the
+/// admitted host group. The initial desktop surface supports whole, fixed-size
+/// objects. Resize and content writes after promotion fail visibly.
+pub(crate) fn prepare_group_storage(handle: i64, group: u32, id: u64, mapped_len: usize)
+    -> Result<crate::memory::GroupSharedMapping, Errno> {
+    let index = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::EBADF)?;
+        // Destroy/exec can drop an unpublished plan. No file bytes were moved;
+        // its last mapping capability disappearing revokes that preparation.
+        inode.discard_abandoned_group_storage();
+        if let Some(storage) = &inode.group_storage {
+            if storage.object.group() != group { return Err(Errno::EACCES); }
+            if !storage.committed { return Err(Errno::EBUSY); }
+            if mapped_len != storage.object.length() { return Err(Errno::EOPNOTSUPP); }
+            return Ok(storage.object.clone());
+        }
+        let InodeKind::Regular(data) = &inode.kind else { return Err(Errno::EOPNOTSUPP); };
+        // Source::capture owns exactly one pin. Existing mappings must not
+        // become disconnected when this inode's bytes move into the group.
+        if inode.map_pins != 1 { return Err(Errno::EOPNOTSUPP); }
+        let rounded = data.len().checked_add(65535).ok_or(Errno::ENOMEM)? & !65535;
+        if rounded == 0 || rounded != mapped_len { return Err(Errno::EOPNOTSUPP); }
+        let object = crate::memory::GroupSharedMapping::new(group, id, rounded)?;
+        inode.group_storage = Some(GroupStorage { object: object.clone(), length: data.len(), committed: false });
+        Ok(object)
+    })
+}
+
+pub(crate) fn group_storage_committed(handle: i64) -> bool {
+    let Ok(index) = file_handle_to_inode(handle) else { return false; };
+    TMPFS.with(|state| state.get(index).and_then(|inode| inode.group_storage.as_ref()).is_some_and(|g| g.committed))
+}
+
+pub fn group_storage_alive(group: u32, id: u64) -> bool {
+    TMPFS.with(|state| state.inodes.iter().flatten().any(|inode|
+        inode.group_storage.as_ref().is_some_and(|g| g.object.group() == group && g.object.id() == id
+            && (g.committed || !g.object.only_inode_hold()))))
+}
+
+pub(crate) fn commit_group_storage(handle: i64, id: u64) -> Result<(), Errno> {
+    let index = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::EBADF)?;
+        let storage = inode.group_storage.as_mut().filter(|g| g.object.id() == id).ok_or(Errno::ESRCH)?;
+        if storage.committed { return Err(Errno::EALREADY); }
+        let InodeKind::Regular(data) = &mut inode.kind else { return Err(Errno::EIO); };
+        if data.len() != storage.length { return Err(Errno::EAGAIN); }
+        *data = Vec::new();
+        storage.committed = true;
+        Ok(())
+    })
+}
+
+pub(crate) fn cancel_group_storage(handle: i64, id: u64) {
+    let Ok(index) = file_handle_to_inode(handle) else { return; };
+    TMPFS.with(|state| {
+        if let Some(inode) = state.get_mut(index) {
+            if inode.group_storage.as_ref().is_some_and(|g| g.object.id() == id && !g.committed) {
+                inode.group_storage = None;
+            }
+        }
+    });
+}
+
+pub(crate) fn read_with_host(handle: i64, offset: i64, output: &mut [u8], host: &mut dyn crate::process::HostIO) -> Result<usize, Errno> {
+    if offset < 0 { return Err(Errno::EINVAL); }
+    let index = file_handle_to_inode(handle)?;
+    let direct = TMPFS.with(|state| {
+        let inode = state.get(index).ok_or(Errno::EBADF)?;
+        Ok(inode.group_storage.as_ref().filter(|g| g.committed).map(|g| (g.object.clone(), g.length)))
+    })?;
+    if let Some((object, length)) = direct {
+        let offset = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let count = output.len().min(length.saturating_sub(offset));
+        if count == 0 { return Ok(0); }
+        let count_read = object.physical()?.read(offset as u64, &mut output[..count], host)?;
+        if count_read != count { return Err(Errno::EIO); }
+        return Ok(count_read);
+    }
+    read(handle, offset, output, &mut |source, at, bytes| host.exchange_source_read(source, at, bytes))
+}
+
 /// A byte source for callers that have no host: a host-backed file reads as
 /// an I/O error rather than as empty or stale bytes.
 pub fn no_source(_: u64, _: u64, _: &mut [u8]) -> Result<usize, Errno> {
@@ -928,6 +1044,7 @@ pub fn read(handle: i64, offset: i64, buf: &mut [u8], source_read: &mut SourceRe
     }
     let host_backed = TMPFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
+        if inode.group_storage.as_ref().is_some_and(|g| g.committed) { return Err(Errno::EOPNOTSUPP); }
         match &inode.kind {
             InodeKind::Regular(data) => {
                 let start = offset as usize;
@@ -1143,15 +1260,54 @@ pub fn take_released_sources() -> Vec<u64> {
     TMPFS.with(|state| core::mem::take(&mut state.released_sources))
 }
 
+/// Write through a promoted backing without recreating stale kernel contents.
+/// A pending promotion remains fenced and extending the fixed EOF is refused.
+pub(crate) fn write_with_host(handle: i64, offset: i64, buf: &[u8], host: &mut dyn crate::process::HostIO) -> Result<usize, Errno> {
+    if offset < 0 { return Err(Errno::EINVAL); }
+    let idx = file_handle_to_inode(handle)?;
+    let direct = TMPFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        inode.discard_abandoned_group_storage();
+        if let Some(storage) = &inode.group_storage {
+            if !storage.committed { return Err(Errno::EOPNOTSUPP); }
+            let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+            let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+            if end > storage.length { return Err(Errno::EOPNOTSUPP); }
+            inode.check_mutable()?;
+            return Ok(Some(storage.object.clone()));
+        }
+        Ok(None)
+    })?;
+    let Some(object) = direct else { return write(handle, offset, buf); };
+    if buf.is_empty() { return Ok(0); }
+    let count = object.physical()?.write(offset as u64, buf, host)?;
+    if count > buf.len() { return Err(Errno::EIO); }
+    if count != 0 {
+        TMPFS.with(|state| {
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            inode.clear_setid_on_modify(); inode.touch_modified(); Ok(())
+        })?;
+    }
+    Ok(count)
+}
+
 /// Write `buf` at `offset`, growing (and zero-filling any gap) as needed.
 pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
+    let result = write_mutation(handle, offset, buf)?;
+    if result > 0 { publish_handle_change(handle); }
+    Ok(result)
+}
+
+fn write_mutation(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
     let idx = file_handle_to_inode(handle)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
     TMPFS.with(|state| {
         let (st_dev, growth) = {
-            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            inode.discard_abandoned_group_storage();
+            if inode.group_storage.is_some() { return Err(Errno::EOPNOTSUPP); }
             let end = (offset as usize).checked_add(buf.len()).ok_or(Errno::EFBIG)?;
             let current = match &inode.kind {
                 InodeKind::Regular(data) => data.len(),
@@ -1239,7 +1395,7 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
     TMPFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
-            InodeKind::Regular(data) => Ok(data.len() as i64),
+            InodeKind::Regular(data) => Ok(inode.group_storage.as_ref().filter(|g| g.committed).map_or(data.len(), |g| g.length) as i64),
             InodeKind::HostBacked { size, .. } => i64::try_from(*size).map_err(|_| Errno::EOVERFLOW),
             _ => Err(Errno::EISDIR),
         }
@@ -1272,6 +1428,12 @@ fn grow_file_bytes(data: &mut Vec<u8>, new_len: usize, err: Errno) -> Result<(),
 /// Truncate an open tmpfs regular file to `length`, zero-filling any growth.
 /// The caller enforces access mode and RLIMIT_FSIZE.
 pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
+    let result = truncate_handle_mutation(handle, length)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn truncate_handle_mutation(handle: i64, length: i64) -> Result<(), Errno> {
     truncate_handle_inner(handle, length)?;
     crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, length as u64);
     Ok(())
@@ -1282,8 +1444,12 @@ fn truncate_handle_inner(handle: i64, length: i64) -> Result<(), Errno> {
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     TMPFS.with(|state| {
         let (st_dev, old_len) = {
-            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            inode.discard_abandoned_group_storage();
             inode.check_mutable()?;
+            if let Some(group) = &inode.group_storage {
+                return if group.committed && new_len == group.length { Ok(()) } else { Err(Errno::EOPNOTSUPP) };
+            }
             match &inode.kind {
                 InodeKind::Regular(data) => (inode.st_dev, data.len()),
                 _ => (inode.st_dev, new_len),
@@ -1416,6 +1582,13 @@ pub fn handle_is_live(handle: i64) -> bool {
 
 /// mkdir a tmpfs directory.
 pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = mkdir_mutation(path, mode, uid, gid)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn mkdir_mutation(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     mkdir_on_mount(mount_idx, rel, mode, uid, gid)
 }
@@ -1481,6 +1654,13 @@ fn mkdir_on_mount(mount_idx: usize, rel: &[u8], mode: u32, uid: u32, gid: u32) -
 
 /// Remove an empty tmpfs directory.
 pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = rmdir_mutation(path)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn rmdir_mutation(path: &[u8]) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     if comps.is_empty() {
@@ -1562,6 +1742,13 @@ pub fn remove_tree(path: &[u8]) -> Result<(), Errno> {
 
 /// Unlink a tmpfs non-directory name.
 pub fn unlink(path: &[u8]) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = unlink_mutation(path)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn unlink_mutation(path: &[u8]) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     if comps.is_empty() {
@@ -1677,6 +1864,15 @@ fn statfs_for_mount(mount_idx: usize) -> Result<WasmStatfs, Errno> {
 /// replaced; type mismatches yield ENOTDIR/EISDIR and a non-empty destination
 /// directory yields ENOTEMPTY.
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let old_entry = crate::vfs_events::Entry::capture(old, lstat);
+    let new_entry = crate::vfs_events::Entry::capture(new, lstat);
+    let result = rename_mutation(old, new)?;
+    if let Some(entry) = old_entry { entry.committed(false); }
+    if let Some(entry) = new_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn rename_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let (old_mount, old_rel) = match_mount(old).ok_or(Errno::ENOENT)?;
     let (new_mount, new_rel) = match_mount(new).ok_or(Errno::ENOENT)?;
     if old_mount != new_mount {
@@ -1763,6 +1959,13 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 /// destination is EEXIST. `old` is not dereferenced (the kernel already applied
 /// the syscall's follow policy), so a link to a symlink links the symlink.
 pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let new_entry = crate::vfs_events::Entry::capture(new, lstat);
+    let result = link_mutation(old, new)?;
+    if let Some(entry) = new_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn link_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let (old_mount, old_rel) = match_mount(old).ok_or(Errno::ENOENT)?;
     let (new_mount, new_rel) = match_mount(new).ok_or(Errno::ENOENT)?;
     if old_mount != new_mount {
@@ -1798,6 +2001,42 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
         }
         Ok(())
     })
+}
+
+
+// Directory descriptions retain the dev/inode observed when opened. Validate
+// that identity even if the pathname was renamed and replaced before binding.
+pub(crate) fn watch_directory(path: &[u8], id: crate::lock::FileId) -> Result<u32, Errno> {
+    let at_path = walk_to_inode(path).ok();
+    TMPFS.with(|state| {
+        let matches = |inode: &Inode| matches!(inode.kind, InodeKind::Dir(_)) &&
+            crate::vfs_events::identity(inode.stat()) == id;
+        if let Some(index) = at_path.filter(|&i| state.get(i).is_some_and(matches)) {
+            return Ok(index);
+        }
+        state.inodes.iter().position(|slot| slot.as_ref().is_some_and(matches))
+            .map(|index| index as u32).ok_or(Errno::ENOENT)
+    })
+}
+
+fn publish_handle_change(handle: i64) {
+    if !crate::vfs_events::active() { return; }
+    let Ok(index) = file_handle_to_inode(handle) else { return; };
+    TMPFS.with(|state| {
+        let Some(inode) = state.get(index) else { return; };
+        let target = crate::vfs_events::identity(inode.stat());
+        crate::vfs_events::changed(target, |dir_id, dir_index, names, emit| {
+            let crate::vfs_events::WatchedDirectory::Resident(dir_index) = dir_index else { return; };
+            let Some(dir) = state.get(dir_index) else { return; };
+            if crate::vfs_events::identity(dir.stat()) != dir_id { return; }
+            if let InodeKind::Dir(entries) = &dir.kind {
+                names.matching_names(index, &entries.watch_version, entries.len(),
+                    || entries.by_name.iter().map(|(name, &(inode, cookie))| (name.as_slice(), inode, cookie)),
+                    |cookie| entries.by_cookie.get(&cookie).map(Vec::as_slice),
+                    emit);
+            }
+        });
+    });
 }
 
 /// Open a directory stream over a tmpfs directory, returning an encoded handle.
@@ -1870,6 +2109,13 @@ fn walk_to_inode(path: &[u8]) -> Result<u32, Errno> {
 
 /// chmod a tmpfs path (permission bits only).
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = chmod_mutation(path, mode)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn chmod_mutation(path: &[u8], mode: u32) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -1882,6 +2128,13 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
 
 /// chown a tmpfs path. A field of `u32::MAX` (-1) is left unchanged.
 pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = chown_mutation(path, uid, gid, clear_setid)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn chown_mutation(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -1912,6 +2165,12 @@ pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), E
 
 /// fchmod an open tmpfs file handle.
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
+    let result = fchmod_mutation(handle, mode)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn fchmod_mutation(handle: i64, mode: u32) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -1924,6 +2183,12 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
 
 /// fchown an open tmpfs file handle. A field of `u32::MAX` (-1) is unchanged.
 pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let result = fchown_mutation(handle, uid, gid, clear_setid)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn fchown_mutation(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -1961,6 +2226,21 @@ pub fn utimensat(
     ctime_sec: u64,
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = utimensat_mutation(path, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn utimensat_mutation(
+    path: &[u8],
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -1977,6 +2257,13 @@ pub fn utimensat(
 
 /// Create a symbolic link at a tmpfs path pointing at `target`.
 pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    let linkpath_entry = crate::vfs_events::Entry::capture(linkpath, lstat);
+    let result = symlink_mutation(target, linkpath, uid, gid)?;
+    if let Some(entry) = linkpath_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn symlink_mutation(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(linkpath).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     if comps.is_empty() {

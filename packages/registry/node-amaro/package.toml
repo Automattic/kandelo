@@ -1,0 +1,45 @@
+kind = "library"
+name = "node-amaro"
+version = "1.1.11"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["node-amaro-serde-source@0.6.5"]
+
+[source]
+provider = "archive"
+url = "https://github.com/nodejs/amaro/archive/aa10506eb6115cbc7571237d6d1cfff20753ef9c.tar.gz"
+sha256 = "df8672f7eb435d80007813f40af7c68ae6ea3d92395ad949b598311f1d210e90"
+
+[license]
+spdx = "MIT AND Apache-2.0"
+url = "https://github.com/nodejs/amaro/blob/aa10506eb6115cbc7571237d6d1cfff20753ef9c/LICENSE.md"
+
+[build]
+script_path = "packages/registry/node-amaro/build.sh"
+
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.97.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "rustc"
+version_constraint = ">=1.97.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "node"
+version_constraint = ">=22.0"
+probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libnode-amaro.so"]
+headers = ["include/kandelo_amaro.h", "include/kandelo_amaro_values.h"]
+files = ["share/kandelo/amaro/index.js", "share/kandelo/amaro/native-imports.json", "share/licenses/node-amaro/LICENSE.amaro", "share/licenses/node-amaro/LICENSE.swc", "share/licenses/node-amaro/LICENSE.serde-wasm-bindgen"]

@@ -1,0 +1,171 @@
+# Kandelo patch rationale (O24)
+#
+# Node crypto/TLS and DNS need real Kandelo provider targets and original
+# provider generators. Keep honest pthread/dlfcn/Wasm settings, not Linux or
+# ELF/Darwin settings. Each generator adjustment has a separate reason:
+# no-docs must control the otherwise unconditional doc directory; no-asm
+# must not require NASM/GAS checks; a pinned source archive has no .git to
+# clean. Keep the existing stock options and original generators rather than
+# add recipe substitutions. Provider behavior still requires qualification.
+#
+# Source-only review/cleanup; no build or runtime qualification is claimed.
+
+--- /dev/null
++++ b/deps/openssl/openssl/Configurations/50-kandelo.conf
+@@ -0,0 +1,19 @@
++# Kandelo's wasm32 POSIX target. SDK tools own Wasm linkage/imports/exports.
++# Keep Node's no-assembly generation profile, thread safety and dlfcn support.
++my %targets = (
++    "kandelo-wasm32" => {
++        inherit_from     => [ "BASE_unix" ],
++        CC               => "wasm32posix-cc",
++        AR               => "wasm32posix-ar",
++        RANLIB           => "wasm32posix-ranlib",
++        CFLAGS           => picker(debug => "-O0 -g", release => "-O3"),
++        cppflags         => "-D__kandelo__=1",
++        cflags           => add("-pthread"),
++        ex_libs          => add("-pthread"),
++        bn_ops           => "BN_LLONG",
++        thread_scheme    => "pthreads",
++        dso_scheme       => "dlfcn",
++        shared_target    => "kandelo-shared",
++        shared_extension => ".so",
++    },
++);
+--- a/deps/openssl/openssl/Configurations/shared-info.pl
++++ b/deps/openssl/openssl/Configurations/shared-info.pl
+@@ -24,6 +24,12 @@
+
+ my %shared_info;
+ %shared_info = (
++    'kandelo-shared' => {
++        # The SDK selects Wasm side-module linkage and exported entrypoints.
++        # ELF sonames/version scripts and Darwin install names do not apply.
++        shared_ldflag         => '-shared',
++        module_ldflags        => '-shared',
++    },
+     'gnu-shared' => {
+         shared_ldflag         => '-shared -Wl,-Bsymbolic',
+         shared_sonameflag     => '-Wl,-soname=',
+--- a/deps/openssl/openssl/build.info
++++ b/deps/openssl/openssl/build.info
+@@ -1,7 +1,10 @@
+ # Note that some of these directories are filtered in Configure.  Look for
+ # %skipdir there for further explanations.
+
+-SUBDIRS=crypto ssl apps util tools fuzz providers doc
++SUBDIRS=crypto ssl apps util tools fuzz providers
++IF[{- !$disabled{docs} -}]
++  SUBDIRS=doc
++ENDIF
+ IF[{- !$disabled{tests} -}]
+   SUBDIRS=test
+ ENDIF
+--- a/deps/openssl/config/generate_gypi.pl
++++ b/deps/openssl/config/generate_gypi.pl
+@@ -23,17 +23,21 @@
+ }
+ my $arch = shift @ARGV;
+
+-# nasm version check
+-my $nasm_banner = `nasm -v`;
+-die "Error: nasm is not installed." if (!$nasm_banner);
+-
+-# gas version check
+-my $gas_version_min = 2.30;
+-my $gas_banner = `gcc -Wa,-v -c -o /dev/null -x assembler /dev/null 2>&1`;
+-my ($gas_version) = ($gas_banner =~/GNU assembler version ([2-9]\.[0-9]+)/);
+-if ($gas_version < $gas_version_min) {
+-  die "Error: gas version $gas_version is too old." .
+-    "$gas_version_min or higher is required.";
++# Portable no-assembly generation needs no x86 assembler.
++if ($asm ne "no-asm") {
++  # nasm version check
++  my $nasm_banner = `nasm -v`;
++  die "Error: nasm is not installed." if (!$nasm_banner);
++
++  # gas version check
++  my $gas_version_min = 2.30;
++  my $gas_banner = `gcc -Wa,-v -c -o /dev/null -x assembler /dev/null 2>&1`;
++  my ($gas_version) = ($gas_banner =~/GNU assembler version ([2-9]\.[0-9]+)/);
++  if ($gas_version < $gas_version_min) {
++    die "Error: gas version $gas_version is too old." .
++      "$gas_version_min or higher is required.";
++  }
++
+ }
+
+ our $src_dir = "../openssl";
+@@ -390,7 +394,7 @@
+
+ # Clean Up
+ my $cmd2 ="cd $src_dir; make -f $makefile clean; make -f $makefile distclean;" .
+-    "git clean -f $src_dir";
++    (-d "$src_dir/.git" ? "git -C $src_dir clean -f" : "true");
+ system($cmd2) == 0 or die "Error in system($cmd2)";
+
+
+--- a/deps/openssl/openssl_no_asm.gypi
++++ b/deps/openssl/openssl_no_asm.gypi
+@@ -1,7 +1,9 @@
+ {
+   'defines': ['OPENSSL_NO_ASM'],
+   'conditions': [
+-    ['target_arch=="ppc64" and OS in ("aix", "os400")', {
++    ['target_arch=="wasm32" and OS=="kandelo"', {
++      'includes': ['config/archs/kandelo-wasm32/no-asm/openssl.gypi'],
++    }, 'target_arch=="ppc64" and OS in ("aix", "os400")', {
+       'includes': ['config/archs/aix64-gcc-as/no-asm/openssl.gypi'],
+     }, 'target_arch=="ppc64" and OS=="linux" and node_byteorder =="little"', {
+       'includes': ['config/archs/linux-ppc64le/no-asm/openssl.gypi'],
+--- a/deps/openssl/openssl-cl_no_asm.gypi
++++ b/deps/openssl/openssl-cl_no_asm.gypi
+@@ -1,6 +1,8 @@
+ {
+   'conditions': [
+-    ['target_arch=="ppc64" and OS in ("aix", "os400")', {
++    ['target_arch=="wasm32" and OS=="kandelo"', {
++      'includes': ['config/archs/kandelo-wasm32/no-asm/openssl-cl.gypi'],
++    }, 'target_arch=="ppc64" and OS in ("aix", "os400")', {
+       'includes': ['config/archs/aix64-gcc-as/no-asm/openssl-cl.gypi'],
+     }, 'target_arch=="ppc64" and OS=="linux" and node_byteorder =="little"', {
+       'includes': ['config/archs/linux-ppc64le/no-asm/openssl-cl.gypi'],
+--- a/deps/openssl/openssl-fips_no_asm.gypi
++++ b/deps/openssl/openssl-fips_no_asm.gypi
+@@ -1,7 +1,9 @@
+ {
+   'defines': ['OPENSSL_NO_ASM'],
+   'conditions': [
+-    ['target_arch=="ppc64" and OS in ("aix", "os400")', {
++    ['target_arch=="wasm32" and OS=="kandelo"', {
++      'includes': ['config/archs/kandelo-wasm32/no-asm/openssl-fips.gypi'],
++    }, 'target_arch=="ppc64" and OS in ("aix", "os400")', {
+       'includes': ['config/archs/aix64-gcc-as/no-asm/openssl-fips.gypi'],
+     }, 'target_arch=="ppc64" and OS=="linux" and node_byteorder =="little"', {
+       'includes': ['config/archs/linux-ppc64le/no-asm/openssl-fips.gypi'],
+--- a/deps/openssl/config/include_no-asm.h.tmpl
++++ b/deps/openssl/config/include_no-asm.h.tmpl
+@@ -3,7 +3,9 @@
+ # define OPENSSL_LINUX 1
+ #endif
+
+-#if defined(OPENSSL_LINUX) && defined(__i386__)
++#if defined(__kandelo__) && defined(__wasm32__)
++# include "./archs/kandelo-wasm32/%%-$asmdir-%%/include/%%-$incdir-%%/%%-$name-%%.h"
++#elif defined(OPENSSL_LINUX) && defined(__i386__)
+ # include "./archs/linux-elf/%%-$asmdir-%%/include/%%-$incdir-%%/%%-$name-%%.h"
+ #elif defined(OPENSSL_LINUX) && defined(__ILP32__)
+ # include "./archs/linux-x32/%%-$asmdir-%%/include/%%-$incdir-%%/%%-$name-%%.h"
+--- a/deps/cares/cares.gyp
++++ b/deps/cares/cares.gyp
+@@ -217,6 +217,10 @@
+             '--std=gnu11'
+           ],
+         }],
++        [ 'OS=="kandelo"', {
++          'include_dirs': [ 'config/kandelo' ],
++          'sources': [ 'config/kandelo/ares_config.h' ]
++        }],
+         [ 'OS=="linux"', {
+           'include_dirs': [ 'config/linux' ],
+           'sources': [ 'config/linux/ares_config.h' ]

@@ -1,0 +1,11 @@
+{
+  "name": "kandelo-install-fixture",
+  "version": "0.0.1",
+  "main": "index.cjs",
+  "bin": {
+    "fixture-hello": "bin/hello.js"
+  },
+  "scripts": {
+    "install": "node install.cjs"
+  }
+}

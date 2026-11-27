@@ -11,7 +11,7 @@ for arch in wasm32posix wasm64posix; do
     sysroot="$test_root/$arch"
     mkdir -p "$sysroot/lib" "$sysroot/include/bits"
     for path in lib/libc.a lib/crt1.o lib/crti.o lib/crtn.o \
-        lib/libkandelo-ucontext-unsupported.a include/stdio.h \
+        lib/libkandelo-ucontext-unsupported.a lib/libkandelo-mprotect.a include/stdio.h \
         include/bits/alltypes.h include/bits/kandelo_thread_syscalls.h; do
         printf 'fixture %s %s\n' "$arch" "$path" > "$sysroot/$path"
     done

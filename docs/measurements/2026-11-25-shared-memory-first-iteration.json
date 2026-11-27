@@ -1,0 +1,114 @@
+{
+  "candidate": "f26103c65331e31eb565bbd3cdcdd40945fab60e",
+  "kernelSha256": "24dd8bb6937a55bf61a3b97bee6cdc04977b72f58b967c27dfa2027b8f94bcf1",
+  "browser": "153.0.8010.12",
+  "scope": "One fresh Chromium parent per arm per metric, ordinary then grouped, partial shell differing only in Sway backend. Descriptive screen, not statistical or develop comparison. User preview remained available; no other owned validation/build job ran during measurement.",
+  "cpuSeconds": {
+    "ordinary": 13.848875000000001,
+    "grouped": 16.905143000000002
+  },
+  "glyphMedianMs": {
+    "ordinary": 32.02499997615814,
+    "grouped": 32.31999999284744
+  },
+  "footprintMiB": {
+    "one-visible": {
+      "ordinary": 2498.3765869140625,
+      "grouped": 2579.7199935913086
+    },
+    "two-tiled": {
+      "ordinary": 2535.939498901367,
+      "grouped": 2739.267349243164
+    },
+    "two-separated": {
+      "ordinary": 2593.798873901367,
+      "grouped": 2752.6267700195312
+    },
+    "two-retiled": {
+      "ordinary": 2581.6582946777344,
+      "grouped": 2750.6267471313477
+    },
+    "after-guest-exit-machine-still-live": {
+      "ordinary": 2095.640884399414,
+      "grouped": 2444.828567504883
+    }
+  },
+  "groupAfterDesktopExit": {
+    "kandelo.memory_group.pageBytes": "65536",
+    "kandelo.memory_group.admission.group": "1",
+    "kandelo.memory_group.admission.maximumPages": "8192",
+    "kandelo.memory_group.admission.maximumProcesses": "4294967295",
+    "kandelo.memory_group.admission.maximumTasks": "4294967295",
+    "kandelo.memory_group.admission.processes": "2",
+    "kandelo.memory_group.admission.tasks": "2",
+    "kandelo.memory_group.admission.quarantinedTasks": "0",
+    "kandelo.memory_group.admission.backings": "1",
+    "kandelo.memory_group.admission.images": "2",
+    "kandelo.memory_group.admission.accepting": "true",
+    "kandelo.memory_group.backing.group": "1",
+    "kandelo.memory_group.backing.images": "2",
+    "kandelo.memory_group.backing.replicas": "2",
+    "kandelo.memory_group.backing.exposedReplicas": "2",
+    "kandelo.memory_group.backing.quarantinedReplicas": "0",
+    "kandelo.memory_group.backing.allocatedPages": "325",
+    "kandelo.memory_group.backing.pendingWaitDrains": "0",
+    "kandelo.memory_group.backing.nativeObservers": "0",
+    "kandelo.memory_group.backing.mappingStagingBytes": "0",
+    "kandelo.memory_group.backing.retainedMappingReferences": "0",
+    "kandelo.memory_group.backing.sharedObjects": "0",
+    "kandelo.memory_group.backing.sharedPages": "0",
+    "kandelo.memory_group.backing.sharedImageReferences": "0",
+    "kandelo.memory_group.backing.maximumPages": "8192",
+    "kandelo.memory_group.backing.highWaterPages": "2410",
+    "kandelo.memory_group.backing.physicalExtentPages": "2410",
+    "kandelo.memory_group.backing.pausedImages": "0",
+    "kandelo.memory_group.backing.unacknowledgedReplicas": "0",
+    "kandelo.memory_group.backing.waitQueueLock": "0",
+    "kandelo.memory_group.backing.waitQueueNodes": "2",
+    "kandelo.memory_group.backing.pendingCompletions": "2"
+  },
+  "retainedGuestProcessesAfterDesktopExit": [
+    {
+      "pid": 1,
+      "ppid": 0,
+      "memory": "0",
+      "command": "init"
+    },
+    {
+      "pid": 100,
+      "ppid": 0,
+      "memory": "150.6M",
+      "command": "-bash"
+    },
+    {
+      "pid": 102,
+      "ppid": 1,
+      "memory": "150.6M",
+      "command": "/usr/sbin/syslogd -s"
+    }
+  ],
+  "loadBefore": {
+    "ordinary": [
+      2.37744140625,
+      3.11376953125,
+      3.6259765625
+    ],
+    "grouped": [
+      3.2080078125,
+      3.23193359375,
+      3.6494140625
+    ]
+  },
+  "loadAfter": {
+    "ordinary": [
+      3.2080078125,
+      3.23193359375,
+      3.6494140625
+    ],
+    "grouped": [
+      3.39794921875,
+      3.2822265625,
+      3.65087890625
+    ]
+  }
+}

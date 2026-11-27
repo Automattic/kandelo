@@ -256,6 +256,8 @@ export class LocalVirtualNetwork {
   private machines = new Map<string, VirtualNetworkBackend>();
   private addressOwners = new Map<string, string>();
   private hostnames = new Map<string, Uint8Array>();
+  private readonly nameListeners = new Set<() => void>();
+  private namesNotificationPending = false;
   private tcpListeners: TcpListener[] = [];
   private udpEndpoints: UdpEndpoint[] = [];
   private tcpPeersByMachine = new Map<string, Set<VirtualTcpPeer>>();
@@ -281,6 +283,9 @@ export class LocalVirtualNetwork {
   }
 
   attachMachine(options: VirtualNetworkMachineOptions): VirtualNetworkBackend {
+    if (this.machines.has(options.id)) {
+      throw new Error(`machine ${options.id} is already attached`);
+    }
     const address = copyAddr(options.address instanceof Uint8Array
       ? options.address
       : new Uint8Array(options.address));
@@ -299,6 +304,7 @@ export class LocalVirtualNetwork {
     for (const hostname of options.hostnames ?? []) {
       this.hostnames.set(hostname, address);
     }
+    this.notifyNamesChanged();
     return backend;
   }
 
@@ -308,7 +314,7 @@ export class LocalVirtualNetwork {
     this.addressOwners.delete(ipKey(backend.localAddress));
     this.machines.delete(machineId);
     for (const [hostname, addr] of this.hostnames) {
-      if (ipKey(addr) === ipKey(backend.localAddress) || hostname === machineId) {
+      if (ipKey(addr) === ipKey(backend.localAddress)) {
         this.hostnames.delete(hostname);
       }
     }
@@ -319,6 +325,29 @@ export class LocalVirtualNetwork {
     }
     this.tcpPeersByMachine.delete(machineId);
     backend.resetAllConnections();
+    this.notifyNamesChanged();
+  }
+
+  connectedComputerNames(): { canonicalName: string; hostname: string; address: Uint8Array }[] {
+    return [...this.hostnames].map(([hostname, address]) => ({
+      canonicalName: this.addressOwners.get(ipKey(address))!, hostname, address: copyAddr(address),
+    }));
+  }
+
+  onConnectedComputerNamesChanged(listener: () => void): () => void {
+    this.nameListeners.add(listener);
+    return () => { this.nameListeners.delete(listener); };
+  }
+
+  private notifyNamesChanged(): void {
+    if (this.namesNotificationPending || this.nameListeners.size === 0) return;
+    this.namesNotificationPending = true;
+    queueMicrotask(() => {
+      this.namesNotificationPending = false;
+      // Read the current subscriptions: a retired owner must not receive an
+      // already queued notification, nor an intermediate remote directory.
+      for (const listener of [...this.nameListeners]) listener();
+    });
   }
 
   hasAddress(addr: Uint8Array): boolean { return this.addressOwners.has(ipKey(addr)); }
@@ -624,6 +653,14 @@ export class VirtualNetworkBackend implements NetworkIO {
     const addr = this.network.resolve(hostname);
     if (!addr) throw Object.assign(new Error("ENOENT"), { errno: 2 });
     return addr;
+  }
+
+  connectedComputerNames(): { canonicalName: string; hostname: string; address: Uint8Array }[] {
+    return this.network.connectedComputerNames();
+  }
+
+  onConnectedComputerNamesChanged(listener: () => void): () => void {
+    return this.network.onConnectedComputerNamesChanged(listener);
   }
 
   listenTcp(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number {

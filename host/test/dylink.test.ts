@@ -1713,6 +1713,78 @@ describe("side-module fork contract", () => {
     expect(options.got.get("main_callback")?.value).toBe(1);
   });
 
+  it("resolves a self GOT.func cell for a live-process replica", () => {
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "side_callback" (global $pointer (mut i32)))
+        (func (export "side_callback") (result i32) i32.const 73)
+        (func (export "__read_self") (result i32) global.get $pointer))
+    `, "side-live-replica-self-got-function");
+    const testOwner = createTestForkActivationOwner(65);
+    const options = createSideForkLoadOptions();
+    options.table.grow(2);
+    const index = options.table.length;
+    options.forkActivationOwner = {
+      prepare(request) {
+        return {
+          ...testOwner.owner.prepare(request),
+          replayImportState: "resolved",
+          savedMutableGlobalImport: () => {
+            throw new Error("a live-process replica has no saved import state");
+          },
+        };
+      },
+    };
+
+    const loaded = loadSharedLibrarySync(
+      "lib-live-replica-self-got-function.so",
+      wasmBytes,
+      options,
+      { memoryBase: 0, tableBase: index, activationId: 65 },
+      false,
+    );
+
+    expect((loaded.exports.__read_self as CallableFunction)()).toBe(index);
+    expect(options.table.get(index)).toBe(loaded.exports.side_callback);
+    expect(options.globalSymbols.has("side_callback")).toBe(false);
+  });
+
+  it("resolves an unresolved shared GOT.func cell for a live-process replica", () => {
+    const callbackModule = new WebAssembly.Module(buildDylinkWat(`
+      (module (func (export "callback") (result i32) i32.const 73))
+    `, "live-replica-shared-got-callback"));
+    const callback = new WebAssembly.Instance(callbackModule).exports.callback as Function;
+    const wasmBytes = buildInstrumentedDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "GOT.func" "main_callback" (global $pointer (mut i32)))
+        (func (export "__read_shared") (result i32) global.get $pointer))
+    `, "side-live-replica-unresolved-shared-got-function");
+    const testOwner = createTestForkActivationOwner(66);
+    const options = createSideForkLoadOptions();
+    options.table.grow(1);
+    options.table.set(1, callback);
+    options.globalSymbols.set("main_callback", callback);
+    options.got.set("main_callback", new WebAssembly.Global({ value: "i32", mutable: true }, 0));
+    options.forkActivationOwner = {
+      prepare(request) {
+        return { ...testOwner.owner.prepare(request), replayImportState: "resolved" };
+      },
+    };
+
+    const loaded = loadSharedLibrarySync(
+      "lib-live-replica-unresolved-shared-got-function.so",
+      wasmBytes,
+      options,
+      { memoryBase: 0, tableBase: options.table.length, activationId: 66 },
+    );
+
+    expect((loaded.exports.__read_shared as CallableFunction)()).toBe(1);
+    expect(options.got.get("main_callback")?.value).toBe(1);
+    expect(options.table.length).toBe(2);
+  });
+
   it("forgets, never unmaps, adopted memory when a replay fails", () => {
     // The adopted region is the process's live mapping (or a fork child's
     // copy of it). Unmapping it on a failed rebuild let the next mmap hand

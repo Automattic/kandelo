@@ -1,10 +1,10 @@
 import type { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { writeVfsBinary } from "@host/vfs/image-helpers";
 import { fetchRequiredExecutable } from "./required-executable";
-import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
-import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
-import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
-import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
+import bashWasmUrl from "@binaries/programs/wasm32/bash/bash.wasm?url";
+import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils/coreutils.wasm?url";
+import grepWasmUrl from "@binaries/programs/wasm32/grep/grep.wasm?url";
+import sedWasmUrl from "@binaries/programs/wasm32/sed/sed.wasm?url";
 import genCatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gencat.wasm?url";
 
 const COREUTILS_NAMES = [

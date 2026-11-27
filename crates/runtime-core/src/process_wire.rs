@@ -1116,7 +1116,21 @@ mod tests {
 
     #[test]
     fn sysinfo_serializes_exact_native_sizes_and_zeroes_reserved_bytes() {
-        let info = crate::syscalls::sys_sysinfo();
+        // Explicit encoding fixture, not a claimed system measurement.
+        let info = crate::syscalls::KernelSysinfo {
+            uptime: 1,
+            loads: [0; 3],
+            totalram: 512 * 1024 * 1024,
+            freeram: 256 * 1024 * 1024,
+            sharedram: 0,
+            bufferram: 0,
+            totalswap: 0,
+            freeswap: 0,
+            procs: 1,
+            totalhigh: 0,
+            freehigh: 0,
+            mem_unit: 1,
+        };
         for model in [ProcessDataModel::Wasm32, ProcessDataModel::Wasm64] {
             let size = model.sysinfo_size();
             let mut guarded = alloc::vec![0x5a; size + 2];

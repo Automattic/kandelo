@@ -1,0 +1,42 @@
+# Kandelo patch rationale (O11)
+#
+# A generated Kandelo FFI call adapter has a real native owner. Release it
+# when Node's original FFI wrapper is destroyed, using the package's private
+# companion header. Omitting these calls leaks executable adapters; changing
+# only libc or engine GC cannot retire ownership held by this Node object.
+# The original callback and destructor order remain intact.
+#
+# Source-only cleanup; normal package and consumer qualification remain required.
+
+--- a/src/node_ffi.h
++++ b/src/node_ffi.h
+@@ -4,6 +4,9 @@
+
+ #include "base_object.h"
+ #include "ffi.h"
++#if defined(FFI_KANDELO_TARGET)
++#include <ffi-kandelo-private.h>
++#endif
+ #include "ffi/fast.h"
+ #include "uv.h"
+
+@@ -29,6 +32,9 @@
+
+ struct FFIFunction {
+   FFIFunction() = default;
++#if defined(FFI_KANDELO_TARGET)
++  ~FFIFunction() { ffi_kandelo_release_cif(&cif); }
++#endif
+   FFIFunction(const FFIFunction&) = delete;
+   FFIFunction& operator=(const FFIFunction&) = delete;
+   FFIFunction(FFIFunction&&) = delete;
+@@ -103,6 +109,9 @@
+       ffi_closure_free(closure);
+       closure = nullptr;
+     }
++#if defined(FFI_KANDELO_TARGET)
++    ffi_kandelo_release_cif(&cif);
++#endif
+   }
+ };
+

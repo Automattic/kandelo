@@ -14,6 +14,15 @@ use crate::{
     SCHED_AFFINITY_MASK_SIZE, WASM_RUSAGE_WIRE_SIZE,
 };
 
+/// Already-raw caller addresses carried unchanged through host staging for
+/// readiness calls whose copyout runs in the kernel, including after a park.
+/// These are kernel-host staging rules. The guest still writes the same
+/// six words to the same channel, and its ABI digest stays fixed.
+pub const DIRECT_READINESS_ADDRESS_SLOTS: &[(u32, &[u8])] = &[
+    (extra_syscalls::SYS_EPOLL_PWAIT, &[1, 4]),
+    (extra_syscalls::SYS_EPOLL_WAIT, &[1]),
+];
+
 /// Direction of a marshalled pointer argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallArgDirection {

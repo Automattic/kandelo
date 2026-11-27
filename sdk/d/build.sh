@@ -16,8 +16,8 @@ fi
 : "${KANDELO_LLVM_DEV:?Run this script from scripts/dev-shell.sh}"
 : "${KANDELO_D_LLVM_PREFIX:?Set this to the optional d-llvm flake package}"
 llvm_prefix="$(cd "$KANDELO_D_LLVM_PREFIX" && pwd)"
-if [[ "$("$llvm_prefix/bin/llvm-config" --version)" != 21.1.8 ]]; then
-    printf 'The D SDK bootstrap requires LLVM 21.1.8.\n' >&2
+if [[ "$("$llvm_prefix/bin/llvm-config" --version)" != 22.1.8 ]]; then
+    printf 'The D SDK bootstrap requires LLVM 22.1.8.\n' >&2
     exit 2
 fi
 

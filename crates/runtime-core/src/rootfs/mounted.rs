@@ -25,6 +25,32 @@ impl RootfsState {
 }
 
 impl MountedFilesystem<'_> {
+    pub(super) fn watched_aliases(
+        &mut self,
+        index: u32,
+        dir_id: crate::lock::FileId,
+        directory: crate::vfs_events::WatchedDirectory,
+        names: &mut crate::vfs_events::DirectoryIndex,
+        emit: &mut dyn FnMut(&[u8]),
+    ) {
+        use crate::vfs_events::{WatchedDirectory, identity};
+        match (self, directory) {
+            (Self::Legacy(state), WatchedDirectory::Resident(dir_index)) => {
+                let Some(dir) = state.get(dir_index) else { return; };
+                if identity(dir.stat()) != dir_id { return; }
+                if let InodeKind::Dir(entries) = &dir.kind {
+                    entries.visit_watched_names(index, names, emit);
+                }
+            }
+            (Self::Standalone(mount, pins), WatchedDirectory::Positioned) => {
+                let (Ok(pin), crate::lock::FileId::Host { dev: super::ROOTFS_DEV, ino }) = (pin(pins, index), dir_id)
+                else { return; };
+                names.matching_positioned(pin.ino, |visit| mount.namespace.for_directory(ino, None, visit), emit);
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn format_version(&self) -> Option<u32> {
         match self {
             Self::Legacy(state) => state.image.map(|image| image.image.version),

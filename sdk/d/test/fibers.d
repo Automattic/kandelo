@@ -1,5 +1,11 @@
 module fiber_acceptance;
 
+// Fibers are opt-in on Kandelo while their instrumentation cost is open
+// (sdk/d/README.md, "Fibers"). This test needs DRuntime, Phobos and the
+// test itself built with -d-version=KandeloFibers.
+version (KandeloFibers) {}
+else static assert(0, "fibers.d needs a D SDK built with -d-version=KandeloFibers");
+
 import core.atomic : atomicLoad, atomicStore;
 import core.memory : GC;
 import core.thread : Fiber, Thread;

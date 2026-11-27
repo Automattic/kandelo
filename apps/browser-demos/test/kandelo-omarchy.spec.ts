@@ -6,6 +6,8 @@ import { terminalHistoryMatching } from "./support/terminal-history";
 import { setInternalsOpen } from "./support/dock";
 import { configureNewComputer } from "./support/computer-library";
 
+test.skip(true, "Omarchy desktop is explicitly retired from the supported gallery and default build; package sources and historical tests are retained");
+
 
 /**
  * Boot the Omarchy machine the way a visitor does: through its gallery row.

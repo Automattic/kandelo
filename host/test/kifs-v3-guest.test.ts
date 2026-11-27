@@ -154,7 +154,8 @@ it.skipIf(process.env.KANDELO_KIFS_COMPARE !== "1")("compares a saved package sh
       .filter(name => name === "computer" || name.startsWith("computer.") && !name.endsWith(".lock"))
       .reduce((sum, name) => sum + statSync(join(stateDirectory(phase), name)).size, 0), shellWorkloadCount(), process.memoryUsage.rss,
       observer,
-      process.env.KANDELO_KIFS_TMPFS_CONTROL === "1", process.env.KANDELO_KIFS_PROFILE_READS === "1", reverseOrder);
+      process.env.KANDELO_KIFS_TMPFS_CONTROL === "1", process.env.KANDELO_KIFS_PROFILE_READS === "1", reverseOrder,
+      process.env.KANDELO_KIFS_COMPARE_WATCHES === "1");
     console.info("KIFS saved shell IO " + JSON.stringify({ source: checked.source, ...inputs.digests, rounds }));
     if (requireSpeed) requireSavedShellSpeedTarget(rounds);
   } finally {

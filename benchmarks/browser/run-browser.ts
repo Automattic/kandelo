@@ -115,9 +115,8 @@ export function materializePublicAsset(
 
   mkdirSync(dirname(publicPath), { recursive: true });
   // Sealed package files are read-only, and copyFileSync preserves that mode.
-  // The public copy is not sealed: it lives where the image builders write
-  // (`./run.sh build mariadb-vfs` writes public/mariadb.vfs.zst), so it gets
-  // ordinary file permissions, or the next image build fails with EACCES.
+  // Standalone image builders can write to public/, so the public copy gets
+  // ordinary file permissions to keep it writable for a later image build.
   // Staging and renaming still replaces it whole on every refresh.
   const staging = mkdtempSync(resolve(dirname(publicPath), ".benchmark-asset-"));
   try {

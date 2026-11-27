@@ -1,0 +1,10 @@
+#undef NATIVE_TRACE_TYPE_ERROR
+#undef NATIVE_TRACE_NUMBER_VALUE
+#undef NATIVE_TRACE_STRING_LENGTH
+#pragma pop_macro("TRACE_EVENT_FLAG_HAS_ID")
+#pragma pop_macro("TRACE_EVENT_FLAG_COPY")
+#pragma pop_macro("TRACE_EVENT_API_ADD_TRACE_EVENT")
+#pragma pop_macro("TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED")
+#pragma pop_macro("ASSIGN_RETURN_FAILURE_ON_EXCEPTION")
+#pragma pop_macro("THROW_NEW_ERROR_RETURN_FAILURE")
+#pragma pop_macro("BUILTIN")

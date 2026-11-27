@@ -219,6 +219,9 @@ export function resolveProcessThreadSlotCount(
   return validateThreadSlotCount(declared, "process thread slot declaration");
 }
 
+/** A valid executable cannot fit its control layout in the admitted ceiling. */
+export class ProcessMemoryLayoutCapacityError extends RangeError {}
+
 export function computeProcessMemoryLayout(
   options: ProcessMemoryLayoutOptions,
 ): ProcessMemoryLayout {
@@ -274,7 +277,7 @@ export function computeProcessMemoryLayout(
   );
 
   if (initialPages > maximumPages) {
-    throw new Error(
+    throw new ProcessMemoryLayoutCapacityError(
       `initial pages ${initialPages} exceed process maximum ${maximumPages}`,
     );
   }

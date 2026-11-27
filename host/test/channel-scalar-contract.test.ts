@@ -35,6 +35,17 @@ function hostExactI64Slots(): string[] {
 }
 
 describe("channel scalar-slot contract", () => {
+  it("forwards epoll caller addresses with all their physical bits", () => {
+    const events = (1n << 53n) + 16n;
+    const mask = (1n << 54n) + 8n;
+    expect(normalizeChannelScalarArguments(ABI_SYSCALLS.EpollPwait, [
+      3n, events, 1n, -1n, mask, 8n,
+    ])).toEqual([3, events, 1, -1, mask, 8n]);
+    expect(normalizeChannelScalarArguments(ABI_SYSCALLS.EpollWait, [
+      3n, events, 1n, -1n, 0n, 0n,
+    ])).toEqual([3, events, 1, -1, 0, 0]);
+  });
+
   it("preserves every exact i64 field before kernel scratch dispatch", () => {
     const exact = (1n << 53n) + 1n;
     for (const [syscallText, slots] of Object.entries(

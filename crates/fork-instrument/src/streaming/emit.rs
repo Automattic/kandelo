@@ -155,6 +155,26 @@ pub fn emit_remapped<T: FunctionTransform, W: Write>(
 where
     T::Error: std::error::Error + Send + Sync + 'static,
 {
+    emit_remapped_with_storage(
+        scan,
+        transform,
+        output,
+        limits,
+        &crate::artifact_io::TemporarySpoolStorage,
+    )
+}
+
+/// The same serial emitter using explicitly owned private section storage.
+pub fn emit_remapped_with_storage<T: FunctionTransform, W: Write>(
+    scan: &Scan<'_>,
+    transform: &mut T,
+    output: &mut W,
+    limits: EmitLimits,
+    storage: &dyn crate::artifact_io::SpoolStorage,
+) -> Result<EmitReport>
+where
+    T::Error: std::error::Error + Send + Sync + 'static,
+{
     let imports = transform
         .imports()
         .map(|imports| {
@@ -299,7 +319,7 @@ where
                 data_count_written = true;
             }
             if order > 12 && !code_written && helper_count != 0 {
-                let mut spool = Spool::new(limits.max_spooled_section_bytes)
+                let mut spool = Spool::new(limits.max_spooled_section_bytes, storage)
                     .context("spooling helper-only code section")?;
                 write_u32(&mut spool, helper_count)?;
                 write_helpers(transform, helper_count, &mut spool, &mut report, limits)?;
@@ -460,7 +480,7 @@ where
                 // WHY: a data section can be most of the module. Reencoding
                 // it through DataSection would copy the entire payload even
                 // though only its memory/offset expressions need rewriting.
-                let mut spool = Spool::new(limits.max_spooled_section_bytes)
+                let mut spool = Spool::new(limits.max_spooled_section_bytes, storage)
                     .context("spooling data section")?;
                 write_u32(&mut spool, s.count())?;
                 for data in s {
@@ -499,7 +519,7 @@ where
             Payload::CodeSectionStart { count, .. } => {
                 code_written = true;
                 remaining = count;
-                let mut spool = Spool::new(limits.max_spooled_section_bytes)
+                let mut spool = Spool::new(limits.max_spooled_section_bytes, storage)
                     .context("spooling code section")?;
                 write_u32(
                     &mut spool,

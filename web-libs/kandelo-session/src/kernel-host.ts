@@ -11,6 +11,7 @@ import type { WebPreviewTarget } from "./web-preview-address";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
+import type { MemoryGroupUsage } from "../../../host/src/memory-group-usage";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -255,6 +256,8 @@ export interface KernelOwnedJobScope {
 
 export interface KernelLike {
   getOwnedJobLifetime?(): { readonly closed: boolean };
+  /** Optional copied group counters; reading never creates a group or backing. */
+  getMemoryGroupUsage?(): Promise<MemoryGroupUsage | null>;
   // WHY there is no synchronous VFS handle here: the kernel worker owns the
   // filesystem, and the main thread must never hold worker-shared memory —
   // on WebKit only Worker.terminate() reclaims it. Every read below is an
@@ -433,6 +436,7 @@ export interface KernelLike {
     programPath: string,
     argv: string[],
     options?: {
+      executionBackend?: "ordinary" | "memory-group";
       ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
@@ -623,6 +627,10 @@ export interface DmesgProgress {
   status: "loading" | "complete" | "error";
 }
 
+export interface PtyLaunchOptions {
+  executionBackend?: "ordinary" | "memory-group";
+}
+
 export interface PtySize {
   cols: number;
   rows: number;
@@ -643,6 +651,7 @@ export interface PtyHandle {
 }
 
 export interface TerminalProgram {
+  executionBackend?: "ordinary" | "memory-group";
   programPath: string;
   programBytes?: ArrayBuffer;
   argv: string[];
@@ -1043,7 +1052,7 @@ export interface KernelHost {
    * descendant then belong to that family. A normal UI attach does not own
    * or cancel the terminal merely by opening/closing a rendering handle.
    */
-  attachPty(path?: string, opts?: PtySize, ownedJob?: { id: string; timeoutMs: number }): Promise<PtyHandle>;
+  attachPty(path?: string, opts?: PtySize, ownedJob?: { id: string; timeoutMs: number }, launch?: PtyLaunchOptions): Promise<PtyHandle>;
   /** Remove the logical PTY, including its process and pending restart. */
   removePty(path: string): void;
   /** Resolve after a command has been written, without waiting for a prompt. */
@@ -1253,6 +1262,7 @@ class ListenerSet<T> {
 }
 
 interface LivePtySession {
+  executionBackend?: "ordinary" | "memory-group";
   path: string;
   pid: number;
   logicalGeneration: number;
@@ -1398,6 +1408,7 @@ export interface LiveKernelHostOptions {
    * to bash; pages that ship dash or another shell should override.
    */
   shell?: {
+    executionBackend?: "ordinary" | "memory-group";
     programPath?: string;
     /**
      * Fallback bytes for kernels that cannot spawn programPath from their VFS.
@@ -2186,6 +2197,7 @@ export class LiveKernelHost implements KernelHost {
     path: string = "/dev/pts/0",
     opts?: PtySize,
     ownedJob?: { id: string; timeoutMs: number },
+    launch?: PtyLaunchOptions,
   ): Promise<PtyHandle> {
     if (!this.kernel) {
       throw new Error(
@@ -2211,6 +2223,7 @@ export class LiveKernelHost implements KernelHost {
         this.terminalSessions,
         opts,
         ownedJob,
+        launch,
       ),
     );
 
@@ -2300,8 +2313,10 @@ export class LiveKernelHost implements KernelHost {
     policy: TerminalSessionPolicy | undefined,
     opts: PtySize | undefined,
     ownedJob?: { id: string; timeoutMs: number },
+    launch?: PtyLaunchOptions,
   ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
+    if (session && launch?.executionBackend !== undefined && session.executionBackend !== launch.executionBackend) throw new Error("A live terminal cannot change execution backend");
     if (ownedJob && session) throw new Error("An owned terminal must use a fresh PTY path");
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
       if (session.supervised) {
@@ -2323,6 +2338,7 @@ export class LiveKernelHost implements KernelHost {
 
     if (!session) {
       session = {
+        executionBackend: launch?.executionBackend,
         path: sessionKey,
         pid: 0,
         logicalGeneration: 1,
@@ -2380,6 +2396,7 @@ export class LiveKernelHost implements KernelHost {
     let exitPromise: Promise<number>;
     if (program.programPath && kernel.spawnFromVfs) {
       const spawned = await kernel.spawnFromVfs(program.programPath, program.argv, {
+        executionBackend: session.executionBackend ?? program.executionBackend,
         pty: true,
         ...(ownedJob ? { ownedJob } : {}),
         env: program.env,
@@ -2392,7 +2409,7 @@ export class LiveKernelHost implements KernelHost {
       pid = spawned.pid;
       exitPromise = spawned.exit;
     } else {
-      if (ownedJob) throw new Error("Owned terminals require VFS process-family support");
+      if (ownedJob || session.executionBackend === "memory-group" || program.executionBackend === "memory-group") throw new Error("Owned or grouped terminals require VFS process-family support");
       if (!program.programBytes) {
         throw new Error(
           "LiveKernelHost.attachPty: the configured terminal program is VFS-only, " +
@@ -2966,6 +2983,7 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async getKernelState(): Promise<KernelStateKV[]> {
+    const kernel = this.kernel;
     // sysctl-style flat view, filled out as procfs paths become available.
     const probes: Array<[key: string, path: string]> = [
       ["kernel.hostname", "/proc/sys/kernel/hostname"],
@@ -2986,6 +3004,25 @@ export class LiveKernelHost implements KernelHost {
       }
     }
     out.push({ k: "kandelo.kernel", v: this._descriptor.runtime.kernel });
+    if (kernel?.getMemoryGroupUsage) {
+      // Inspect only the attached machine. A late reply from a replaced
+      // kernel must not label the new machine with the old group's counters.
+      const changed = () => new Error("Kernel changed during state inspection; refresh to read the current machine");
+      if (kernel !== this.kernel) throw changed();
+      const usage = await kernel.getMemoryGroupUsage();
+      if (kernel !== this.kernel) throw changed();
+      if (usage !== null) {
+        const prefix = "kandelo.memory_group";
+        out.push({ k: `${prefix}.pageBytes`, v: "65536" });
+        for (const section of ["admission", "backing"] as const) {
+          const counters = usage[section];
+          if (counters === null) out.push({ k: `${prefix}.${section}`, v: "unallocated" });
+          else for (const [key, value] of Object.entries(counters)) {
+            out.push({ k: `${prefix}.${section}.${key}`, v: String(value) });
+          }
+        }
+      }
+    }
     return out;
   }
 

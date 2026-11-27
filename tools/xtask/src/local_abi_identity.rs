@@ -15,7 +15,11 @@ use std::path::Path;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::dump_abi::{FROZEN_BASELINE_RECORD_KEY, SURFACES_KEY};
+/// Shared with the snapshot writer and build-time SDK consumers.
+pub(crate) const SURFACES_KEY: &str = "abi_surfaces";
+
+// Kept in this standalone module because SDK build scripts include it directly.
+pub(crate) const FROZEN_BASELINE_RECORD_KEY: &str = "frozen_baseline_record";
 
 pub(crate) fn local_abi_contract_digest(
     repo_root: &Path,

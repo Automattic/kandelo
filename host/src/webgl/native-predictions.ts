@@ -108,6 +108,7 @@ const gap = (prediction: NativePrediction, ...methods: string[]): Gap => Object.
  * (es2-validation.ts, image-sizes.ts). */
 const OP_GAPS: ReadonlyMap<number, readonly Gap[]> = new Map<number, readonly Gap[]>([
   [O.OP_TEX_SUB_IMAGE_2D, [gap(TEX_SUB_IMAGE, "texSubImage2D", "texSubImage3D")]],
+  [O.OP_TEX_SUB_IMAGE_2D_BGRA8, [gap(TEX_SUB_IMAGE, "texSubImage2D", "texSubImage3D")]],
   [O.OP_GENERATE_MIPMAP, [gap(GENERATE_MIPMAP, "generateMipmap")]],
   [O.OP_COMPRESSED_TEX_IMAGE_2D, [gap(COMPRESSED_TEX_IMAGE, "compressedTexImage2D", "compressedTexImage3D", "compressedTexSubImage3D")]],
   [O.OP_COMPRESSED_TEX_SUB_IMAGE_2D, [gap(COMPRESSED_TEX_SUB_IMAGE, "compressedTexSubImage2D", "compressedTexSubImage3D")]],

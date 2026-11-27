@@ -1,3 +1,16 @@
+# Kandelo patch rationale (O39)
+#
+# Scope: only this PR's added weak-linkage personality hunk; other changes
+# in this existing SDK patch predate the Node port. Mixed Rust archives can
+# define the same abort personality symbol. Weakening it lets linking
+# proceed, but does not prove compatible panic/unwind behavior or resolve
+# runtime ownership. Review one supported Rust runtime/personality owner at
+# the SDK, not a Node-specific workaround. Keep provisionally; do not treat
+# link success as proof that the mixed-runtime design is correct.
+#
+# Judgment: Weak. Weak linkage permits linking but does not establish a
+# coherent owner or compatible Rust panic behavior.
+#
 --- a/std/src/os/fd/owned.rs
 +++ b/std/src/os/fd/owned.rs
 @@ -12,7 +12,7 @@
@@ -62,3 +75,13 @@
 +            // A Kandelo frame can own symbols even when its PC is unavailable.
 +            if frame.frame.ip().is_null() && !cfg!(target_os = "kandelo") {
                  continue;
+--- a/std/src/sys/personality/mod.rs
++++ b/std/src/sys/personality/mod.rs
+@@ -24,6 +24,7 @@
+         // personality function that is always used.  Hence this is just an
+         // aborting stub.
+         #[lang = "eh_personality"]
++        #[cfg_attr(target_os = "kandelo", linkage = "weak")]
+         fn rust_eh_personality() {
+             core::intrinsics::abort()
+         }

@@ -28,7 +28,7 @@ cfg_select! {
         // These "unix" family members do not have unwinder.
     }
     any(
-        unix,
+        all(unix, not(target_os = "kandelo")),
         windows,
         target_os = "psp",
         target_os = "solid_asp3",
@@ -56,8 +56,8 @@ cfg_select! {
     }
 }
 
-// Kandelo (wasm32, panic=abort) has no unwinder library: no libgcc_s and
-// no libunwind. Requesting one would make rustc report `-lgcc_s` as a
+// Kandelo uses the original Wasm unwinder above, not libgcc_s or libunwind.
+// Requesting an external unwinder would make rustc report `-lgcc_s` as a
 // native static library, which build systems such as Meson then look up
 // and fail to find.
 #[cfg(all(target_env = "musl", not(target_os = "kandelo")))]
