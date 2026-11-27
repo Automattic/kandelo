@@ -1,0 +1,21 @@
+{
+  "id": "async-stack-limits-and-branching",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-await-stack-limits",
+      "file": "test/parallel/test-kandelo-await-stack-limits.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "Error.captureStackTrace",
+        "Error.prepareStackTrace"
+      ],
+      "contract": "Preserve stack limits, constructor filtering, source identity and unique await ancestry after collection. Stop at a promise with two waiting functions.",
+      "owners": [
+        "maintained SpiderMonkey bridge",
+        "upstream Node filesystem promises"
+      ]
+    }
+  ],
+  "fixtures": []
+}

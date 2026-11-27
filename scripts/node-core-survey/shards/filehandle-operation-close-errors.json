@@ -1,0 +1,19 @@
+{
+  "id": "filehandle-operation-close-errors",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-promises-file-handle-close-errors",
+      "file": "test/parallel/test-fs-promises-file-handle-close-errors.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises"
+      ],
+      "contract": "Simultaneous operation and close failures retain their error information and causes.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,34 @@
+{
+  "id": "fs-write-stream-handles",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-write-stream-file-handle",
+      "file": "test/parallel/test-fs-write-stream-file-handle.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "Writing via a FileHandle-backed stream closes the handle and preserves file contents.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-write-stream-file-handle-2",
+      "file": "test/parallel/test-fs-write-stream-file-handle-2.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "A stream constructed with a FileHandle delegates writes to that handle.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,18 @@
+{
+  "id": "buffer-tostring-64-bit-offset",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-tostring-4gb",
+      "file": "test/parallel/test-buffer-tostring-4gb.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Exercise string conversion at offsets beyond four GiB or record the upstream architecture or allocation skip.",
+      "owners": [
+        "upstream Node Buffer and SpiderMonkey typed arrays"
+      ]
+    }
+  ],
+  "fixtures": []
+}

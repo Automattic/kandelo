@@ -1,0 +1,54 @@
+{
+  "id": "initial",
+  "cases": [
+    {
+      "selector": "parallel/test-path", "file": "test/parallel/test-path.js", "family": "values",
+      "modules": ["node:path", "node:path/posix", "node:path/win32"],
+      "contract": "Path algorithm aliases and validation",
+      "owners": ["lib/path.js"]
+    },
+    {
+      "selector": "parallel/test-fs-open", "file": "test/parallel/test-fs-open.js", "family": "filesystem",
+      "modules": ["node:fs", "node:fs/promises"],
+      "contract": "openSync, open callbacks, promises.open and returned FileHandle.close on guest files",
+      "owners": ["src/node_file.cc", "libuv filesystem backend", "Kandelo guest descriptor and VFS"]
+    },
+    {
+      "selector": "parallel/test-timers", "file": "test/parallel/test-timers.js", "family": "async",
+      "modules": ["node:timers"],
+      "contract": "setTimeout, setInterval and callback delivery with coercion and cancellation",
+      "owners": ["src/timers.cc", "src/env.cc", "libuv timer loop"]
+    },
+    {
+      "selector": "parallel/test-child-process-fork", "file": "test/parallel/test-child-process-fork.js", "family": "processes",
+      "modules": ["node:child_process"],
+      "contract": "fork and returned ChildProcess.send, message and exit with a guest Node child",
+      "owners": ["lib/internal/child_process.js", "src/process_wrap.cc", "libuv spawning and guest process/pipe semantics"]
+    },
+    {
+      "selector": "parallel/test-net-listen-close-server", "file": "test/parallel/test-net-listen-close-server.js", "family": "network",
+      "modules": ["node:net"],
+      "contract": "createServer and returned Server.listen/close lifecycle during startup",
+      "owners": ["lib/net.js", "src/tcp_wrap.cc", "libuv TCP and Kandelo socket lifecycle"]
+    },
+    {
+      "selector": "parallel/test-worker-message-port", "file": "test/parallel/test-worker-message-port.js", "family": "workers",
+      "modules": ["node:worker_threads"],
+      "contract": "MessageChannel, returned MessagePort.postMessage, MessageEvent and transfer",
+      "owners": ["src/node_messaging.cc", "SpiderMonkey engine bridge serialization and buffer codecs"]
+    },
+    {
+      "selector": "parallel/test-memory-usage", "file": "test/parallel/test-memory-usage.js", "family": "observability",
+      "modules": ["node:process"],
+      "contract": "memoryUsage and memoryUsage.rss, including allocation accounting after the original GC flag",
+      "owners": ["src/node_process_methods.cc", "Kandelo libuv memory provider", "SpiderMonkey engine bridge memory measurement"]
+    },
+    {
+      "selector": "pseudo-tty/console-dumb-tty", "file": "test/pseudo-tty/console-dumb-tty.js", "family": "terminal",
+      "modules": ["node:console", "node:tty"],
+      "contract": "console.log and console.dir with object rendering on a real PTY with TERM=dumb",
+      "owners": ["lib/internal/console/constructor.js", "src/tty_wrap.cc", "Kandelo guest PTY/termios"]
+    }
+  ],
+  "fixtures": ["test/fixtures/child-process-spawn-node.js"]
+}

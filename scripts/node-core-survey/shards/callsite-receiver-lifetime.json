@@ -1,0 +1,19 @@
+{
+  "id": "callsite-receiver-lifetime",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-callsite-receiver-lifetime",
+      "file": "test/parallel/test-kandelo-callsite-receiver-lifetime.js",
+      "family": "engine",
+      "modules": [
+        "node:assert"
+      ],
+      "contract": "A pending error or retained CallSite keeps its receiver live. A formatted or overwritten stack releases it after observed collection.",
+      "owners": [
+        "maintained engine bridge and SpiderMonkey suspended frames"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

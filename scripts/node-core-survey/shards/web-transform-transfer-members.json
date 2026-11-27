@@ -1,0 +1,38 @@
+{
+  "id": "web-transform-transfer-members",
+  "cases": [
+    {
+      "selector": "wpt/test-streams/transferable/transform-stream-members.any.html",
+      "file": "test/wpt/test-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "Structured cloning rejects transferring a TransformStream together with either of its already included endpoints.",
+      "owners": [
+        "upstream Node web streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "wpt/test-streams/transferable/transform-stream-members.any.worker.html",
+      "file": "test/wpt/test-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "Structured cloning rejects transferring a TransformStream together with either of its already included endpoints.",
+      "owners": [
+        "upstream Node web streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/wpt/resources/testharness.js",
+    "test/wpt/status/streams.json"
+  ],
+  "fixtureDirectories": [
+    "test/fixtures/wpt/streams"
+  ]
+}

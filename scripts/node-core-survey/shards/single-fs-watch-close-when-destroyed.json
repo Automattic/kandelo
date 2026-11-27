@@ -1,0 +1,19 @@
+{
+  "id": "single-fs-watch-close-when-destroyed",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-watch-close-when-destroyed",
+      "file": "test/parallel/test-fs-watch-close-when-destroyed.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Removing a watched directory permits subsequent watcher cleanup.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

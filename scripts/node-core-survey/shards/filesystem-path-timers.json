@@ -1,0 +1,49 @@
+{
+  "id": "filesystem-path-timers",
+  "cases": [
+    {
+      "selector": "parallel/test-path",
+      "file": "test/parallel/test-path.js",
+      "family": "values",
+      "modules": [
+        "node:path",
+        "node:path/posix",
+        "node:path/win32"
+      ],
+      "contract": "Path algorithm aliases and validation",
+      "owners": [
+        "lib/path.js"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-open",
+      "file": "test/parallel/test-fs-open.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "openSync, open callbacks, promises.open and returned FileHandle.close on guest files",
+      "owners": [
+        "src/node_file.cc",
+        "libuv filesystem backend",
+        "Kandelo guest descriptor and VFS"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers",
+      "file": "test/parallel/test-timers.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "setTimeout, setInterval and callback delivery with coercion and cancellation",
+      "owners": [
+        "src/timers.cc",
+        "src/env.cc",
+        "libuv timer loop"
+      ]
+    }
+  ],
+  "fixtures": []
+}

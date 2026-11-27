@@ -1,0 +1,45 @@
+{
+  "id": "async-resource-scope-and-binding",
+  "cases": [
+    {
+      "selector": "parallel/test-async-hooks-run-in-async-scope-this-arg",
+      "file": "test/parallel/test-async-hooks-run-in-async-scope-this-arg.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Callback receiver binding and async-resource scope restoration on a thrown exception.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-hooks-run-in-async-scope-caught-exception",
+      "file": "test/parallel/test-async-hooks-run-in-async-scope-caught-exception.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Callback receiver binding and async-resource scope restoration on a thrown exception.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-asyncresource-bind",
+      "file": "test/parallel/test-asyncresource-bind.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Callback receiver binding and async-resource scope restoration on a thrown exception.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,18 @@
+{
+  "id": "buffer-allocation-original",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-alloc",
+      "file": "test/parallel/test-buffer-alloc.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Run the unchanged Buffer allocation, conversion, copying, encoding, range and numeric-read/write original, including the engine\u2019s maximum typed-array length diagnostic.",
+      "owners": [
+        "upstream Node Buffer and SpiderMonkey typed arrays"
+      ]
+    }
+  ],
+  "fixtures": []
+}

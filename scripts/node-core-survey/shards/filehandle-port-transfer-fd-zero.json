@@ -1,0 +1,22 @@
+{
+  "id": "filehandle-port-transfer-fd-zero",
+  "cases": [
+    {
+      "selector": "parallel/test-worker-message-port-transfer-filehandle-fd0",
+      "file": "test/parallel/test-worker-message-port-transfer-filehandle-fd0.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises",
+        "node:worker_threads",
+        "node:child_process"
+      ],
+      "contract": "A separate guest child releases descriptor zero after a transferred file handle is discarded.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

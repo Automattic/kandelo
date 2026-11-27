@@ -1,0 +1,32 @@
+{
+  "id": "stream-write-destruction-drain",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-write-destroy",
+      "file": "test/parallel/test-stream-write-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Writable destruction during pending writes.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-write-drain",
+      "file": "test/parallel/test-stream-write-drain.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Write return value and drain ordering.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

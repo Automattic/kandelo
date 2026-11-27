@@ -1,0 +1,32 @@
+{
+  "id": "async-local-disposal-and-exit",
+  "cases": [
+    {
+      "selector": "parallel/test-async-local-storage-run-scope",
+      "file": "test/parallel/test-async-local-storage-run-scope.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Explicit scope disposal restores stores on exit, nesting and exceptions.",
+      "owners": [
+        "upstream Node async hooks",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-local-storage-exit-does-not-leak",
+      "file": "test/parallel/test-async-local-storage-exit-does-not-leak.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Repeated nested exits restore the outer context without propagating its inner data.",
+      "owners": [
+        "upstream Node async hooks",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

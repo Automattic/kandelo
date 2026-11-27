@@ -1,0 +1,34 @@
+{
+  "id": "local-scheduling-order",
+  "cases": [
+    {
+      "selector": "parallel/test-next-tick-ordering",
+      "file": "test/parallel/test-next-tick-ordering.js",
+      "family": "async",
+      "modules": [
+        "node:process",
+        "node:timers"
+      ],
+      "contract": "The initial nextTick callback runs before the timer callbacks",
+      "owners": [
+        "upstream Node scheduling",
+        "Kandelo timer and libuv clock"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-ordering",
+      "file": "test/parallel/test-timers-ordering.js",
+      "family": "async",
+      "modules": [
+        "node:process",
+        "node:timers"
+      ],
+      "contract": "Thirty sequential timers run in order and advance the libuv clock by at least one millisecond per iteration",
+      "owners": [
+        "upstream Node scheduling",
+        "Kandelo timer and libuv clock"
+      ]
+    }
+  ],
+  "fixtures": []
+}

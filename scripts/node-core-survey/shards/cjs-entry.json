@@ -1,0 +1,23 @@
+{
+  "id": "cjs-entry",
+  "cases": [
+    {
+      "selector": "parallel/test-module-wrap",
+      "file": "test/parallel/test-module-wrap.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Installed Node starts a CommonJS file and applies the CommonJS wrapper and main semantics",
+      "owners": [
+        "lib/internal/modules/cjs/loader.js",
+        "src/node_contextify.cc",
+        "SpiderMonkey engine bridge compiler"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/cjs-module-wrap.js",
+    "test/fixtures/not-main-module.js"
+  ]
+}

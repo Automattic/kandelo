@@ -1,0 +1,32 @@
+{
+  "id": "pipe-await-drain-resume",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-await-drain",
+      "file": "test/parallel/test-stream-pipe-await-drain.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe await drain case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-await-drain-manual-resume",
+      "file": "test/parallel/test-stream-pipe-await-drain-manual-resume.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe await drain manual resume case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

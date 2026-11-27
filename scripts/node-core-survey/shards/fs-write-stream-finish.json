@@ -1,0 +1,50 @@
+{
+  "id": "fs-write-stream-finish",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-write-stream-encoding",
+      "file": "test/parallel/test-fs-write-stream-encoding.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "A file stream applies the upstream encoding when writing bytes.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-write-stream-end",
+      "file": "test/parallel/test-fs-write-stream-end.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "Ending the stream commits the expected file contents and orders opening, finish and close.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-read-stream-autoClose",
+      "file": "test/parallel/test-fs-read-stream-autoClose.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "A write stream with autoClose is still live inside its finish callback.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/x.txt"
+  ]
+}

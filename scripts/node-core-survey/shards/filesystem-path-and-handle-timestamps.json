@@ -1,0 +1,32 @@
+{
+  "id": "filesystem-path-and-handle-timestamps",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-utimes",
+      "file": "test/parallel/test-fs-utimes.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Observe path, descriptor, directory and symbolic-link atime and mtime and verify the upstream invalid argument cases.",
+      "owners": [
+        "upstream Node and libuv",
+        "guest libc and VFS metadata"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-utimes-y2K38",
+      "file": "test/parallel/test-fs-utimes-y2K38.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Set a real file to the signed 32-bit timestamp boundary and compare its modification time after stat.",
+      "owners": [
+        "upstream Node and libuv",
+        "guest libc and VFS metadata"
+      ]
+    }
+  ],
+  "fixtures": []
+}

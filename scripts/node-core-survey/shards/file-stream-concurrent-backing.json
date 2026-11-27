@@ -1,0 +1,23 @@
+{
+  "id": "file-stream-concurrent-backing",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-read-stream-concurrent-reads",
+      "file": "test/parallel/test-fs-read-stream-concurrent-reads.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream",
+        "node:buffer"
+      ],
+      "contract": "Reads 2,000 files with six reads active, compares the bytes and bounds the backing memory retained by the collected chunks.",
+      "owners": [
+        "upstream Node filesystem and stream implementations",
+        "Kandelo guest file descriptors and VFS"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/loop.js"
+  ]
+}

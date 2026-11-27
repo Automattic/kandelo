@@ -1,0 +1,32 @@
+{
+  "id": "pipe-destination-errors",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-error-handling",
+      "file": "test/parallel/test-stream-pipe-error-handling.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe error handling case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-multiple-destinations-error",
+      "file": "test/parallel/test-stream-pipe-multiple-destinations-error.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe multiple destinations error case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

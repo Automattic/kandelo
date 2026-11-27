@@ -1,0 +1,32 @@
+{
+  "id": "stream-iter-flag-and-pressure",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-iter-disabled",
+      "file": "test/parallel/test-stream-iter-disabled.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/iter"
+      ],
+      "contract": "Stream/iter module availability with and without its flag in child processes.",
+      "owners": [
+        "upstream Node stream iterators",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-iter-push-backpressure",
+      "file": "test/parallel/test-stream-iter-push-backpressure.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/iter"
+      ],
+      "contract": "Push iterator backpressure and producer/resumer ordering.",
+      "owners": [
+        "upstream Node stream iterators",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

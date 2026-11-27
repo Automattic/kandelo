@@ -1,0 +1,32 @@
+{
+  "id": "stream-reduce-and-predicates",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-reduce",
+      "file": "test/parallel/test-stream-reduce.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Sequential reduction, empty input and rejection.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-some-find-every",
+      "file": "test/parallel/test-stream-some-find-every.mjs",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Short-circuiting predicates, concurrency and abort signals.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

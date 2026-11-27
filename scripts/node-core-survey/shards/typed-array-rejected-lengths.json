@@ -1,0 +1,19 @@
+{
+  "id": "typed-array-rejected-lengths",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-typed-array-rejected-lengths",
+      "file": "test/parallel/test-kandelo-typed-array-rejected-lengths.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Rejected element counts retain the original primitive in RangeError messages across widths and main, VM and worker realms. Conversion and accessor exceptions propagate.",
+      "owners": [
+        "upstream Node Buffer and SpiderMonkey typed arrays"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

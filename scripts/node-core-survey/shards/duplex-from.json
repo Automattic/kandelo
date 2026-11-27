@@ -1,0 +1,21 @@
+{
+  "id": "duplex-from",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-duplex-from",
+      "file": "test/parallel/test-stream-duplex-from.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/web",
+        "node:buffer"
+      ],
+      "contract": "Duplex.from adapts iterables, functions, promises, Blobs and classic and Web Stream pairs and propagates errors and destruction.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

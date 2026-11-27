@@ -1,0 +1,33 @@
+{
+  "id": "original-filesystem-watch-vfs",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-watch",
+      "file": "test/parallel/test-fs-watch.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Original platform-conditional event assertions and unconditional invalid-input checks. Kandelo skips its two OS-allowlisted event branches.",
+      "owners": [
+        "upstream Node filesystem and loader implementations",
+        "guest VFS and libuv"
+      ]
+    },
+    {
+      "selector": "parallel/test-vfs",
+      "file": "test/parallel/test-vfs.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:module"
+      ],
+      "contract": "Upstream CommonJS resolution through a customized fs and Module._stat after verifying real file loading.",
+      "owners": [
+        "upstream Node filesystem and loader implementations",
+        "guest VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

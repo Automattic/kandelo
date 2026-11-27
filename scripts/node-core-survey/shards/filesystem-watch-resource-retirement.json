@@ -1,0 +1,21 @@
+{
+  "id": "filesystem-watch-resource-retirement",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-filesystem-watch-resource-retirement",
+      "file": "test/parallel/test-kandelo-filesystem-watch-resource-retirement.js",
+      "origin": "kandelo",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "After warming the provider, start a callback watcher and a pending promise watch, verify live event resources and descriptors, close and abort, and recover both baselines across four cycles.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

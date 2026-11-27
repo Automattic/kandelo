@@ -1,0 +1,32 @@
+{
+  "id": "event-listener-mutation",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-modify-in-emit",
+      "file": "test/parallel/test-event-emitter-modify-in-emit.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Listener mutations during dispatch preserve the active emission and affect subsequent emissions.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-remove-listeners",
+      "file": "test/parallel/test-event-emitter-remove-listeners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Listener removal preserves identity, removal notifications and order.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

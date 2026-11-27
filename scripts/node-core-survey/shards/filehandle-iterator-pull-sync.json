@@ -1,0 +1,20 @@
+{
+  "id": "filehandle-iterator-pull-sync",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-promises-file-handle-pullsync",
+      "file": "test/parallel/test-fs-promises-file-handle-pullsync.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises",
+        "node:stream/iter"
+      ],
+      "contract": "Synchronous file pulls preserve ranges, compression pipeline data, and handle ownership.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

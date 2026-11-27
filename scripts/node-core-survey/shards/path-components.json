@@ -1,0 +1,45 @@
+{
+  "id": "path-components",
+  "cases": [
+    {
+      "selector": "parallel/test-path-basename",
+      "file": "test/parallel/test-path-basename.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 path component extraction.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-dirname",
+      "file": "test/parallel/test-path-dirname.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 path component extraction.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-extname",
+      "file": "test/parallel/test-path-extname.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 path component extraction.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

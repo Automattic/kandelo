@@ -1,0 +1,32 @@
+{
+  "id": "local-path-operations",
+  "cases": [
+    {
+      "selector": "parallel/test-path-normalize",
+      "file": "test/parallel/test-path-normalize.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 path normalization assertions.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-relative",
+      "file": "test/parallel/test-path-relative.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 relative path assertions, including drive changes.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

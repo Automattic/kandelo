@@ -1,0 +1,32 @@
+{
+  "id": "stream-unpipe-cleanup-under-pressure",
+  "cases": [
+    {
+      "selector": "parallel/test-stream2-unpipe-drain",
+      "file": "test/parallel/test-stream2-unpipe-drain.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Unpipe a draining destination and resume delivery.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream2-unpipe-leak",
+      "file": "test/parallel/test-stream2-unpipe-leak.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Remove listeners when a destination is repeatedly piped and unpiped.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

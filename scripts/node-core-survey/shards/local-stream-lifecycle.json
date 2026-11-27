@@ -1,0 +1,30 @@
+{
+  "id": "local-stream-lifecycle",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-backpressure",
+      "file": "test/parallel/test-stream-backpressure.js",
+      "family": "streams",
+      "modules": ["node:stream", "node:buffer"],
+      "contract": "A local readable bounds buffering and a slow writable receives the expected number of chunks",
+      "owners": ["upstream Node streams", "Kandelo Buffer and timer providers"]
+    },
+    {
+      "selector": "parallel/test-stream-destroy-event-order",
+      "file": "test/parallel/test-stream-destroy-event-order.js",
+      "family": "streams",
+      "modules": ["node:stream", "node:events"],
+      "contract": "A destroyed readable emits error before close and emits each event exactly once",
+      "owners": ["upstream Node stream destruction", "Kandelo event and callback scheduling"]
+    },
+    {
+      "selector": "parallel/test-stream-pipeline-listeners",
+      "file": "test/parallel/test-stream-pipeline-listeners.js",
+      "family": "streams",
+      "modules": ["node:stream", "node:events"],
+      "contract": "Local pipelines retain and remove the original error listeners across readable, writable, and duplex completion paths",
+      "owners": ["upstream Node pipeline", "Kandelo event and timer behavior"]
+    }
+  ],
+  "fixtures": []
+}

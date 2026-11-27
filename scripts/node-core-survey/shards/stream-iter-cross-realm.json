@@ -1,0 +1,20 @@
+{
+  "id": "stream-iter-cross-realm",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-iter-cross-realm",
+      "file": "test/parallel/test-stream-iter-cross-realm.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/iter",
+        "node:vm"
+      ],
+      "contract": "Pinned upstream cross-realm iterator behavior with the original test flags.",
+      "owners": [
+        "upstream Node stream iterators and their adapters",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

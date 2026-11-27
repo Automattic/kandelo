@@ -1,0 +1,22 @@
+{
+  "id": "readable-async-iterators",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-async-iterators",
+      "file": "test/parallel/test-stream-readable-async-iterators.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:fs",
+        "node:http"
+      ],
+      "contract": "Original Readable async iteration checks consumption, early return, error and close handling, and guest file and loopback HTTP streams.",
+      "owners": [
+        "upstream Node streams",
+        "guest filesystem and loopback networking",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

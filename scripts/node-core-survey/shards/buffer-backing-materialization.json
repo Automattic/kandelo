@@ -1,0 +1,19 @@
+{
+  "id": "buffer-backing-materialization",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-backing-arraybuffer",
+      "file": "test/parallel/test-buffer-backing-arraybuffer.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Upstream size thresholds and observable backing materialization for unpooled Buffer and typed arrays.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

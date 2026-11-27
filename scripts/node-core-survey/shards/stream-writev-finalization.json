@@ -1,0 +1,32 @@
+{
+  "id": "stream-writev-finalization",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writev",
+      "file": "test/parallel/test-stream-writev.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Vector write ordering and callbacks.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-write-final",
+      "file": "test/parallel/test-stream-write-final.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Finalization and finish ordering.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

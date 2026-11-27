@@ -1,0 +1,20 @@
+{
+  "id": "local-vm-context",
+  "cases": [
+    {
+      "selector": "parallel/test-vm-context",
+      "file": "test/parallel/test-vm-context.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "VM contexts and Script execution with guest engine realm isolation and property behavior",
+      "owners": [
+        "lib/vm.js",
+        "src/node_contextify.cc",
+        "SpiderMonkey engine bridge realm and context owners"
+      ]
+    }
+  ],
+  "fixtures": []
+}

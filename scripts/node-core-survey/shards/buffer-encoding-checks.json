@@ -1,0 +1,32 @@
+{
+  "id": "buffer-encoding-checks",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-isascii",
+      "file": "test/parallel/test-buffer-isascii.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "isAscii validates data in supported view and buffer inputs and rejects invalid arguments.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-isutf8",
+      "file": "test/parallel/test-buffer-isutf8.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "isUtf8 accepts valid encodings and rejects malformed UTF-8 and invalid input types.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

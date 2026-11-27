@@ -1,0 +1,20 @@
+{
+  "id": "single-child-process-send-cb",
+  "cases": [
+    {
+      "selector": "parallel/test-child-process-send-cb",
+      "file": "test/parallel/test-child-process-send-cb.js",
+      "family": "processes",
+      "modules": [
+        "node:process",
+        "node:child_process"
+      ],
+      "contract": "A forked child receives a successful send callback and exits with status zero after sending its parent a message.",
+      "owners": [
+        "upstream Node child_process",
+        "guest process and IPC lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,19 @@
+{
+  "id": "path-exports",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-path-exports",
+      "file": "test/parallel/test-kandelo-path-exports.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "The POSIX and win32 path namespaces expose the exact reference own keys, property descriptors, function names and lengths, separators and aliases.",
+      "owners": [
+        "lib/path.js"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,20 @@
+{
+  "id": "single-kandelo-fs-watch-child-write",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-fs-watch-child-write",
+      "file": "test/parallel/test-kandelo-fs-watch-child-write.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "A separate guest process writes a file while file and directory watchers are active. Both deliver its exact Buffer basename and close; the observer reads the child bytes.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

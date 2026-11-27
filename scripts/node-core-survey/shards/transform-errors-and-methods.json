@@ -1,0 +1,32 @@
+{
+  "id": "transform-errors-and-methods",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-transform-callback-twice",
+      "file": "test/parallel/test-stream-transform-callback-twice.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A second transform callback emits ERR_MULTIPLE_CALLBACK.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-transform-constructor-set-methods",
+      "file": "test/parallel/test-stream-transform-constructor-set-methods.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Constructor options install the original transform, flush, and final method identities.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

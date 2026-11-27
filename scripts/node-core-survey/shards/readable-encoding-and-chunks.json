@@ -1,0 +1,32 @@
+{
+  "id": "readable-encoding-and-chunks",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-default-encoding",
+      "file": "test/parallel/test-stream-readable-default-encoding.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A readable validates defaultEncoding and applies it to input bytes.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-invalid-chunk",
+      "file": "test/parallel/test-stream-readable-invalid-chunk.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Invalid chunk values deliver the expected TypeError and code.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,30 @@
+{
+  "id": "local-stream-adapters-and-buffers",
+  "cases": [
+    {
+      "selector": "parallel/test-webstreams-adapters-writable-buffer-sources",
+      "file": "test/parallel/test-webstreams-adapters-writable-buffer-sources.js",
+      "family": "streams",
+      "modules": ["node:stream/web", "node:stream", "node:buffer"],
+      "contract": "Writable and Duplex Web Stream adapters preserve the expected Buffer backing store or original value for BufferSource inputs",
+      "owners": ["upstream Node Web Stream adapters", "maintained engine bridge and Buffer backing stores"]
+    },
+    {
+      "selector": "parallel/test-webstreams-adapters-sync-write-error",
+      "file": "test/parallel/test-webstreams-adapters-sync-write-error.js",
+      "family": "streams",
+      "modules": ["node:stream/web", "node:stream"],
+      "contract": "A synchronous write error rejects in the original adapter paths while preserving their distinct destroy and cleanup behavior",
+      "owners": ["upstream Node Web Stream adapters", "Kandelo async and event behavior"]
+    },
+    {
+      "selector": "parallel/test-buffer-resizable",
+      "file": "test/parallel/test-buffer-resizable.js",
+      "family": "values",
+      "modules": ["node:buffer"],
+      "contract": "Length-tracking Buffer views reflect resizable ArrayBuffer growth and shrinkage",
+      "owners": ["upstream Node Buffer", "maintained engine bridge and resizable ArrayBuffer storage"]
+    }
+  ],
+  "fixtures": []
+}

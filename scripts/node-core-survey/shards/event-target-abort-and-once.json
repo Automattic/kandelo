@@ -1,0 +1,32 @@
+{
+  "id": "event-target-abort-and-once",
+  "cases": [
+    {
+      "selector": "parallel/test-events-add-abort-listener",
+      "file": "test/parallel/test-events-add-abort-listener.mjs",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Abort listeners receive the actual abort event and can be disposed before delivery.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-eventtarget-once-twice",
+      "file": "test/parallel/test-eventtarget-once-twice.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Two successive event-target waits receive their respective dispatches.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "pipe-flow-unpipe",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-flow",
+      "file": "test/parallel/test-stream-pipe-flow.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe flow case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-flow-after-unpipe",
+      "file": "test/parallel/test-stream-pipe-flow-after-unpipe.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe flow after unpipe case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,48 @@
+{
+  "id": "filesystem-directory-types-and-closed-handle",
+  "fixtures": [],
+  "cases": [
+    {
+      "selector": "parallel/test-fs-readdir-types",
+      "file": "test/parallel/test-fs-readdir-types.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Directory entry types, symbolic links, and operation errors on a closed file handle.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-readdir-types-symlinks",
+      "file": "test/parallel/test-fs-readdir-types-symlinks.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Directory entry types, symbolic links, and operation errors on a closed file handle.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-filehandle-use-after-close",
+      "file": "test/parallel/test-fs-filehandle-use-after-close.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Directory entry types, symbolic links, and operation errors on a closed file handle.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    }
+  ]
+}

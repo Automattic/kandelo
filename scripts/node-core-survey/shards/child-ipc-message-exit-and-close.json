@@ -1,0 +1,50 @@
+{
+  "id": "child-ipc-message-exit-and-close",
+  "cases": [
+    {
+      "selector": "parallel/test-child-process-fork-close",
+      "file": "test/parallel/test-child-process-fork-close.js",
+      "family": "processes",
+      "modules": [
+        "node:process",
+        "node:child_process"
+      ],
+      "contract": "An installed child sends hello and exits. Both message and exit must precede close.",
+      "owners": [
+        "upstream Node child_process",
+        "guest process and IPC lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-child-process-send-cb",
+      "file": "test/parallel/test-child-process-send-cb.js",
+      "family": "processes",
+      "modules": [
+        "node:process",
+        "node:child_process"
+      ],
+      "contract": "A forked child receives a successful send callback and exits with status zero after sending its parent a message.",
+      "owners": [
+        "upstream Node child_process",
+        "guest process and IPC lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-child-process-ipc-next-tick",
+      "file": "test/parallel/test-child-process-ipc-next-tick.js",
+      "family": "processes",
+      "modules": [
+        "node:process",
+        "node:child_process"
+      ],
+      "contract": "A child processes ten IPC messages that throw, runs each uncaught exception handler and disconnects.",
+      "owners": [
+        "upstream Node child_process",
+        "guest process and IPC lifecycle"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/child-process-message-and-exit.js"
+  ]
+}

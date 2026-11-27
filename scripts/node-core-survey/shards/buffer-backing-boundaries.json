@@ -1,0 +1,20 @@
+{
+  "id": "buffer-backing-boundaries",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-buffer-backing-boundaries",
+      "file": "test/parallel/test-kandelo-buffer-backing-boundaries.js",
+      "origin": "kandelo",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Record actual backing state around native and guest size thresholds and verify write-through aliasing and identity after materialization.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

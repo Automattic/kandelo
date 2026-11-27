@@ -1,0 +1,22 @@
+{
+  "id": "http1-connect-chunked",
+  "cases": [
+    {
+      "selector": "parallel/test-http-connect",
+      "file": "test/parallel/test-http-connect.js",
+      "family": "http",
+      "modules": ["node:http", "node:net"],
+      "contract": "Local HTTP CONNECT detaches its socket from the parser and Agent and carries bytes before and after the response",
+      "owners": ["upstream Node HTTP client, server, and Agent", "Kandelo libuv socket ownership"]
+    },
+    {
+      "selector": "parallel/test-http-chunked",
+      "file": "test/parallel/test-http-chunked.js",
+      "family": "http",
+      "modules": ["node:http"],
+      "contract": "Chunked HTTP response preserves the original UTF-8 fixture string after client decoding",
+      "owners": ["upstream Node HTTP", "Node parser package"]
+    }
+  ],
+  "fixtures": []
+}

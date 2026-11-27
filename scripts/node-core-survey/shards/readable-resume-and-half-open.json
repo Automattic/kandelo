@@ -1,0 +1,32 @@
+{
+  "id": "readable-resume-and-half-open",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-resume-hwm",
+      "file": "test/parallel/test-stream-readable-resume-hwm.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Resuming with queued bytes above the watermark does not request additional data.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-async-iter-half-open-duplex",
+      "file": "test/parallel/test-stream-readable-async-iter-half-open-duplex.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The writable half remains usable after async iteration of a half-open Duplex.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,27 @@
+{
+  "id": "tls-alpn",
+  "cases": [
+    {
+      "selector": "parallel/test-tls-alpn-server-client",
+      "file": "test/parallel/test-tls-alpn-server-client.js",
+      "family": "secure-network",
+      "modules": ["node:tls"],
+      "contract": "ALPN preference, mismatch and callback behavior on both ends of real TLS connections",
+      "owners": ["upstream Node TLS", "Node OpenSSL package"]
+    },
+    {
+      "selector": "parallel/test-tls-alpn-callback-sync-end",
+      "file": "test/parallel/test-tls-alpn-callback-sync-end.js",
+      "family": "secure-network",
+      "modules": ["node:tls"],
+      "contract": "TLS 1.2 and 1.3 complete the handshake and close cleanly when the ALPN callback ends the socket",
+      "owners": ["upstream Node TLS", "Node OpenSSL package", "Kandelo libuv socket ownership"]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/keys/agent1-cert.pem",
+    "test/fixtures/keys/agent1-key.pem",
+    "test/fixtures/keys/agent2-cert.pem",
+    "test/fixtures/keys/agent2-key.pem"
+  ]
+}

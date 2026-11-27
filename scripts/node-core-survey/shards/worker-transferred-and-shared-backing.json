@@ -1,0 +1,51 @@
+{
+  "id": "worker-transferred-and-shared-backing",
+  "cases": [
+    {
+      "selector": "parallel/test-worker-message-port-arraybuffer",
+      "file": "test/parallel/test-worker-message-port-arraybuffer.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads",
+        "node:buffer"
+      ],
+      "contract": "Transferred typed-array data survives detachment and a second transfer reports DataCloneError.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-worker-message-port-multiple-sharedarraybuffers",
+      "file": "test/parallel/test-worker-message-port-multiple-sharedarraybuffers.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads",
+        "node:buffer"
+      ],
+      "contract": "Distinct shared backing stores survive a nested structured clone.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-worker-message-channel-sharedarraybuffer",
+      "file": "test/parallel/test-worker-message-channel-sharedarraybuffer.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads",
+        "node:buffer"
+      ],
+      "contract": "A worker mutates the same backing store and releases it after forced GC.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

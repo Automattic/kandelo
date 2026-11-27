@@ -1,0 +1,19 @@
+{
+  "id": "worker-environment-data",
+  "cases": [
+    {
+      "selector": "parallel/test-worker-environmentdata",
+      "file": "test/parallel/test-worker-environmentdata.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads"
+      ],
+      "contract": "Nested workers inherit a clone of the creating environment's data independently of later deletion",
+      "owners": [
+        "upstream Node worker environment",
+        "maintained SpiderMonkey worker and clone bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

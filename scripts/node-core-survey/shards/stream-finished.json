@@ -1,0 +1,22 @@
+{
+  "id": "stream-finished",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-finished",
+      "file": "test/parallel/test-stream-finished.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:fs",
+        "node:http"
+      ],
+      "contract": "Original callback and Promise end-of-stream checks cover readable and writable completion, early close, errors, and guest file and loopback HTTP streams.",
+      "owners": [
+        "upstream Node streams",
+        "guest filesystem and loopback networking",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "writable-errors-and-finish",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-write-writev-finish",
+      "file": "test/parallel/test-stream-writable-write-writev-finish.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Synchronous and asynchronous write and writev errors preserve finish, prefinish and error behavior.",
+      "owners": [
+        "upstream Node Writable stream",
+        "Kandelo callback scheduling"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-write-cb-error",
+      "file": "test/parallel/test-stream-writable-write-cb-error.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The write callback runs before the error event.",
+      "owners": [
+        "upstream Node Writable stream",
+        "Kandelo callback scheduling"
+      ]
+    }
+  ],
+  "fixtures": []
+}

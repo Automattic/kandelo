@@ -1,0 +1,14 @@
+{
+  "id": "dns-explicit-udp-resolver",
+  "cases": [
+    {
+      "selector": "parallel/test-dns-resolvesrv",
+      "file": "test/parallel/test-dns-resolvesrv.js",
+      "family": "network",
+      "modules": ["node:dns", "node:dns/promises", "node:dgram"],
+      "contract": "Callback and Promise resolver instances query an explicitly configured fixture UDP server for SRV records",
+      "owners": ["upstream Node dns", "Node c-ares package", "Kandelo libuv socket ownership"]
+    }
+  ],
+  "fixtures": []
+}

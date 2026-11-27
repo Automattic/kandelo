@@ -1,0 +1,22 @@
+{
+  "id": "http2-upload-and-close",
+  "cases": [
+    {
+      "selector": "parallel/test-http2-client-upload",
+      "file": "test/parallel/test-http2-client-upload.js",
+      "family": "http",
+      "modules": ["node:http2", "node:fs", "node:stream"],
+      "contract": "Transfer the original image file over a real HTTP/2 request and finish the request and session",
+      "owners": ["upstream Node HTTP/2", "Node nghttp2 package", "Kandelo socket and file providers"]
+    },
+    {
+      "selector": "parallel/test-http2-session-graceful-close",
+      "file": "test/parallel/test-http2-session-graceful-close.js",
+      "family": "http",
+      "modules": ["node:http2"],
+      "contract": "An existing HTTP/2 stream finishes while the session closes gracefully",
+      "owners": ["upstream Node HTTP/2", "Node nghttp2 package", "Kandelo socket ownership"]
+    }
+  ],
+  "fixtures": ["test/fixtures/person-large.jpg"]
+}

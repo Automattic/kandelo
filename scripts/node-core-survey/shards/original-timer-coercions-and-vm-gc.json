@@ -1,0 +1,33 @@
+{
+  "id": "original-timer-coercions-and-vm-gc",
+  "cases": [
+    {
+      "selector": "parallel/test-timers",
+      "file": "test/parallel/test-timers.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "All original interval and timeout coercions and callback order.",
+      "owners": [
+        "upstream Node async",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-hooks-vm-gc",
+      "file": "test/parallel/test-async-hooks-vm-gc.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks",
+        "node:vm"
+      ],
+      "contract": "Collect a newly created context with the initialization hook enabled.",
+      "owners": [
+        "upstream Node async",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

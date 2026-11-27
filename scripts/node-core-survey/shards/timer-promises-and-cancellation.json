@@ -1,0 +1,62 @@
+{
+  "id": "timer-promises-and-cancellation",
+  "cases": [
+    {
+      "selector": "parallel/test-timers-immediate-promisified",
+      "file": "test/parallel/test-timers-immediate-promisified.js",
+      "family": "async",
+      "modules": [
+        "node:timers",
+        "node:timers/promises"
+      ],
+      "contract": "Promisified immediate, interval, timeout and public promise module semantics.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-interval-promisified",
+      "file": "test/parallel/test-timers-interval-promisified.js",
+      "family": "async",
+      "modules": [
+        "node:timers",
+        "node:timers/promises"
+      ],
+      "contract": "Promisified immediate, interval, timeout and public promise module semantics.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-timeout-promisified",
+      "file": "test/parallel/test-timers-timeout-promisified.js",
+      "family": "async",
+      "modules": [
+        "node:timers",
+        "node:timers/promises"
+      ],
+      "contract": "Promisified immediate, interval, timeout and public promise module semantics.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-promises",
+      "file": "test/parallel/test-timers-promises.js",
+      "family": "async",
+      "modules": [
+        "node:timers",
+        "node:timers/promises"
+      ],
+      "contract": "Promisified immediate, interval, timeout and public promise module semantics.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

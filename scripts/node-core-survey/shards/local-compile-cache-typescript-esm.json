@@ -1,0 +1,22 @@
+{
+  "id": "local-compile-cache-typescript-esm",
+  "cases": [
+    {
+      "selector": "parallel/test-compile-cache-typescript-esm",
+      "file": "test/parallel/test-compile-cache-typescript-esm.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Separate installed CLI processes populate and retrieve TypeScript and ESM compile caches using upstream fixtures.",
+      "owners": [
+        "upstream Node loaders and workers",
+        "Kandelo Amaro and maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": [],
+  "fixtureDirectories": [
+    "test/fixtures/typescript"
+  ]
+}

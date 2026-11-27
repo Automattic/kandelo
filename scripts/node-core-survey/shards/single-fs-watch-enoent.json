@@ -1,0 +1,20 @@
+{
+  "id": "single-fs-watch-enoent",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-watch-enoent",
+      "file": "test/parallel/test-fs-watch-enoent.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Missing and removed watch paths propagate the original callback and fs/promises errors.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

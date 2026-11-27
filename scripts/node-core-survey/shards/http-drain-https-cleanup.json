@@ -1,0 +1,33 @@
+{
+  "id": "http-drain-https-cleanup",
+  "cases": [
+    {
+      "selector": "parallel/test-http-outgoing-drain-writable-length",
+      "file": "test/parallel/test-http-outgoing-drain-writable-length.js",
+      "family": "http",
+      "modules": ["node:http", "node:net"],
+      "contract": "Drain fires after buffered pipelined HTTP bytes have left the socket writable buffer",
+      "owners": ["upstream Node HTTP", "Kandelo libuv socket ownership"]
+    },
+    {
+      "selector": "parallel/test-https-server-close-all",
+      "file": "test/parallel/test-https-server-close-all.js",
+      "family": "secure-network",
+      "modules": ["node:https", "node:tls"],
+      "contract": "Closing all connections retires both an active request and an idle keep-alive peer",
+      "owners": ["upstream Node HTTPS", "Node TLS", "Kandelo libuv socket ownership"]
+    },
+    {
+      "selector": "parallel/test-https-server-close-idle",
+      "file": "test/parallel/test-https-server-close-idle.js",
+      "family": "secure-network",
+      "modules": ["node:https", "node:tls"],
+      "contract": "Normal server shutdown closes the idle TLS connection and preserves the active one until explicit cleanup",
+      "owners": ["upstream Node HTTPS", "Node TLS", "Kandelo libuv socket ownership"]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/keys/agent1-cert.pem",
+    "test/fixtures/keys/agent1-key.pem"
+  ]
+}

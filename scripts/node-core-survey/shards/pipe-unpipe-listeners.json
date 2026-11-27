@@ -1,0 +1,32 @@
+{
+  "id": "pipe-unpipe-listeners",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-unpipe-streams",
+      "file": "test/parallel/test-stream-pipe-unpipe-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe unpipe streams case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-without-listenerCount",
+      "file": "test/parallel/test-stream-pipe-without-listenerCount.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe without listenerCount case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

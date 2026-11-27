@@ -1,0 +1,32 @@
+{
+  "id": "fs-mode-and-rename-inputs",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-mkdir-mode-mask",
+      "file": "test/parallel/test-fs-mkdir-mode-mask.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "String and numeric directory modes preserve the low permission bits observed by stat.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-rename-type-check",
+      "file": "test/parallel/test-fs-rename-type-check.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Invalid source and destination types have the upstream callback and synchronous rename errors.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "event-names-and-counts",
+  "cases": [
+    {
+      "selector": "parallel/test-events-list",
+      "file": "test/parallel/test-events-list.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "String and symbol events appear and disappear as listeners are added or removed.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-events-listener-count-with-listener",
+      "file": "test/parallel/test-events-listener-count-with-listener.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Listener counts distinguish individual functions and repeated registrations.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

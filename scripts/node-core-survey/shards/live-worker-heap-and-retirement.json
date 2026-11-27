@@ -1,0 +1,21 @@
+{
+  "id": "live-worker-heap-and-retirement",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-live-worker-heap",
+      "file": "test/parallel/test-kandelo-live-worker-heap.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads",
+        "node:v8"
+      ],
+      "contract": "Observe a live worker heap across a retained allocation and check the error after that worker exits.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

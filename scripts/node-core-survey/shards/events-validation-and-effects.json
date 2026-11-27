@@ -1,0 +1,45 @@
+{
+  "id": "events-validation-and-effects",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-invalid-listener",
+      "file": "test/parallel/test-event-emitter-invalid-listener.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream invalid listener assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-listeners-side-effects",
+      "file": "test/parallel/test-event-emitter-listeners-side-effects.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream listeners side effects assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-set-max-listeners-side-effects",
+      "file": "test/parallel/test-event-emitter-set-max-listeners-side-effects.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream set max listeners side effects assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

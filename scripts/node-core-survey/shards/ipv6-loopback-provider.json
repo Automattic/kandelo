@@ -1,0 +1,24 @@
+{
+  "id": "ipv6-loopback-provider",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-ipv6-loopback",
+      "file": "test/parallel/test-kandelo-ipv6-loopback.mjs",
+      "origin": "kandelo",
+      "family": "network",
+      "modules": ["node:net", "node:dgram"],
+      "contract": "Exchange bytes over numeric IPv6 loopback TCP and UDP and identify the actual guest peers",
+      "owners": ["upstream Node net and dgram", "Kandelo libuv socket ownership", "Kandelo guest IPv6"]
+    },
+    {
+      "selector": "parallel/test-kandelo-ipv6-loopback-interface",
+      "file": "test/parallel/test-kandelo-ipv6-loopback-interface.mjs",
+      "origin": "kandelo",
+      "family": "network",
+      "modules": ["node:os"],
+      "contract": "The real guest IPv6 loopback route appears in the public network interface inventory",
+      "owners": ["Node os", "Kandelo libuv and libc interface queries", "Kandelo kernel network interface inventory"]
+    }
+  ],
+  "fixtures": []
+}

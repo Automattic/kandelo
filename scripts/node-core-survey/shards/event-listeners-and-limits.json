@@ -1,0 +1,32 @@
+{
+  "id": "event-listeners-and-limits",
+  "cases": [
+    {
+      "selector": "parallel/test-events-getmaxlisteners",
+      "file": "test/parallel/test-events-getmaxlisteners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Listener limits on EventEmitter, EventTarget and AbortSignal follow the upstream defaults and overrides.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-events-static-geteventlisteners",
+      "file": "test/parallel/test-events-static-geteventlisteners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Static getEventListeners returns the expected registrations on emitters and targets.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

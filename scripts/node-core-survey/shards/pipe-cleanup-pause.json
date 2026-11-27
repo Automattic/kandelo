@@ -1,0 +1,32 @@
+{
+  "id": "pipe-cleanup-pause",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-cleanup",
+      "file": "test/parallel/test-stream-pipe-cleanup.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe cleanup case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-cleanup-pause",
+      "file": "test/parallel/test-stream-pipe-cleanup-pause.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe cleanup pause case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

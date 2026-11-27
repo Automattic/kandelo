@@ -1,0 +1,32 @@
+{
+  "id": "transform-finalization",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-transform-final",
+      "file": "test/parallel/test-stream-transform-final.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Finalization, flushing, emitted output and end callbacks retain the upstream ordering.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-transform-final-sync",
+      "file": "test/parallel/test-stream-transform-final-sync.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The synchronous finalization path preserves the asserted output and callback order.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,48 @@
+{
+  "id": "fs-stream-file-descriptors",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-read-stream-fd",
+      "file": "test/parallel/test-fs-read-stream-fd.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "A read stream consumes the contents of an already-open file descriptor.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-read-stream-file-handle",
+      "file": "test/parallel/test-fs-read-stream-file-handle.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "An actual FileHandle supplies a read stream and participates in close and destruction.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-promises-file-handle-stream",
+      "file": "test/parallel/test-fs-promises-file-handle-stream.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "FileHandle stream readers and writers preserve real file contents.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

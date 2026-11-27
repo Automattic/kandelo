@@ -1,0 +1,33 @@
+{
+  "id": "local-stream-abort",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-add-abort-signal",
+      "file": "test/parallel/test-stream-add-abort-signal.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:events"
+      ],
+      "contract": "addAbortSignal validates its signal and stream arguments, and its internal no-validation variant returns the original readable with an invalid signal.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-webstreams-writer-closed-abort-pending",
+      "file": "test/parallel/test-webstreams-writer-closed-abort-pending.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "A writer\u2019s closed promise waits for the sink abort promise to settle and carries the original error.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

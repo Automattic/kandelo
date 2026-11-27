@@ -1,0 +1,47 @@
+{
+  "id": "path-namespace",
+  "cases": [
+    {
+      "selector": "parallel/test-path-posix-exists",
+      "file": "test/parallel/test-path-posix-exists.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original platform namespaces and namespaced path conversion.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-win32-exists",
+      "file": "test/parallel/test-path-win32-exists.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original platform namespaces and namespaced path conversion.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-makelong",
+      "file": "test/parallel/test-path-makelong.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original platform namespaces and namespaced path conversion.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/a.js"
+  ]
+}

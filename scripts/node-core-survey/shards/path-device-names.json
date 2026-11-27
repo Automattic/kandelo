@@ -1,0 +1,19 @@
+{
+  "id": "path-device-names",
+  "cases": [
+    {
+      "selector": "parallel/test-path-win32-normalize-device-names",
+      "file": "test/parallel/test-path-win32-normalize-device-names.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original Windows-only normalization case retains its platform prerequisite.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

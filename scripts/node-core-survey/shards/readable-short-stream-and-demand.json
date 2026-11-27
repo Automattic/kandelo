@@ -1,0 +1,45 @@
+{
+  "id": "readable-short-stream-and-demand",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-emit-readable-short-stream",
+      "file": "test/parallel/test-stream-readable-emit-readable-short-stream.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Short streams emit the expected readable and end events.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-no-unneeded-readable",
+      "file": "test/parallel/test-stream-readable-no-unneeded-readable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A readable wrapper avoids redundant readable notifications.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-flow-recursion",
+      "file": "test/parallel/test-stream-readable-flow-recursion.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The normal read-size sequence updates the high-water mark, produces the expected data and observes bounded callback depth.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

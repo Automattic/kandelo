@@ -1,0 +1,20 @@
+{
+  "id": "single-child-process-ipc-next-tick",
+  "cases": [
+    {
+      "selector": "parallel/test-child-process-ipc-next-tick",
+      "file": "test/parallel/test-child-process-ipc-next-tick.js",
+      "family": "processes",
+      "modules": [
+        "node:process",
+        "node:child_process"
+      ],
+      "contract": "A child processes ten IPC messages that throw, runs each uncaught exception handler and disconnects.",
+      "owners": [
+        "upstream Node child_process",
+        "guest process and IPC lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

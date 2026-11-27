@@ -1,0 +1,63 @@
+{
+  "id": "runtime-providers",
+  "cases": [
+    {
+      "selector": "parallel/test-abortcontroller",
+      "file": "test/parallel/test-abortcontroller.js",
+      "family": "web",
+      "modules": [
+        "globalThis.AbortController",
+        "globalThis.AbortSignal"
+      ],
+      "contract": "Abort signal reasons, timeout and collection",
+      "owners": [
+        "lib/internal/abort_controller.js",
+        "lib/internal/event_target.js",
+        "SpiderMonkey engine bridge GC and scheduling"
+      ]
+    },
+    {
+      "selector": "parallel/test-zlib-brotli-from-string",
+      "file": "test/parallel/test-zlib-brotli-from-string.js",
+      "family": "compression",
+      "modules": [
+        "node:zlib"
+      ],
+      "contract": "Brotli synchronous string roundtrip and encodings",
+      "owners": [
+        "src/node_zlib.cc",
+        "Brotli"
+      ]
+    },
+    {
+      "selector": "parallel/test-vm-context",
+      "file": "test/parallel/test-vm-context.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "VM contexts and Script execution with guest engine realm isolation and property behavior",
+      "owners": [
+        "lib/vm.js",
+        "src/node_contextify.cc",
+        "SpiderMonkey engine bridge realm and context owners"
+      ]
+    },
+    {
+      "selector": "parallel/test-sqlite-data-types",
+      "file": "test/parallel/test-sqlite-data-types.js",
+      "family": "native-integration",
+      "modules": [
+        "node:sqlite",
+        "node:test"
+      ],
+      "contract": "SQLite database and statement binding and result data types",
+      "owners": [
+        "src/node_sqlite.cc",
+        "SQLite",
+        "SpiderMonkey engine bridge conversion"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,19 @@
+{
+  "id": "single-async-local-storage-exit-does-not-leak",
+  "cases": [
+    {
+      "selector": "parallel/test-async-local-storage-exit-does-not-leak",
+      "file": "test/parallel/test-async-local-storage-exit-does-not-leak.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Repeated nested exits restore the outer context without propagating its inner data.",
+      "owners": [
+        "upstream Node async hooks",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

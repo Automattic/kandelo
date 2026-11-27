@@ -1,0 +1,27 @@
+{
+  "id": "module-cache-and-tla",
+  "cases": [
+    {
+      "selector": "es-module/test-esm-json-cache",
+      "file": "test/es-module/test-esm-json-cache.mjs",
+      "family": "loading",
+      "modules": ["node:module", "ESM"],
+      "contract": "ESM JSON import and CommonJS require share identities and later field updates",
+      "owners": ["upstream Node CJS and ESM loaders", "maintained SpiderMonkey module bridge"]
+    },
+    {
+      "selector": "es-module/test-require-module-cached-tla",
+      "file": "test/es-module/test-require-module-cached-tla.js",
+      "family": "loading",
+      "modules": ["node:module", "ESM"],
+      "contract": "A settled top-level-await module remains governed by the original require rejection contract",
+      "owners": ["upstream Node CJS and ESM loaders", "maintained SpiderMonkey module bridge"]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/es-modules/json-cache/another.cjs",
+    "test/fixtures/es-modules/json-cache/mod.cjs",
+    "test/fixtures/es-modules/json-cache/test.json",
+    "test/fixtures/es-modules/tla/resolved.mjs"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "filehandle-port-transfer",
+  "cases": [
+    {
+      "selector": "parallel/test-worker-message-port-transfer-filehandle",
+      "file": "test/parallel/test-worker-message-port-transfer-filehandle.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises",
+        "node:worker_threads",
+        "node:vm"
+      ],
+      "contract": "Move a real file descriptor through a port, verify file contents and EBADF, and discard a transfer addressed to another context.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

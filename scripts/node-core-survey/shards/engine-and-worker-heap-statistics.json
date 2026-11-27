@@ -1,0 +1,35 @@
+{
+  "id": "engine-and-worker-heap-statistics",
+  "cases": [
+    {
+      "selector": "parallel/test-v8-stats",
+      "file": "test/parallel/test-v8-stats.js",
+      "family": "engine",
+      "modules": [
+        "node:v8"
+      ],
+      "contract": "Upstream heap, space and code statistics assertions.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey bridge and Kandelo runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-worker-heap-statistics",
+      "file": "test/parallel/test-worker-heap-statistics.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads",
+        "node:inspector"
+      ],
+      "contract": "Upstream live worker statistics and post-exit rejection, including upstream inspector availability check.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey bridge and Kandelo runtime"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/worker-name.js"
+  ]
+}

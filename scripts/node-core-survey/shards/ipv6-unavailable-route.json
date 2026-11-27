@@ -1,0 +1,15 @@
+{
+  "id": "ipv6-unavailable-route",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-ipv6-no-route",
+      "file": "test/parallel/test-kandelo-ipv6-no-route.mjs",
+      "origin": "kandelo",
+      "family": "network",
+      "modules": ["node:net", "node:dgram"],
+      "contract": "The identified guest returns real transport errors from IPv6 UDP and TCP outside loopback when it has no routed IPv6 link",
+      "owners": ["upstream Node socket APIs", "Kandelo libuv and IPv6 route ownership"]
+    }
+  ],
+  "fixtures": []
+}

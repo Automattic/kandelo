@@ -1,0 +1,21 @@
+{
+  "id": "filesystem-watch-child-callback-and-promise",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-fs-watch-child-callback-and-promise",
+      "file": "test/parallel/test-kandelo-fs-watch-child-callback-and-promise.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "File and directory callbacks and a directory async iterator observe the basename of a file written by a separate process and retire.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

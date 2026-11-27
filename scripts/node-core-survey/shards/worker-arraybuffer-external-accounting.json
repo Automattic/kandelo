@@ -1,0 +1,21 @@
+{
+  "id": "worker-arraybuffer-external-accounting",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-worker-backing-accounting",
+      "file": "test/parallel/test-kandelo-worker-backing-accounting.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads",
+        "node:v8"
+      ],
+      "contract": "Transfer a live backing store to a worker and back, checking bytes, detachments, and per-isolate external memory on both sides.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "pipe-multiple-writers",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-multiple-pipes",
+      "file": "test/parallel/test-stream-pipe-multiple-pipes.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe multiple pipes case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-same-destination-twice",
+      "file": "test/parallel/test-stream-pipe-same-destination-twice.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe same destination twice case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,15 @@
+{
+  "id": "local-reflect-apply-callbacks",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-reflect-apply-callbacks",
+      "file": "test/parallel/test-kandelo-reflect-apply-callbacks.js",
+      "origin": "kandelo",
+      "family": "async",
+      "modules": ["node:async_hooks", "node:vm"],
+      "contract": "The callback dispatch used by Node preserves packed and array-like arguments, receiver identity, error propagation, proxy calls, and calls across VM contexts.",
+      "owners": ["SpiderMonkey interpreter", "upstream Node VM"]
+    }
+  ],
+  "fixtures": []
+}

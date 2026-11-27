@@ -1,0 +1,46 @@
+{
+  "id": "timers-disposal-and-module-refs",
+  "cases": [
+    {
+      "selector": "parallel/test-timers-dispose",
+      "file": "test/parallel/test-timers-dispose.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "Disposal destroys timeout, interval and immediate handles.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-api-refs",
+      "file": "test/parallel/test-timers-api-refs.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "Exported timer functions keep working when equivalent global properties are removed.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-clearImmediate-als",
+      "file": "test/parallel/test-timers-clearImmediate-als.js",
+      "family": "async",
+      "modules": [
+        "node:timers",
+        "node:async_hooks"
+      ],
+      "contract": "Immediate callbacks retrieve and clear their own handles from independent async stores.",
+      "owners": [
+        "upstream Node async runtime",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

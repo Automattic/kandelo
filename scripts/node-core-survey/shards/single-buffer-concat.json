@@ -1,0 +1,19 @@
+{
+  "id": "single-buffer-concat",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-concat",
+      "file": "test/parallel/test-buffer-concat.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Concatenation with explicit and inferred lengths and Uint8Array input.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

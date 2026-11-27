@@ -1,0 +1,21 @@
+{
+  "id": "webstream-worker-transfer",
+  "cases": [
+    {
+      "selector": "parallel/test-whatwg-webstreams-transfer",
+      "file": "test/parallel/test-whatwg-webstreams-transfer.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web",
+        "node:worker_threads"
+      ],
+      "contract": "Stream transfers across multiple ports and a worker carry original chunks, cancellation, abort and serialization errors.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

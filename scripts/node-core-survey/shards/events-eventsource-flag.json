@@ -1,0 +1,32 @@
+{
+  "id": "events-eventsource-flag",
+  "cases": [
+    {
+      "selector": "parallel/test-eventsource",
+      "file": "test/parallel/test-eventsource.js",
+      "family": "web",
+      "modules": [
+        "globalThis.EventSource"
+      ],
+      "contract": "Upstream eventsource assertions.",
+      "owners": [
+        "upstream Node web globals",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-eventsource-disabled",
+      "file": "test/parallel/test-eventsource-disabled.js",
+      "family": "web",
+      "modules": [
+        "globalThis.EventSource"
+      ],
+      "contract": "Upstream eventsource disabled assertions.",
+      "owners": [
+        "upstream Node web globals",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

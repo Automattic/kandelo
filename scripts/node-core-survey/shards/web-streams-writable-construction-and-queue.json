@@ -1,0 +1,51 @@
+{
+  "id": "web-streams-writable-construction-and-queue",
+  "cases": [
+    {
+      "selector": "wpt/test-streams/writable-streams/constructor.any.html",
+      "file": "test/wpt/test-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "Construction, controller errors, writer state and promise rejection follow the upstream assertions.",
+      "owners": [
+        "upstream Node web streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "wpt/test-streams/writable-streams/properties.any.html",
+      "file": "test/wpt/test-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "The underlying sink receives the specified parameters and receiver for start, write, close and abort.",
+      "owners": [
+        "upstream Node web streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "wpt/test-streams/writable-streams/floating-point-total-queue-size.any.html",
+      "file": "test/wpt/test-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "The writer reports the specified desiredSize at floating-point precision boundaries and after draining the queue.",
+      "owners": [
+        "upstream Node web streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/wpt/resources/testharness.js",
+    "test/wpt/status/streams.json"
+  ],
+  "fixtureDirectories": [
+    "test/fixtures/wpt/streams"
+  ]
+}

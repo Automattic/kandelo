@@ -1,0 +1,45 @@
+{
+  "id": "events-errors-and-stacks",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-errors",
+      "file": "test/parallel/test-event-emitter-errors.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream errors assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-no-error-provided-to-error-event",
+      "file": "test/parallel/test-event-emitter-no-error-provided-to-error-event.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream no error provided to error event assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-events-uncaught-exception-stack",
+      "file": "test/parallel/test-events-uncaught-exception-stack.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream events uncaught exception stack assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

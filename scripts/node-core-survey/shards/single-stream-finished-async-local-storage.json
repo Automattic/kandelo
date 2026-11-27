@@ -1,0 +1,20 @@
+{
+  "id": "single-stream-finished-async-local-storage",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-finished-async-local-storage",
+      "file": "test/parallel/test-stream-finished-async-local-storage.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:async_hooks"
+      ],
+      "contract": "finished restores the AsyncLocalStorage store when the readable is destroyed.",
+      "owners": [
+        "upstream Node stream completion and async context",
+        "maintained guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,36 @@
+{
+  "id": "original-esm-live-and-cached-errors",
+  "cases": [
+    {
+      "selector": "es-module/test-esm-live-binding",
+      "file": "test/es-module/test-esm-live-binding.mjs",
+      "family": "loading",
+      "modules": [
+        "node:module",
+        "ESM"
+      ],
+      "contract": "Synchronize mutable builtin exports with previously imported ESM live bindings.",
+      "owners": [
+        "upstream Node module loaders",
+        "maintained SpiderMonkey module bridge"
+      ]
+    },
+    {
+      "selector": "es-module/test-esm-error-cache",
+      "file": "test/es-module/test-esm-error-cache.js",
+      "family": "loading",
+      "modules": [
+        "node:module",
+        "ESM"
+      ],
+      "contract": "Repeated dynamic import of a syntax error retains the expected error semantics.",
+      "owners": [
+        "upstream Node module loaders",
+        "maintained SpiderMonkey module bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/syntax/bad_syntax.mjs"
+  ]
+}

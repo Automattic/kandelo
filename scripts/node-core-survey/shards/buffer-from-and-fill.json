@@ -1,0 +1,32 @@
+{
+  "id": "buffer-from-and-fill",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-from",
+      "file": "test/parallel/test-buffer-from.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Construction and fill across input types, encodings, offsets, and invalid arguments.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-fill",
+      "file": "test/parallel/test-buffer-fill.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Construction and fill across input types, encodings, offsets, and invalid arguments.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

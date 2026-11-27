@@ -1,0 +1,36 @@
+{
+  "id": "filehandle-read-write",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-promises-file-handle-read",
+      "file": "test/parallel/test-fs-promises-file-handle-read.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "FileHandle.read supports positioned reads, options, returned buffers and real read streams.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-promises-file-handle-write",
+      "file": "test/parallel/test-fs-promises-file-handle-write.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "FileHandle.write preserves string and Buffer bytes and reports counts.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/x.txt"
+  ]
+}

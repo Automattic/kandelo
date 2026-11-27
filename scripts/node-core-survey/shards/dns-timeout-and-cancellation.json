@@ -1,0 +1,22 @@
+{
+  "id": "dns-timeout-and-cancellation",
+  "cases": [
+    {
+      "selector": "parallel/test-dns-channel-timeout",
+      "file": "test/parallel/test-dns-channel-timeout.js",
+      "family": "network",
+      "modules": ["node:dns", "node:dns/promises", "node:dgram"],
+      "contract": "Report ETIMEOUT through callback and Promise resolvers when a real bound UDP peer does not reply",
+      "owners": ["upstream Node DNS", "Node c-ares package", "Kandelo UDP and timer providers"]
+    },
+    {
+      "selector": "parallel/test-dns-channel-cancel-promise",
+      "file": "test/parallel/test-dns-channel-cancel-promise.js",
+      "family": "network",
+      "modules": ["node:dns/promises", "node:dgram"],
+      "contract": "After a real UDP peer sees a query, reject one or multiple outstanding requests with ECANCELLED and the original hostname",
+      "owners": ["upstream Node DNS", "Node c-ares package", "Kandelo UDP socket ownership"]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "stream-composition",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-compose",
+      "file": "test/parallel/test-stream-compose.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Classic and Web stream composition exercises end, backpressure, error propagation and destruction of component streams.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-compose",
+      "file": "test/parallel/test-stream-readable-compose.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Readable composition accepts async generators and transform streams with the expected output and errors.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

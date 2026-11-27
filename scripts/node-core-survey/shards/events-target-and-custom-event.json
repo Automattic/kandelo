@@ -1,0 +1,45 @@
+{
+  "id": "events-target-and-custom-event",
+  "cases": [
+    {
+      "selector": "parallel/test-event-target",
+      "file": "test/parallel/test-event-target.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream event target assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-events-customevent",
+      "file": "test/parallel/test-events-customevent.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream events customevent assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-eventtarget",
+      "file": "test/parallel/test-eventtarget.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream eventtarget assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

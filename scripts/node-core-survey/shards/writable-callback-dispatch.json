@@ -1,0 +1,32 @@
+{
+  "id": "writable-callback-dispatch",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-samecb-singletick",
+      "file": "test/parallel/test-stream-writable-samecb-singletick.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Batched writes using a shared callback retain the original asynchronous dispatch contract.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-write-cb-twice",
+      "file": "test/parallel/test-stream-writable-write-cb-twice.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The writable callback path detects duplicate completion.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "readable-destroy-and-repeated-reads",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-destroy",
+      "file": "test/parallel/test-stream-readable-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Readable destruction preserves original errors, events and callbacks.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-infinite-read",
+      "file": "test/parallel/test-stream-readable-infinite-read.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Removing the readable listener after ten reads stops continued demand.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

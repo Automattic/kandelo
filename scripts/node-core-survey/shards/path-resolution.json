@@ -1,0 +1,47 @@
+{
+  "id": "path-resolution",
+  "cases": [
+    {
+      "selector": "parallel/test-path-resolve",
+      "file": "test/parallel/test-path-resolve.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original resolution against the process working directory, empty input and relative path calculations.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-zero-length-strings",
+      "file": "test/parallel/test-path-zero-length-strings.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original resolution against the process working directory, empty input and relative path calculations.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-posix-relative-on-windows",
+      "file": "test/parallel/test-path-posix-relative-on-windows.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original resolution against the process working directory, empty input and relative path calculations.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/path-resolve.js"
+  ]
+}

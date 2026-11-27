@@ -1,0 +1,32 @@
+{
+  "id": "writable-length-and-drain",
+  "cases": [
+    {
+      "selector": "parallel/test-stream2-writable",
+      "file": "test/parallel/test-stream2-writable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The original Writable suite exercises queued length, ordered callbacks and backpressure.",
+      "owners": [
+        "upstream Node readable and writable streams",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-needDrain",
+      "file": "test/parallel/test-stream-pipe-needDrain.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A destination needing drain pauses the piped readable until writes resume.",
+      "owners": [
+        "upstream Node readable and writable streams",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

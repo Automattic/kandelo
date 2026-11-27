@@ -1,0 +1,20 @@
+{
+  "id": "packed-interpreter-calls",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-packed-interpreter-calls",
+      "file": "test/parallel/test-kandelo-packed-interpreter-calls.js",
+      "origin": "kandelo",
+      "family": "async",
+      "modules": [
+        "node:async_hooks",
+        "node:vm"
+      ],
+      "contract": "Verify packed spread and apply calls, receiver and arguments, nested return and throw, arguments across GC, iterable/getter fallback, generators, constructors and cross-realm calls.",
+      "owners": [
+        "SpiderMonkey interpreter and frame stack"
+      ]
+    }
+  ],
+  "fixtures": []
+}

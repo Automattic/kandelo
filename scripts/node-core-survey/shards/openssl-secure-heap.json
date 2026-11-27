@@ -1,0 +1,20 @@
+{
+  "id": "openssl-secure-heap",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-openssl-secure-heap",
+      "file": "test/parallel/test-kandelo-openssl-secure-heap.js",
+      "family": "crypto",
+      "modules": [
+        "node:crypto"
+      ],
+      "contract": "Check secure heap diagnostics and accounting before and after requesting a guarded heap, using a real key allocation.",
+      "owners": [
+        "upstream Node crypto",
+        "Kandelo OpenSSL configuration"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

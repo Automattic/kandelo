@@ -1,0 +1,45 @@
+{
+  "id": "cjs-resolution-cache-and-files",
+  "cases": [
+    {
+      "selector": "parallel/test-module-cache",
+      "file": "test/parallel/test-module-cache.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Resolve a missing JSON module after creating it on the guest filesystem.",
+      "owners": [
+        "upstream Node module loaders",
+        "Kandelo guest filesystem and maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-module-relative-resolve-cache",
+      "file": "test/parallel/test-module-relative-resolve-cache.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Cache successful relative resolution and verify builtin and failed lookup behavior.",
+      "owners": [
+        "upstream Node module loaders",
+        "Kandelo guest filesystem and maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-module-nearest-parent-package-json-cache",
+      "file": "test/parallel/test-module-nearest-parent-package-json-cache.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Create ten guest CommonJS modules and verify distinct directories and package metadata identity.",
+      "owners": [
+        "upstream Node module loaders",
+        "Kandelo guest filesystem and maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

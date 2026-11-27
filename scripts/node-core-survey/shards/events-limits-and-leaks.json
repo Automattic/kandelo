@@ -1,0 +1,45 @@
+{
+  "id": "events-limits-and-leaks",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-get-max-listeners",
+      "file": "test/parallel/test-event-emitter-get-max-listeners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream get max listeners assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-max-listeners",
+      "file": "test/parallel/test-event-emitter-max-listeners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream max listeners assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-check-listener-leaks",
+      "file": "test/parallel/test-event-emitter-check-listener-leaks.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream check listener leaks assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

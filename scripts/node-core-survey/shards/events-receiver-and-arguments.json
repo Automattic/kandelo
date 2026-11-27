@@ -1,0 +1,45 @@
+{
+  "id": "events-receiver-and-arguments",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-emit-context",
+      "file": "test/parallel/test-event-emitter-emit-context.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream emit context assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-num-args",
+      "file": "test/parallel/test-event-emitter-num-args.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream num args assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-subclass",
+      "file": "test/parallel/test-event-emitter-subclass.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream subclass assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

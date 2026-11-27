@@ -1,0 +1,21 @@
+{
+  "id": "fs-copy-file",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-copyfile",
+      "file": "test/parallel/test-fs-copyfile.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Copy and overwrite preserve contents, mode and size. Exclusive and forced-clone behavior use the upstream success or error contract.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/a.js"
+  ]
+}

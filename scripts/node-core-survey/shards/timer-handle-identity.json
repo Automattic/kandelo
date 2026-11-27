@@ -1,0 +1,34 @@
+{
+  "id": "timer-handle-identity",
+  "cases": [
+    {
+      "selector": "parallel/test-timers-immediate-unref",
+      "file": "test/parallel/test-timers-immediate-unref.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "Immediate handles preserve ref/unref state and event-loop lifetime.",
+      "owners": [
+        "upstream Node timers",
+        "libuv event loop",
+        "Kandelo runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-to-primitive",
+      "file": "test/parallel/test-timers-to-primitive.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "Timer handles convert to identifiers usable by the same-thread cancellation APIs.",
+      "owners": [
+        "upstream Node timers",
+        "libuv event loop",
+        "Kandelo runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

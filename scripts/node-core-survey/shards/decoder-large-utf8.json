@@ -1,0 +1,20 @@
+{
+  "id": "decoder-large-utf8",
+  "cases": [
+    {
+      "selector": "parallel/test-string-decoder-utf8-large",
+      "file": "test/parallel/test-string-decoder-utf8-large.js",
+      "family": "values",
+      "modules": [
+        "node:string_decoder",
+        "node:buffer"
+      ],
+      "contract": "UTF-8 decoding matches the original expected strings over different content, sizes and chunk boundaries.",
+      "owners": [
+        "upstream Node local core libraries",
+        "Kandelo process and stream runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,33 @@
+{
+  "id": "readable-unshift-and-unpipe",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-unshift",
+      "file": "test/parallel/test-stream-readable-unshift.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Returning chunks to a readable preserves upstream buffering and event behavior.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-unpipe-resume",
+      "file": "test/parallel/test-stream-readable-unpipe-resume.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:fs"
+      ],
+      "contract": "A real executable file stream reaches EOF after unpipe and resume.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

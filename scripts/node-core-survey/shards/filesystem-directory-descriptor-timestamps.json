@@ -1,0 +1,20 @@
+{
+  "id": "filesystem-directory-descriptor-timestamps",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-fs-directory-descriptor-timestamps",
+      "file": "test/parallel/test-kandelo-fs-directory-descriptor-timestamps.js",
+      "origin": "kandelo",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Update an open directory through a rename, replacement and removal and check its inode and the replacement timestamps.",
+      "owners": [
+        "upstream Node and libuv",
+        "guest VFS and descriptor lifetime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

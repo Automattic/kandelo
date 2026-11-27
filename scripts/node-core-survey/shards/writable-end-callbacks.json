@@ -1,0 +1,45 @@
+{
+  "id": "writable-end-callbacks",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-end-cb-error",
+      "file": "test/parallel/test-stream-writable-end-cb-error.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "end callbacks receive the original write error and expect the correct stream state.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-end-cb-uncaught",
+      "file": "test/parallel/test-stream-writable-end-cb-uncaught.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "An unhandled stream error and its end callback retain the original error identity.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-end-multiple",
+      "file": "test/parallel/test-stream-writable-end-multiple.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A repeated end call settles its callback with the upstream error and timing.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

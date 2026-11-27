@@ -1,0 +1,32 @@
+{
+  "id": "writable-destroy-and-finish",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-finish-destroyed",
+      "file": "test/parallel/test-stream-writable-finish-destroyed.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Destroying an active writable prevents finish across its close and write callbacks.",
+      "owners": [
+        "upstream Node Writable stream",
+        "Kandelo callback scheduling"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-final-destroy",
+      "file": "test/parallel/test-stream-writable-final-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Destruction during finalization preserves upstream callback and event counts.",
+      "owners": [
+        "upstream Node Writable stream",
+        "Kandelo callback scheduling"
+      ]
+    }
+  ],
+  "fixtures": []
+}

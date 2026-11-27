@@ -1,0 +1,18 @@
+{
+  "id": "path-platform-contract",
+  "cases": [
+    {
+      "selector": "parallel/test-path",
+      "file": "test/parallel/test-path.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "The platform path namespace, separators, delimiters and invalid input behavior match upstream.",
+      "owners": [
+        "lib/path.js"
+      ]
+    }
+  ],
+  "fixtures": []
+}

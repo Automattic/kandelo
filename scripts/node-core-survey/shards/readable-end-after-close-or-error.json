@@ -1,0 +1,32 @@
+{
+  "id": "readable-end-after-close-or-error",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-end-destroyed",
+      "file": "test/parallel/test-stream-readable-end-destroyed.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Pushing EOF after close does not emit end.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-error-end",
+      "file": "test/parallel/test-stream-readable-error-end.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Destroying with an error delivers the error and suppresses normal end.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    }
+  ],
+  "fixtures": []
+}

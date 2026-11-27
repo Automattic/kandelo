@@ -1,0 +1,33 @@
+{
+  "id": "original-duplex-and-buffer-constructor",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-duplex",
+      "file": "test/parallel/test-stream-duplex.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/web"
+      ],
+      "contract": "Duplex constructor, object mode, half-open state and Web Stream conversion.",
+      "owners": [
+        "upstream Node streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-new",
+      "file": "test/parallel/test-buffer-new.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Exact upstream constructor rejection for numeric input with an encoding.",
+      "owners": [
+        "upstream Node values",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

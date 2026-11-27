@@ -1,0 +1,34 @@
+{
+  "id": "fs-directory-create-and-remove",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-mkdir",
+      "file": "test/parallel/test-fs-mkdir.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Recursive and single-directory creation return the expected paths and errors.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-mkdir-rmdir",
+      "file": "test/parallel/test-fs-mkdir-rmdir.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Synchronous and asynchronous directory creation, duplicate creation and removal reflect real directory state.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    }
+  ],
+  "fixtures": []
+}

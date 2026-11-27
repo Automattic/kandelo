@@ -1,0 +1,21 @@
+{
+  "id": "immutable-arraybuffer-realms",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-immutable-arraybuffer-realms",
+      "file": "test/parallel/test-kandelo-immutable-arraybuffer-realms.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:buffer",
+        "node:vm",
+        "node:worker_threads"
+      ],
+      "contract": "Default, explicit-off and enabled flag states in main, VM and worker realms. Enabled immutable buffers preserve contents, reject writes and detach the transfer source.",
+      "owners": [
+        "maintained SpiderMonkey engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

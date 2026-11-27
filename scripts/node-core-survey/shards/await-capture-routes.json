@@ -1,0 +1,15 @@
+{
+  "id": "await-capture-routes",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-await-capture-routes",
+      "file": "test/parallel/test-kandelo-await-capture-routes.js",
+      "family": "engine",
+      "modules": ["node:fs/promises", "node:v8"],
+      "contract": "Observe constructed and explicitly captured frames at the same resume point, independently varying the promise, caller, and stack limit.",
+      "owners": ["maintained SpiderMonkey bridge and error stack capture"],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,14 @@
+{
+  "id": "readable-to-web-memory",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-to-web",
+      "file": "test/parallel/test-stream-readable-to-web.mjs",
+      "family": "streams",
+      "modules": ["node:stream", "node:process", "node:timers/promises"],
+      "contract": "The original checks reported ArrayBuffer usage before and after attaching a Web reader and while asynchronously consuming 1000 allocated chunks.",
+      "owners": ["upstream Node stream implementation", "guest memory usage accounting"]
+    }
+  ],
+  "fixtures": []
+}

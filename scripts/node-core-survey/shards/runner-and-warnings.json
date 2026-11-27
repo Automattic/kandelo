@@ -1,0 +1,32 @@
+{
+  "id": "runner-and-warnings",
+  "cases": [
+    {
+      "selector": "parallel/test-runner-assert",
+      "file": "test/parallel/test-runner-assert.js",
+      "family": "testing",
+      "modules": [
+        "node:test"
+      ],
+      "contract": "Test context assertions and counters in the original test runner",
+      "owners": [
+        "lib/internal/test_runner/test.js",
+        "lib/internal/test_runner/assert.js"
+      ]
+    },
+    {
+      "selector": "parallel/test-process-warning",
+      "file": "test/parallel/test-process-warning.js",
+      "family": "documentation",
+      "modules": [
+        "node:process"
+      ],
+      "contract": "Documented warning delivery and treatment of warning/error inputs",
+      "owners": [
+        "lib/internal/process/warning.js",
+        "src/env.cc"
+      ]
+    }
+  ],
+  "fixtures": []
+}

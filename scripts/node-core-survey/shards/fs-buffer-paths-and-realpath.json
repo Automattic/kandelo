@@ -1,0 +1,36 @@
+{
+  "id": "fs-buffer-paths-and-realpath",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-buffer",
+      "file": "test/parallel/test-fs-buffer.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:buffer"
+      ],
+      "contract": "Buffer paths reach actual access, file open and close, and directory enumeration with encoded names.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo filesystem and maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-realpath-buffer-encoding",
+      "file": "test/parallel/test-fs-realpath-buffer-encoding.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:buffer"
+      ],
+      "contract": "Synchronous and callback realpath accept Buffer input and return the requested byte or string encoding.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo filesystem and maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/cycles/root.js"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "id": "pipeline-process-stdio",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipeline-process",
+      "file": "test/parallel/test-stream-pipeline-process.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:child_process"
+      ],
+      "contract": "A real shell pipeline passes bytes through a child running installed Node from stdin to stdout.",
+      "owners": [
+        "upstream Node local core libraries",
+        "Kandelo process and stream runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

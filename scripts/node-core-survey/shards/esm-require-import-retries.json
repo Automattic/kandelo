@@ -1,0 +1,50 @@
+{
+  "id": "esm-require-import-retries",
+  "cases": [
+    {
+      "selector": "es-module/test-require-module-tla-retry-import",
+      "file": "test/es-module/test-require-module-tla-retry-import.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Reject synchronous loading of an asynchronous module, then verify repeated imports return the same fulfilled namespace.",
+      "owners": [
+        "upstream Node module loaders",
+        "Kandelo guest filesystem and maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "es-module/test-require-module-retry-import-errored",
+      "file": "test/es-module/test-require-module-retry-import-errored.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "After a failed synchronous load, three pending imports observe the exact rejection object.",
+      "owners": [
+        "upstream Node module loaders",
+        "Kandelo guest filesystem and maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "es-module/test-require-module-retry-import-errored-2",
+      "file": "test/es-module/test-require-module-retry-import-errored-2.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "An ESM evaluation error propagates to both require and a subsequent import.",
+      "owners": [
+        "upstream Node module loaders",
+        "Kandelo guest filesystem and maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/es-modules/tla/export-async.mjs",
+    "test/fixtures/es-modules/tla/export-promise.mjs",
+    "test/fixtures/es-modules/tla/await-export-promise.mjs",
+    "test/fixtures/es-modules/throw-error.mjs"
+  ]
+}

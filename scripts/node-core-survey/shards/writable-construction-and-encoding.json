@@ -1,0 +1,45 @@
+{
+  "id": "writable-construction-and-encoding",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-constructor-set-methods",
+      "file": "test/parallel/test-stream-writable-constructor-set-methods.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Construction installs supplied write and writev methods and delivers chunks.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-change-default-encoding",
+      "file": "test/parallel/test-stream-writable-change-default-encoding.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Changing the default string encoding affects subsequent writes and validates the encoding name.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-decoded-encoding",
+      "file": "test/parallel/test-stream-writable-decoded-encoding.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "With and without string decoding, write sees the expected chunk type and encoding.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

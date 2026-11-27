@@ -1,0 +1,22 @@
+{
+  "id": "blob-and-file",
+  "cases": [
+    {
+      "selector": "parallel/test-blob",
+      "file": "test/parallel/test-blob.js",
+      "family": "web",
+      "modules": ["globalThis.Blob", "node:buffer"],
+      "contract": "Blob and File construction, bytes, slicing, streaming and message-channel clone",
+      "owners": ["upstream Node Blob and web streams", "maintained SpiderMonkey bridge"]
+    },
+    {
+      "selector": "parallel/test-blob-file-backed",
+      "file": "test/parallel/test-blob-file-backed.js",
+      "family": "web",
+      "modules": ["globalThis.Blob", "node:fs", "node:fs/promises"],
+      "contract": "File-backed Blob reads and slices from real guest files and detects a modified backing file",
+      "owners": ["upstream Node Blob and fs", "Kandelo VFS"]
+    }
+  ],
+  "fixtures": []
+}

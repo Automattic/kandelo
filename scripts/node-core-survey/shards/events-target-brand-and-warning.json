@@ -1,0 +1,45 @@
+{
+  "id": "events-target-brand-and-warning",
+  "cases": [
+    {
+      "selector": "parallel/test-eventtarget-brandcheck",
+      "file": "test/parallel/test-eventtarget-brandcheck.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream eventtarget brandcheck assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-eventtarget-custom-inspect-does-not-throw",
+      "file": "test/parallel/test-eventtarget-custom-inspect-does-not-throw.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream eventtarget custom inspect does not throw assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-eventtarget-memoryleakwarning",
+      "file": "test/parallel/test-eventtarget-memoryleakwarning.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream eventtarget memoryleakwarning assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

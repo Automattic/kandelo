@@ -1,0 +1,19 @@
+{
+  "id": "fetch-https-multipart",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-fetch-https-multipart",
+      "file": "test/parallel/test-kandelo-fetch-https-multipart.mjs",
+      "origin": "kandelo",
+      "family": "web",
+      "modules": ["globalThis.fetch", "globalThis.Blob", "globalThis.FormData", "globalThis.Response"],
+      "contract": "Serialize ordered FormData fields and binary Blob bytes over HTTPS and parse an independently framed multipart response once",
+      "owners": ["upstream Undici", "maintained Undici parser adaptation", "upstream Node Blob"]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/keys/agent8-cert.pem",
+    "test/fixtures/keys/agent8-key.pem",
+    "test/fixtures/keys/fake-startcom-root-cert.pem"
+  ]
+}
