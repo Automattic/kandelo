@@ -192,6 +192,36 @@ describe('bounded KMS bitmap device ownership and retirement', () => {
         s.ack(2);
         await s.close();
     });
+    it('sends one position while a primary capture is unresolved and fences both in order', async () => {
+        const s = setup(), capture = deferred<ImageBitmap>();
+        const frame = bitmap();
+        vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValueOnce(bitmap()).mockReturnValueOnce(capture.promise));
+        s.relay.present(s.canvas, s.cursor);
+        s.ack((await s.next()).sequence);
+
+        s.relay.changed();
+        s.relay.present(s.canvas, s.cursor);
+        const moved = { ...s.cursor, cursor: { ...s.cursor.cursor, version: 2, x: 44 } };
+        const latest = { ...moved, cursor: { ...moved.cursor, version: 3, x: 65 } };
+        s.relay.present(s.canvas, moved);
+        expect(await s.next()).toEqual({ type: 'frame', sequence: 2, position: { version: 2, x: 44, y: 30 } });
+        s.relay.present(s.canvas, latest);
+        expect(s.port.postMessage).toHaveBeenCalledTimes(2);
+
+        capture.resolve(frame);
+        expect(await s.next()).toMatchObject({ sequence: 3, frame, cursor: undefined });
+        s.ack(2);
+        s.relay.present(s.canvas, latest);
+        expect(await s.next()).toEqual({ type: 'frame', sequence: 4, position: { version: 3, x: 65, y: 30 } });
+
+        const done = s.relay.close();
+        expect(await s.next()).toEqual({ type: 'retire', sequence: 4 });
+        s.ack(3);
+        s.ack(4);
+        expect(s.port.close).not.toHaveBeenCalled();
+        s.receive({ type: 'retired', sequence: 4 });
+        await done;
+    });
     it('awaits late capture, closes it, then fences the display without publishing', async () => {
         const s = setup(), capture = deferred<ImageBitmap>();
         vi.stubGlobal('createImageBitmap', vi.fn().mockReturnValue(capture.promise));
@@ -375,7 +405,7 @@ describe('display consumption and exact retirement', () => {
     it('updates and restores the cursor without replacing the primary image', () => {
         const s = display(), first = cursorUpdate(), moved = cursorUpdate(2, -3);
         s.send({ type: 'frame', sequence: 1, frame: new Bitmap(), cursor: first });
-        s.send({ type: 'frame', sequence: 2, cursor: moved });
+        s.send({ type: 'frame', sequence: 2, position: { version: 2, x: -3, y: 30 } });
         expect(s.overlay.clearRect).toHaveBeenLastCalledWith(20, 30, 1, 1);
         expect(s.overlay.putImageData).toHaveBeenLastCalledWith(expect.anything(), -3, 30);
         s.cursorEvents.dispatchEvent(new Event('contextrestored'));
@@ -387,6 +417,16 @@ describe('display consumption and exact retirement', () => {
         expect(s.overlay.putImageData).toHaveBeenCalledTimes(3);
         expect(s.primary.transferFromImageBitmap).toHaveBeenCalledOnce();
         expect(s.port.postMessage).toHaveBeenLastCalledWith({ type: 'ack', sequence: 3 });
+    });
+    it('rejects a position before its image or with a primary bitmap', () => {
+        const s = display(), frame = new Bitmap();
+        const position = { version: 2, x: 7, y: 30 };
+        expect(() => s.send({ type: 'frame', sequence: 1, position })).toThrow('cursor position');
+        s.send({ type: 'frame', sequence: 1, cursor: cursorUpdate() });
+        expect(() => s.send({ type: 'frame', sequence: 2, frame, position })).toThrow('cursor position');
+        expect(s.primary.transferFromImageBitmap).not.toHaveBeenCalled();
+        expect(frame.close).toHaveBeenCalledOnce();
+        expect(s.port.postMessage).toHaveBeenCalledExactlyOnceWith({ type: 'ack', sequence: 1 });
     });
     it('retires a never-painted display with sequence zero', () => { const s = display(); s.send({ type: 'retire', sequence: 0 }); expect(s.port.postMessage).toHaveBeenCalledWith({ type: 'retired', sequence: 0 }); });
     it('rejects mismatched retirement without acknowledging or dropping the owner', () => { const s = display(); expect(() => s.send({ type: 'retire', sequence: 1 })).toThrow('retirement sequence'); expect(s.port.close).not.toHaveBeenCalled(); expect(s.port.postMessage).not.toHaveBeenCalled(); });
