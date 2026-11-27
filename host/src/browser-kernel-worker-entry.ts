@@ -131,6 +131,7 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
+import type { SharedSideModule } from "./shared-side-module";
 import { readThreadTlsRequirements, type ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { KernelScratchError } from "./kernel-scratch";
@@ -271,6 +272,8 @@ interface ProcessInfo extends ProcessGenerationOwnership {
    * compiles.
    */
   programModule: WebAssembly.Module;
+  /** Compiled side modules of this image, for its fork children. */
+  sideModules?: Map<string, SharedSideModule>;
   /**
    * The admitted form of a program that the host rewrote at its start. A
    * fork child that leaves the group runs it.
@@ -2012,6 +2015,9 @@ function installProcessWorkerListeners(
       handleVmInterruptTimer(m, pid, process);
     } else if (m.type === "fork_host_import") {
       dispatchForkHostImport(worker, m);
+    } else if (m.type === "side_module" && m.pid === pid) {
+      (process.sideModules ??= new Map()).set(m.module.key, m.module);
+      kernelWorker.wasmModules.recordSideModuleCompile();
     }
   });
 }
@@ -2280,6 +2286,7 @@ async function handleVfork(
       pageTable: parentForkShare
         && workerPageTable(parentForkShare.location, parentForkShare.readable(childChannelOffset)),
       memoryInstrumenter,
+      sideModules: parentInfo.sideModules && [...parentInfo.sideModules.values()],
       secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
@@ -2324,6 +2331,7 @@ async function handleVfork(
       framebufferExposed: false,
       programBytes: parentInfo.programBytes,
       programModule: parentInfo.programModule,
+      sideModules: parentInfo.sideModules && new Map(parentInfo.sideModules),
       worker: childWorker,
       argv: parentInfo.argv,
       channelOffset: childChannelOffset,
@@ -2710,6 +2718,7 @@ async function handleOrdinaryFork(
       pageTable: childAddressSpace
         && workerPageTable(childAddressSpace.location, childAddressSpace.readable(childChannelOffset)),
       memoryInstrumenter,
+      sideModules: parentInfo.sideModules && [...parentInfo.sideModules.values()],
       secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
@@ -2744,6 +2753,7 @@ async function handleOrdinaryFork(
       programBytes: childProgram.bytes,
       programModule: childProgram.module,
       plainProgram: plainChild ? undefined : parentInfo.plainProgram,
+      sideModules: parentInfo.sideModules && new Map(parentInfo.sideModules),
       worker,
       argv: parentInfo.argv,
       channelOffset: childChannelOffset,

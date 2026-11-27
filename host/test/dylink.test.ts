@@ -41,6 +41,10 @@ import {
   GROUP_HEADER_BYTES,
   PAGE_TABLE_BYTES,
 } from "../src/fork-share-address-space";
+import type {
+  CompiledSideModule,
+  SideModuleForm,
+} from "../src/shared-side-module";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const forkInstrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
@@ -1150,6 +1154,73 @@ describe("DynamicLinker deterministic replay events", () => {
     expect(child.dlopenSync("libfirst.so", firstBytes)).toBe(4);
   });
 
+  it("rejects a replica whose module bytes differ from the fork state", () => {
+    const sideBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "side_value") (result i32) i32.const 73))
+    `, "fork-identity-replica");
+    const parent = new DynamicLinker(createSideForkLoadOptions());
+    expect(parent.dlopenSync("libidentity-replica.so", sideBytes)).toBe(2);
+    const archived = parent.forkState();
+    const library = archived.libraries[0]!;
+    const replica = new DynamicLinker(createSideForkLoadOptions());
+    replica.reconcileForkModules(archived);
+    replica.reconcileForkHandleState(archived);
+
+    const changedBytes = new Uint8Array(library.moduleBytes);
+    changedBytes[changedBytes.length - 1]! ^= 1;
+    for (const moduleBytes of [changedBytes, library.moduleBytes.subarray(1)]) {
+      const drifted = {
+        ...archived,
+        libraries: [{ ...library, moduleBytes }],
+      };
+      expect(() => replica.reconcileForkModules(drifted))
+        .toThrow(/replay instance does not match its fork state/);
+      expect(() => replica.reconcileForkHandleState(drifted))
+        .toThrow(/replay instance does not match its fork state/);
+    }
+  });
+
+  it("rejects a replicated staged transaction whose module bytes drift", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (func (export "__wasm_call_ctors"))
+      )
+    `, "replicated-transaction-drift");
+    const makeLinker = (): DynamicLinker => new DynamicLinker({
+      memory: new WebAssembly.Memory({ initial: 1 }),
+      table: new WebAssembly.Table({ initial: 1, element: "anyfunc" }),
+      stackPointer: new WebAssembly.Global(
+        { value: "i32", mutable: true },
+        65536,
+      ),
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+    const parent = makeLinker();
+    const replica = makeLinker();
+    const token = parent.beginDlopenSync(
+      "libreplicated-drift.so",
+      wasmBytes,
+    );
+    parent.nextDlopenInitialization(token);
+    const issuedState = parent.forkState();
+    replica.reconcileForkModules(issuedState);
+
+    const transaction = issuedState.transactions![0]!;
+    const changedBytes = new Uint8Array(transaction.moduleBytes);
+    changedBytes[changedBytes.length - 1]! ^= 1;
+    expect(() => replica.reconcileForkModules({
+      ...issuedState,
+      transactions: [{ ...transaction, moduleBytes: changedBytes }],
+    })).toThrow(
+      `staged dlopen transaction ${token} changed identity`,
+    );
+  });
+
   it("reconciles dlopen function recipes to fresh Worker-local table entries", () => {
     const sideBytes = buildDylinkWat(`
       (module
@@ -1297,6 +1368,29 @@ describe("side-module fork contract", () => {
 
     expect((loaded.exports.raw_value as () => number)()).toBe(17);
     expect(loaded.activationId).toBeUndefined();
+  });
+
+  it("rejects a side module with incomplete fork instrumentation exports", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (func (export "__wpk_fork_ref_exn_clear"))
+        (global (export "__wpk_fork_ref_exn_abort") i32 (i32.const 0)))
+    `, "partial-fork-exports");
+    const options = createSideForkLoadOptions();
+    const missing = SIDE_MODULE_FORK_EXPORTS.filter(
+      (name) => name !== "__wpk_fork_ref_exn_clear",
+    );
+
+    expect(() => loadSharedLibrarySync(
+      "libpartial-fork-exports.so",
+      wasmBytes,
+      options,
+    )).toThrow(
+      "libpartial-fork-exports.so: incomplete wasm-fork-instrument exports; "
+      + `missing ${missing.join(", ")}`,
+    );
+    expect(options.loadedLibraries.size).toBe(0);
   });
 
   it("rejects a raw side module before instantiation in a fork-capable process", () => {
@@ -2540,6 +2634,73 @@ describe("side modules in a process with page tables", () => {
     expect((library.exports.read_value as () => number)()).toBe(93);
     expect(words[3 * PAGE / 4]).toBe(93);
     expect(words[PAGE / 4]).toBe(77);
+  });
+
+  it.skipIf(memoryInstrumenter === null)("publishes the rewritten module and loads it again without a rewrite", () => {
+    const published: Array<{
+      form: SideModuleForm;
+      compiled: CompiledSideModule;
+      instanceBytes: Uint8Array | undefined;
+    }> = [];
+    const parent = mappedOptions();
+    parent.memoryInstrumenter = new WebAssembly.Module(readFileSync(memoryInstrumenter!));
+    parent.sideModules = {
+      take: () => undefined,
+      publish: (_name, _bytes, form, compiled, instanceBytes) => {
+        published.push({ form, compiled, instanceBytes });
+      },
+    };
+    loadSharedLibrarySync("libpage-table.so", wasmBytes(), parent);
+
+    expect(published).toHaveLength(1);
+    expect(published[0].form).toBe("paged");
+    expect(published[0].compiled.runsInitMemory).toBe(true);
+    expect(published[0].compiled.instance).not.toBe(published[0].compiled.source);
+    expect(published[0].instanceBytes).toBeInstanceOf(Uint8Array);
+
+    const taken: SideModuleForm[] = [];
+    const child = mappedOptions();
+    // An instrumenter with no exports fails any rewrite the loader starts.
+    child.memoryInstrumenter = new WebAssembly.Module(
+      new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
+    );
+    child.sideModules = {
+      take: (_name, _bytes, form) => {
+        taken.push(form);
+        return published[0].compiled;
+      },
+      publish: () => { throw new Error("a taken module must not be published"); },
+    };
+    const library = loadSharedLibrarySync("libpage-table.so", wasmBytes(), child);
+
+    expect(taken).toEqual(["paged"]);
+    expect((library.exports.read_value as () => number)()).toBe(93);
+    expect(new Int32Array(child.memory.memory.buffer)[3 * PAGE / 4]).toBe(93);
+  });
+
+  it("publishes a module of an ordinary process as its own instance module", () => {
+    const published: Array<{
+      form: SideModuleForm;
+      compiled: CompiledSideModule;
+      instanceBytes: Uint8Array | undefined;
+    }> = [];
+    const options: LoadSharedLibraryOptions = {
+      ...createSideForkLoadOptions(),
+      sideModules: {
+        take: () => undefined,
+        publish: (_name, _bytes, form, compiled, instanceBytes) => {
+          published.push({ form, compiled, instanceBytes });
+        },
+      },
+    };
+
+    loadSharedLibrarySync("libpage-table.so", wasmBytes(), options);
+
+    expect(published).toHaveLength(1);
+    expect(published[0].form).toBe("plain");
+    expect(published[0].compiled.runsInitMemory).toBe(false);
+    expect(published[0].compiled.instance).toBe(published[0].compiled.source);
+    expect(published[0].instanceBytes).toBeUndefined();
   });
 
   it("refuses the module without the memory instrumenter", () => {

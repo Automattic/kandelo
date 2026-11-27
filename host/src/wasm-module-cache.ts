@@ -81,6 +81,11 @@ export interface WasmModuleCacheStats {
   readonly digestMs: number;
   /** Summed byte length hashed. */
   readonly digestedBytes: number;
+  /**
+   * Side modules that a process Worker compiled and sent for its fork
+   * children. A fork child that takes a module of its parent adds nothing.
+   */
+  readonly sideModuleCompiles: number;
   /** Keys whose module is still reachable. */
   readonly liveEntries: number;
   /** Modules currently held by the retention window. */
@@ -125,6 +130,7 @@ interface MutableStats {
   digests: number;
   digestMs: number;
   digestedBytes: number;
+  sideModuleCompiles: number;
 }
 
 function toHex(digest: ArrayBuffer): string {
@@ -180,6 +186,7 @@ export class WasmModuleCache {
     digests: 0,
     digestMs: 0,
     digestedBytes: 0,
+    sideModuleCompiles: 0,
   };
 
   constructor(options: WasmModuleCacheOptions = {}) {
@@ -226,6 +233,11 @@ export class WasmModuleCache {
         () => this.#compileBytes(programBytes),
       );
     });
+  }
+
+  /** Count one side module that a process Worker compiled and sent. */
+  recordSideModuleCompile(): void {
+    this.#stats.sideModuleCompiles += 1;
   }
 
   stats(): WasmModuleCacheStats {

@@ -32,6 +32,13 @@ import {
   type LoadedSharedLibrary,
 } from "./dylink";
 import {
+  SIDE_MODULE_FORMS,
+  sharedSideModuleKey,
+  type SharedSideModule,
+  type SideModuleForm,
+  type SideModuleStore,
+} from "./shared-side-module";
+import {
   DylinkForkArchive,
   DylinkForkTableReplica,
   type DylinkForkArchiveSnapshot,
@@ -675,6 +682,11 @@ export interface DlopenSupport {
   /** Clear a fork parent's copied archive lock in ordinary child memory. */
   resetForkChildLock: () => void;
   readonly archive: DylinkForkArchive;
+  /** Compiled form of these side module bytes that a fork parent shared. */
+  sharedSourceModule(
+    name: string,
+    moduleBytes: Uint8Array,
+  ): WebAssembly.Module | undefined;
   /** Acquire one reentrant process-archive writer depth, blocking if needed. */
   acquireArchiveWriter(): void;
   /** Release exactly one writer depth acquired by this Worker. */
@@ -724,6 +736,11 @@ interface ProcessDylinkActivationOwnerOptions {
     typedReferenceProvider: ForkGcCodecProvider,
   ) => void;
   readonly isForkChild: boolean;
+  /** SHA-256 the copied dlopen archive already verified for these bytes. */
+  readonly archivedTemplateId?: (
+    name: string,
+    moduleBytes: Uint8Array,
+  ) => Uint8Array | undefined;
   /**
    * A pthread owns a separate instance graph but adopts the process archive's
    * stable activation coordinates. Unlike a fork child it captures live state
@@ -847,7 +864,9 @@ function createProcessDylinkActivationOwner(
             `does not match the process pointer width ${options.ptrWidth}`,
         );
       }
-      const templateId = computeForkModuleTemplateIdSync(request.moduleBytes);
+      const templateId =
+        options.archivedTemplateId?.(request.name, request.moduleBytes)
+        ?? computeForkModuleTemplateIdSync(request.moduleBytes);
 
       try {
         options.coordinator.prepareActivation({
@@ -1140,6 +1159,12 @@ function checkedWasmMemoryRange(
  * call-site rewind buffer: a fork issued by a pthread rewinds from that
  * thread's buffer but still inherits the one process-wide dlopen archive.
  */
+/** Compiled side modules a process inherits and the path to share new ones. */
+export interface SideModuleSharing {
+  readonly inherited?: readonly SharedSideModule[];
+  publish(module: SharedSideModule): void;
+}
+
 /** @internal Exported so the pointer-width host import contract can be tested directly. */
 export function buildDlopenImports(
   memory: ProcessMemorySource,
@@ -1166,6 +1191,7 @@ export function buildDlopenImports(
   stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
   groupedWait32?: GroupedWorkerWait32,
   memoryInstrumenter?: WebAssembly.Module,
+  sideModuleSharing?: SideModuleSharing,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1851,6 +1877,7 @@ export function buildDlopenImports(
     linker = new DynamicLinker({
       memory,
       memoryInstrumenter,
+      sideModules,
       table,
       stackPointer: sp,
       allocateMemory,
@@ -1885,6 +1912,84 @@ export function buildDlopenImports(
         : undefined,
     });
     return linker;
+  };
+
+  const sharedSideModules = new Map<string, SharedSideModule>(
+    (sideModuleSharing?.inherited ?? []).map((module) => [module.key, module]),
+  );
+  const reflectedSideModules = new WeakSet<WebAssembly.Module>();
+  const reflectSharedModule = (
+    module: WebAssembly.Module,
+    bytes: ArrayBuffer | Uint8Array,
+  ): void => {
+    if (reflectedSideModules.has(module)) return;
+    registerWasmModuleReflection(module, bytes);
+    reflectedSideModules.add(module);
+  };
+  const inheritedSideModule = (
+    name: string,
+    wasmBytes: Uint8Array,
+    form: SideModuleForm,
+  ): SharedSideModule | undefined => {
+    // WHY: the archive already verified the SHA-256 of these bytes, so a
+    // lookup costs no hash. A module the archive does not hold is compiled.
+    const templateId = forkArchive.moduleTemplateId(name, wasmBytes);
+    if (!templateId) return undefined;
+    return sharedSideModules.get(sharedSideModuleKey(templateId, form));
+  };
+  const sideModules: SideModuleStore | undefined = sideModuleSharing && {
+    take(name, wasmBytes, form) {
+      const shared = inheritedSideModule(name, wasmBytes, form);
+      if (!shared) return undefined;
+      reflectSharedModule(shared.source, wasmBytes);
+      if (shared.instance) {
+        // WHY: TextDecoder rejects a view of shared memory in some engines,
+        // so the reflection parser reads a private copy.
+        reflectSharedModule(
+          shared.instance.module,
+          new Uint8Array(shared.instance.bytes).slice().buffer,
+        );
+      }
+      return {
+        source: shared.source,
+        instance: shared.instance?.module ?? shared.source,
+        runsInitMemory: shared.runsInitMemory,
+      };
+    },
+    publish(name, wasmBytes, form, compiled, instanceBytes) {
+      const templateId = forkArchive.moduleTemplateId(name, wasmBytes)
+        ?? computeForkModuleTemplateIdSync(wasmBytes);
+      const key = sharedSideModuleKey(templateId, form);
+      if (sharedSideModules.has(key)) return;
+      let instance: SharedSideModule["instance"];
+      if (instanceBytes) {
+        const bytes = new SharedArrayBuffer(instanceBytes.byteLength);
+        new Uint8Array(bytes).set(instanceBytes);
+        instance = { module: compiled.instance, bytes };
+      }
+      const module: SharedSideModule = {
+        key,
+        source: compiled.source,
+        instance,
+        runsInitMemory: compiled.runsInitMemory,
+      };
+      sharedSideModules.set(key, module);
+      sideModuleSharing.publish(module);
+    },
+  };
+  const sharedSourceModule = (
+    name: string,
+    moduleBytes: Uint8Array,
+  ): WebAssembly.Module | undefined => {
+    const templateId = forkArchive.moduleTemplateId(name, moduleBytes);
+    if (!templateId) return undefined;
+    for (const form of SIDE_MODULE_FORMS) {
+      const shared = sharedSideModules.get(sharedSideModuleKey(templateId, form));
+      if (!shared) continue;
+      reflectSharedModule(shared.source, moduleBytes);
+      return shared.source;
+    }
+    return undefined;
   };
 
   const forkArchive = new DylinkForkArchive(
@@ -2294,6 +2399,7 @@ export function buildDlopenImports(
     readForkState,
     replayDlopens,
     resetForkChildLock,
+    sharedSourceModule,
     archive: forkArchive,
     acquireArchiveWriter,
     releaseArchiveWriter: releaseMainDlopenLock,
@@ -3714,6 +3820,11 @@ export async function centralizedWorkerMain(
               ? registerChildReferenceActivation
               : undefined,
             isForkChild: Boolean(initData.isForkChild),
+            archivedTemplateId: (name, moduleBytes) =>
+              processDlopenSupport?.archive.moduleTemplateId(
+                name,
+                moduleBytes,
+              ),
             invokeProcessFork: () => {
               const fork = processInstance?.exports.fork;
               if (typeof fork !== "function") {
@@ -3757,6 +3868,16 @@ export async function centralizedWorkerMain(
         programBytes,
         grouped?.wait32,
         initData.memoryInstrumenter,
+        {
+          inherited: initData.sideModules,
+          publish: (module) => {
+            port.postMessage({
+              type: "side_module",
+              pid,
+              module,
+            } satisfies WorkerToHostMessage);
+          },
+        },
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3805,13 +3926,19 @@ export async function centralizedWorkerMain(
                 "is duplicated or aliases the main activation",
             );
           }
-          const activationModule = new WebAssembly.Module(
-            library.moduleBytes as unknown as BufferSource,
-          );
-          registerWasmModuleReflection(
-            activationModule,
+          let activationModule = dlopenSupport.sharedSourceModule(
+            library.name,
             library.moduleBytes,
           );
+          if (!activationModule) {
+            activationModule = new WebAssembly.Module(
+              library.moduleBytes as unknown as BufferSource,
+            );
+            registerWasmModuleReflection(
+              activationModule,
+              library.moduleBytes,
+            );
+          }
           modules.set(library.activationId, activationModule);
         }
         const declarations = [...modules]

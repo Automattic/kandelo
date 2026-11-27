@@ -1961,6 +1961,19 @@ from a pthread after dynamic loading; the fork child reconstructs only the
 calling thread but receives the process module/table recipe state. The
 generation fast path avoids reparsing or reinstantiating unchanged state.
 
+A fork child does not compile the side modules of its parent again. When a
+process compiles a side module, its Worker sends the compiled
+`WebAssembly.Module` to the kernel worker, which keeps it with the process
+image and passes it to each fork child at start. With page tables
+(`forkMemory: "share"`) the Worker also sends the module it rewrote for the
+tables, with the rewritten bytes in a dedicated `SharedArrayBuffer`, so the
+child runs no rewrite. The child finds a module by the SHA-256 of the side
+module bytes, which the dlopen archive already verified, and by the form in
+which the process instantiates it. A child that finds no module compiles the
+bytes itself, so a message that arrives after the fork costs time and not
+correctness. The kernel worker drops the modules with the process image, at
+exit or `exec`. Pthread Workers do not use them.
+
 Fork and non-forking spawn copy each process's descriptor-table shell while
 retaining one exact mutable OFD state object. Offset, status flags, and async
 owner therefore remain shared across the copies. Directory host iterators are

@@ -271,6 +271,9 @@ packed and `memcpy`-style accesses, which `aligned` still checks.
 - The host never drops a rewritten form that it made at `exec`, so a
   kernel that starts many large marked programs keeps all their rewritten
   bytes and modules.
-- The host rewrites a side module on every `dlopen` and keeps no cache. On
-  Node the rewrite of a 650 KiB module takes about 60 ms, and the output is
-  about four times the size of the input.
+- The host rewrites a side module on every `dlopen` of a process and on
+  each pthread Worker that loads it. A fork child takes the rewritten
+  module of its parent and runs no rewrite. No cache serves two unrelated
+  processes that load the same module. On Node the rewrite of a 650 KiB
+  module takes about 60 ms, and the output is about four times the size of
+  the input.

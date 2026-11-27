@@ -541,6 +541,7 @@ host/test/shared-desktop-image.test.ts	prepared-product
 host/test/shared-memory-coherence.test.ts	source-only
 host/test/shared-memory-program.test.ts	source-only
 host/test/shared-pipe-buffer.test.ts	source-only
+host/test/shared-side-module.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only
 host/test/shell-demo-identity.test.ts	prepared-product

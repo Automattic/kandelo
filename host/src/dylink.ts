@@ -10,6 +10,11 @@ import { GroupProcessAddressSpace } from "./process-address-space";
 import { fillProcessBytes, processMemoryByteLength, type ProcessMemorySource } from "./process-memory-views";
 import { ForkShareAddressSpace, bindPageTable } from "./fork-share-address-space";
 import { instrumentSideModule } from "./memory-instrument";
+import type {
+  CompiledSideModule,
+  SideModuleForm,
+  SideModuleStore,
+} from "./shared-side-module";
 import { describeProgramExtensionFailures } from "./program-extensions";
 import {
   checkSideModuleForkContract,
@@ -808,6 +813,8 @@ export interface LoadSharedLibraryOptions {
   memory: ProcessMemorySource;
   /** Compiled `kandelo_memory_instrument32.wasm`; required with page tables. */
   memoryInstrumenter?: WebAssembly.Module;
+  /** Compiled side modules that the process shares with its fork children. */
+  sideModules?: SideModuleStore;
   /** The process's indirect function table */
   table: WebAssembly.Table;
   /** Stack pointer global (shared across all modules) */
@@ -1179,6 +1186,17 @@ export interface DylinkInitializationStep {
   readonly invoke: () => void;
 }
 
+export function bytesEqual(
+  left: Readonly<Uint8Array>,
+  right: Readonly<Uint8Array>,
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
 /** Keep metadata/main-symbol operations available without handing a physical
  * group backing to an ordinary side module. Reject before dependency I/O.
  */
@@ -1187,6 +1205,41 @@ function requireNativeDylinkMemory(options: LoadSharedLibraryOptions, name: stri
     throw new Error(`${name}: grouped side modules are not supported; use a compatible static grouped build`);
   }
   return options.memory instanceof ForkShareAddressSpace ? options.memory.memory : options.memory;
+}
+
+/** Make the module a process instantiates for `form`, and publish it. */
+function compileSideModule(
+  name: string,
+  wasmBytes: Uint8Array,
+  source: WebAssembly.Module,
+  form: SideModuleForm,
+  options: LoadSharedLibraryOptions,
+): CompiledSideModule {
+  const startlessModuleBytes = form === "plain"
+    ? undefined
+    : withoutInitMemoryStart(
+        wasmBytes,
+        name,
+        form === "paged" ? "a process with page tables" : "borrowed replay",
+      );
+  const instanceModuleBytes = form === "paged" || form === "paged-borrowed"
+    ? instrumentSideModule(options.memoryInstrumenter!, startlessModuleBytes!)
+    : startlessModuleBytes;
+  const instance = instanceModuleBytes
+    ? new WebAssembly.Module(instanceModuleBytes as unknown as BufferSource)
+    : source;
+  if (instanceModuleBytes) {
+    registerWasmModuleReflection(instance, instanceModuleBytes);
+  }
+  const compiled = {
+    source,
+    instance,
+    runsInitMemory: form === "paged" && startlessModuleBytes !== wasmBytes,
+  };
+  options.sideModules?.publish(
+    name, wasmBytes, form, compiled, instanceModuleBytes,
+  );
+  return compiled;
 }
 
 /** Core shared library instantiation, shared by async and sync entry points. */
@@ -1208,14 +1261,21 @@ function* instantiateSharedLibrarySteps(
   validateLongjmpConfiguration(options);
   const ptrWidth = options.ptrWidth ?? 4;
   const pointerGlobalType = ptrWidth === 8 ? "i64" : "i32";
+  const borrowsMemory = replay?.memoryOwnership === "borrowed";
+  const pageTable = options.memory instanceof ForkShareAddressSpace
+    ? options.memory.location
+    : undefined;
+  const form: SideModuleForm = pageTable
+    ? borrowsMemory ? "paged-borrowed" : "paged"
+    : borrowsMemory ? "startless" : "plain";
+  const shared = options.sideModules?.take(name, wasmBytes, form);
   // Compile the exact archive bytes first. Besides producing clearer engine
   // diagnostics, this makes the narrow section parser below operate only on a
   // structurally valid module.
-  const sourceModule = new WebAssembly.Module(
+  const sourceModule = shared?.source ?? new WebAssembly.Module(
     wasmBytes as unknown as BufferSource,
   );
-  registerWasmModuleReflection(sourceModule, wasmBytes);
-  const borrowsMemory = replay?.memoryOwnership === "borrowed";
+  if (!shared) registerWasmModuleReflection(sourceModule, wasmBytes);
   if (borrowsMemory) {
     if (!(memory.buffer instanceof SharedArrayBuffer)) {
       throw new Error(`${name}: borrowed replay requires Shared Memory`);
@@ -1227,18 +1287,6 @@ function* instantiateSharedLibrarySteps(
     }
     requirePassiveDataSegments(wasmBytes, name, "borrowed replay");
   }
-  const pageTable = options.memory instanceof ForkShareAddressSpace
-    ? options.memory.location
-    : undefined;
-  const startlessModuleBytes = borrowsMemory
-    ? withoutInitMemoryStart(wasmBytes, name, "borrowed replay")
-    : pageTable
-      ? withoutInitMemoryStart(wasmBytes, name, "a process with page tables")
-      : undefined;
-  const runsInitMemory = !borrowsMemory
-    && startlessModuleBytes !== undefined
-    && startlessModuleBytes !== wasmBytes;
-  let instanceModuleBytes = startlessModuleBytes;
   if (pageTable) {
     if (!options.memoryInstrumenter) {
       throw new Error(
@@ -1247,19 +1295,12 @@ function* instantiateSharedLibrarySteps(
       );
     }
     requirePassiveDataSegments(wasmBytes, name, "a process with page tables");
-    instanceModuleBytes = instrumentSideModule(
-      options.memoryInstrumenter,
-      startlessModuleBytes!,
-    );
   }
-  const module = instanceModuleBytes
-    ? new WebAssembly.Module(
-        instanceModuleBytes as unknown as BufferSource,
-      )
-    : sourceModule;
-  if (instanceModuleBytes) {
-    registerWasmModuleReflection(module, instanceModuleBytes);
-  }
+  const compiled = shared ?? compileSideModule(
+    name, wasmBytes, sourceModule, form, options,
+  );
+  const module = compiled.instance;
+  const runsInitMemory = compiled.runsInitMemory;
   const moduleImports = wasmModuleImports(module);
   checkSideModuleForkContract(
     name,
@@ -1305,7 +1346,7 @@ function* instantiateSharedLibrarySteps(
       )
     ).length;
   const presentForkExports = SIDE_MODULE_FORK_EXPORTS.filter((exportName) =>
-    moduleExports.some((exp) => exp.kind === "function" && exp.name === exportName)
+    moduleExportKinds.get(exportName) === "function"
   );
   const hasCompleteForkInstrumentation =
     presentForkExports.length === SIDE_MODULE_FORK_EXPORTS.length;
@@ -1356,7 +1397,7 @@ function* instantiateSharedLibrarySteps(
 
   if (presentForkExports.length > 0 && !hasCompleteForkInstrumentation) {
     const missing = SIDE_MODULE_FORK_EXPORTS.filter((exportName) =>
-      !moduleExports.some((exp) => exp.kind === "function" && exp.name === exportName)
+      moduleExportKinds.get(exportName) !== "function"
     );
     throw new Error(
       `${name}: incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`,
@@ -3002,12 +3043,6 @@ export class DynamicLinker {
       }
     }
 
-    const bytesEqual = (
-      left: Readonly<Uint8Array>,
-      right: Readonly<Uint8Array>,
-    ): boolean =>
-      left.length === right.length
-      && left.every((byte, index) => byte === right[index]);
     const clearIssuedMarker = (
       transaction: PendingDlopenTransaction,
     ): void => {
@@ -3431,10 +3466,7 @@ export class DynamicLinker {
             !== (archived.initialization !== undefined)
         )
       )
-      || live.moduleBytes.length !== archived.moduleBytes.length
-      || !live.moduleBytes.every(
-        (byte, index) => byte === archived.moduleBytes[index],
-      )
+      || !bytesEqual(live.moduleBytes, archived.moduleBytes)
     ) {
       throw new Error(
         `${archived.name}: dynamic-linker replay instance does not match its fork state`,

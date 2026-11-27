@@ -1,6 +1,7 @@
 import { processDataView, processMemoryByteLength, readProcessBytes, writeProcessBytes, fillProcessBytes, type ProcessMemorySource } from './process-memory-views';
 import { GroupProcessAddressSpace } from './process-address-space';
 import { ForkShareAddressSpace } from './fork-share-address-space';
+import { bytesEqual } from "./dylink";
 import type {
   DylinkForkLibraryState,
   DylinkForkState,
@@ -169,6 +170,7 @@ export class DylinkForkTableReplica {
 interface IndexedModule {
   readonly allocation: DylinkForkArchiveAllocation;
   readonly state: DylinkForkLibraryState;
+  readonly templateId: Uint8Array;
 }
 
 interface IndexedTablePatch {
@@ -331,11 +333,6 @@ function decodeProviderDependencies(
   return dependencies;
 }
 
-function equalBytes(left: Readonly<Uint8Array>, right: Readonly<Uint8Array>): boolean {
-  return left.length === right.length
-    && left.every((byte, index) => byte === right[index]);
-}
-
 function checkedU32(value: number, context: string, allowZero = true): number {
   if (
     !Number.isInteger(value)
@@ -456,6 +453,17 @@ export class DylinkForkArchive {
     return this.copyState(this.state);
   }
 
+  /** Return the SHA-256 the index holds for exactly these module bytes. */
+  moduleTemplateId(
+    name: string,
+    moduleBytes: Readonly<Uint8Array>,
+  ): Uint8Array | undefined {
+    const indexed = this.modules.get(name);
+    if (!indexed) return undefined;
+    if (!bytesEqual(indexed.state.moduleBytes, moduleBytes)) return undefined;
+    return indexed.templateId.slice();
+  }
+
   /**
    * Publish the exact compact live linker state.
    *
@@ -490,6 +498,7 @@ export class DylinkForkArchive {
           target.push({
             allocation: current.allocation,
             state: library,
+            templateId: current.templateId,
           });
         } else {
           // Constructor dlsym can add a runtime-provider edge between archive
@@ -519,7 +528,7 @@ export class DylinkForkArchive {
           if (
             current.state.name !== transaction.name
             || current.state.globalVisibility !== transaction.globalVisibility
-            || !equalBytes(current.state.moduleBytes, transaction.moduleBytes)
+            || !bytesEqual(current.state.moduleBytes, transaction.moduleBytes)
         ) {
           throw new Error(
             `${this.label}: staged transaction ${transaction.token} changed identity`,
@@ -1362,7 +1371,7 @@ export class DylinkForkArchive {
     const moduleBytes = readProcessBytes(this.memory, address + TRANSACTION_HEADER_SIZE + align8(nameLength), bytesLength);
     const expectedDigest = readProcessBytes(this.memory, address + TRANSACTION_DIGEST_OFFSET, MODULE_DIGEST_SIZE);
     if (
-      !equalBytes(
+      !bytesEqual(
         expectedDigest,
         computeForkModuleTemplateIdSync(moduleBytes),
       )
@@ -1436,7 +1445,8 @@ export class DylinkForkArchive {
         ),
       true,
     );
-    this.writeRecordBytes(address, totalSize, MODULE_DIGEST_OFFSET, computeForkModuleTemplateIdSync(state.moduleBytes));
+    const templateId = computeForkModuleTemplateIdSync(state.moduleBytes);
+    this.writeRecordBytes(address, totalSize, MODULE_DIGEST_OFFSET, templateId);
     this.writeRecordBytes(address, totalSize, MODULE_HEADER_SIZE, name);
     this.writeRecordBytes(address, totalSize, MODULE_HEADER_SIZE + nameAligned, state.moduleBytes);
     this.writeRecordBytes(address, totalSize, MODULE_HEADER_SIZE + nameAligned + moduleBytesAligned, providers.bytes);
@@ -1476,6 +1486,7 @@ export class DylinkForkArchive {
     return {
       allocation,
       state: this.copyLibrary(state),
+      templateId,
     };
   }
 
@@ -1585,7 +1596,7 @@ export class DylinkForkArchive {
       },
     );
     const expectedDigest = readProcessBytes(this.memory, address + MODULE_DIGEST_OFFSET, MODULE_DIGEST_SIZE);
-    if (!equalBytes(expectedDigest, computeForkModuleTemplateIdSync(moduleBytes))) {
+    if (!bytesEqual(expectedDigest, computeForkModuleTemplateIdSync(moduleBytes))) {
       throw new Error(`${this.label}: module ${name} failed archive SHA-256 validation`);
     }
     const activationId = view.getUint32(address + 48, true);
@@ -1648,6 +1659,7 @@ export class DylinkForkArchive {
     return {
       allocation: { address, size: allocationSize },
       state,
+      templateId: expectedDigest,
     };
   }
 
@@ -1878,7 +1890,7 @@ export class DylinkForkArchive {
         current.tlsBase !== next.tlsBase
         && current.initialization === undefined
       )
-      || !equalBytes(current.moduleBytes, next.moduleBytes)
+      || !bytesEqual(current.moduleBytes, next.moduleBytes)
     ) {
       throw new Error(
         `${this.label}: live module ${next.name} changed immutable archive identity`,
