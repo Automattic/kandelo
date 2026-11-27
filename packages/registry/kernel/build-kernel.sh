@@ -27,7 +27,9 @@ if ! cargo -V | grep -q 'nightly'; then
 fi
 
 # --locked: never rewrite the checkout's Cargo.lock from a package build.
-cargo build --locked --release -p kandelo -Z build-std=core,alloc
+# KIFS authenticates every data block and index page. Optimize the compression
+# rounds for throughput within the otherwise size-optimized kernel.
+cargo --config 'profile.release.package.sha2.opt-level=3' build --locked --release -p kandelo -Z build-std=core,alloc
 
 if [ ! -f "$OUT" ]; then
     echo "build-kernel: expected output not found: $OUT" >&2

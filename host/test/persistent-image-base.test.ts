@@ -15,7 +15,7 @@ beforeAll(() => preparePersistentBaseFixtures(), 180_000);
 async function boot(path: string, binding: PersistentImageReadBinding, journal: string, requireExisting = false): Promise<NodeKernelHost> {
   const host = new NodeKernelHost({
     rootfsImageFile: path, rootfsPersistentImageBinding: binding,
-    experimentalResizablePersistencePath: journal,
+    kifsUpgradeProfile: "legacy", experimentalResizablePersistencePath: journal,
     requireExistingRootfsPersistence: requireExisting,
   });
   try {

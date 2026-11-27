@@ -50,6 +50,7 @@ export interface KandeloImageStat {
 }
 
 interface PersistentWriterExports {
+  sm_stage_kifs_v3(target: number, capacityBlocks: bigint, identity: number): bigint;
   sm_persistent_image_begin(target: number, lengthLo: number, lengthHi: number, policy: number): number;
   sm_persistent_image_push(pointer: number, length: number): number;
   sm_persistent_image_finish(): number;
@@ -98,6 +99,7 @@ interface ModuleExports extends Partial<PersistentWriterExports> {
   sm_reset(rootMode: number, uid: number, gid: number): number;
   sm_image_metadata(out: number, outLen: number): number;
   sm_loaded_image_capacity(): bigint;
+  sm_set_export_inode_capacity(inodes: number): number;
   sm_mkdir(p: number, pl: number, mode: number, uid: number, gid: number): number;
   sm_mkdir_parents(p: number, pl: number, mode: number, uid: number, gid: number): number;
   sm_symlink(t: number, tl: number, l: number, ll: number, uid: number, gid: number): number;
@@ -347,6 +349,15 @@ export class KandeloImageFs {
     identitySha256: string,
     policy: PersistentImageIntegrityPolicy,
   ): { payloadLength: number; memoryPages: number } {
+    const { filesystem, payloadLength } = this.openPersistentImageInspector(moduleBytes, physicalLength, readAt, identitySha256, policy);
+    return { payloadLength, memoryPages: filesystem.getMemoryPages() };
+  }
+
+  static openPersistentImageInspector(
+    moduleBytes: Uint8Array, physicalLength: number,
+    readAt: (offset: number, destination: Uint8Array) => number,
+    identitySha256: string, policy: PersistentImageIntegrityPolicy,
+  ): { filesystem: KandeloImageFs; payloadLength: number } {
     if (!Number.isSafeInteger(physicalLength) || physicalLength <= 0 || (policy !== "crc32c" && policy !== "sha256")) {
       throw new Error("Persistent image length or integrity policy is invalid");
     }
@@ -360,7 +371,7 @@ export class KandeloImageFs {
     if (!Number.isSafeInteger(payloadLength) || payloadLength <= 0 || payloadLength >= physicalLength) {
       throw new KandeloImageError(ERRNO.EOVERFLOW, "inspectPersistentImage", "");
     }
-    return { payloadLength, memoryPages: filesystem.getMemoryPages() };
+    return { filesystem, payloadLength };
   }
 
   exportImageLength(): number {
@@ -1532,6 +1543,17 @@ export class KandeloImageFs {
     catch (error) { this.requestedCapacityBytes = previous; throw error; }
   }
 
+  /** Set the exported inode floor independently of the byte ceiling. */
+  setExportInodeCapacity(inodes: number): void {
+    if (!Number.isInteger(inodes) || inodes < 0 || inodes > 0xffff_ffff) {
+      throw new RangeError("Invalid exported inode capacity");
+    }
+    if (typeof this.exports.sm_set_export_inode_capacity !== "function") {
+      throw new Error("Kandelo image module lacks its inode capacity export; rebuild the image modules");
+    }
+    this.check(this.exports.sm_set_export_inode_capacity(inodes), "setExportInodeCapacity", "");
+  }
+
   private lastMetadata: unknown | null = null;
 
   private imageOptionsMetadata(): unknown | null {
@@ -1847,6 +1869,37 @@ export class KandeloImageFs {
       if (typeof this.exports[name] !== "function") throw new Error("Image module lacks its persistent writer; rebuild the positioned image module");
     }
     return this.exports as ModuleExports & PersistentWriterExports;
+  }
+
+  /** Stage and verify a standalone KIFS v3 volume in an empty positioned target. */
+  stageKifsV3To(target: PositionedImageTarget, capacityBlocks: number, identity: Uint8Array): number {
+    if (this.persistentWriteActive || this.targets === undefined) {
+      throw new Error("KIFS v3 staging requires an idle positioned image module");
+    }
+    const stage = this.exports.sm_stage_kifs_v3;
+    if (typeof stage !== "function") throw new Error("Image module lacks its KIFS v3 writer");
+    if (!Number.isSafeInteger(capacityBlocks) || capacityBlocks < 2 || identity.length !== 32) {
+      throw new KandeloImageError(ERRNO.EINVAL, "stageKifsV3", "");
+    }
+    this.persistentWriteActive = true;
+    let token: number | undefined;
+    let pointer = 0;
+    try {
+      token = this.targets.attach(target);
+      pointer = this.exports.sm_alloc(identity.length);
+      if (pointer === 0) throw new KandeloImageError(ERRNO.ENOMEM, "stageKifsV3", "");
+      this.mem.set(identity, pointer);
+      const result = stage(token, BigInt(capacityBlocks), pointer);
+      if (result < 0n) throw new KandeloImageError(Number(-result), "stageKifsV3", "");
+      if (result > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new KandeloImageError(ERRNO.EOVERFLOW, "stageKifsV3", "");
+      }
+      return Number(result);
+    } finally {
+      if (pointer !== 0) this.exports.sm_free(pointer, identity.length);
+      if (token !== undefined) this.targets.detach(token);
+      this.persistentWriteActive = false;
+    }
   }
 
   async writePersistentImageTo(

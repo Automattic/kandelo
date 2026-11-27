@@ -252,6 +252,10 @@ export class KernelReentrantEntryError extends IntrinsicError {
  */
 export class KernelEntryGate {
   #activeExportName: string | null = null;
+  #statLeaseFence?: () => void;
+  setStatLeaseFence(fence: () => void): void {
+    this.#statLeaseFence = fence;
+  }
   #fatalError: Error | null = null;
   #deferred = intrinsicObjectSetPrototypeOf(
     [],
@@ -400,6 +404,7 @@ export class KernelEntryGate {
           : "queued kernel ingress",
       );
     }
+    this.#statLeaseFence?.();
     this.#activeExportName = name;
     try {
       return operation();
@@ -460,6 +465,7 @@ export class KernelEntryGate {
           ?? "active or queued kernel entry",
       );
     }
+    this.#statLeaseFence?.();
     this.#activeHostOperationLabel = label;
     try {
       return this.#acceptSynchronousHostOperationResult(
@@ -663,6 +669,7 @@ export class KernelEntryGate {
   ): void {
     this.#pendingProtocolTransactionStarts--;
     if (this.#fatalError !== null) return;
+    this.#statLeaseFence?.();
     this.#runningProtocolTransactionStart = true;
     try {
       const result: unknown = operation();
@@ -837,6 +844,7 @@ export class KernelEntryGate {
       deferObserverEffect: (effectOperation: () => undefined): undefined =>
         registerEffect("observer", effectOperation),
     });
+    this.#statLeaseFence?.();
     this.#activeVoidIngressLabel = label;
     this.#activeVoidIngressToken = token;
     try {

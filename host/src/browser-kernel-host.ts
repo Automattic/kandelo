@@ -228,6 +228,7 @@ export interface BrowserKernelBootOptions {
   experimentalResizablePersistenceName?: string;
   persistentComputerName?: string;
   persistenceComputerLease?: BrowserPersistenceComputerLease;
+  kifsUpgradeProfile?: import("./vfs/overlay-generation-selection").SavedKifsProfile;
   requireExistingRootfsPersistence?: boolean;
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
@@ -283,6 +284,7 @@ export interface BrowserKernelOwnedImageInitOptions {
   experimentalResizablePersistenceName?: string;
   persistentComputerName?: string;
   persistenceComputerLease?: BrowserPersistenceComputerLease;
+  kifsUpgradeProfile?: import("./vfs/overlay-generation-selection").SavedKifsProfile;
   requireExistingRootfsPersistence?: boolean;
   kernelWasm?: ArrayBuffer;
   /**
@@ -302,6 +304,8 @@ export interface BrowserKernelOpfsImageInitOptions extends Omit<
   "vfsImage"
 > {
   vfsImageFile: FileSystemFileHandle;
+  /** Identity of an explicitly selected disposable KIFS v3 volume at vfsImageFile. */
+  experimentalKifsV3Identity?: string;
   integrity?: OpfsImageIntegrity;
   persistentImageBinding?: PersistentImageReadBinding;
   lazyUrlMap?: Readonly<Record<string, string>>;
@@ -587,6 +591,7 @@ export class BrowserKernel {
     experimentalResizablePersistenceName?: string;
     persistentComputerName?: string;
     persistenceComputerLease?: BrowserPersistenceComputerLease;
+    kifsUpgradeProfile?: import("./vfs/overlay-generation-selection").SavedKifsProfile;
     requireExistingRootfsPersistence?: boolean;
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
@@ -619,6 +624,7 @@ export class BrowserKernel {
       experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
       persistentComputerName: options.persistentComputerName,
       persistenceComputerLease: options.persistenceComputerLease,
+      kifsUpgradeProfile: options.kifsUpgradeProfile,
       requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: false,
     });
@@ -655,6 +661,7 @@ export class BrowserKernel {
       experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
       persistentComputerName: options.persistentComputerName,
       persistenceComputerLease: options.persistenceComputerLease,
+      kifsUpgradeProfile: options.kifsUpgradeProfile,
       requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: true,
     });
@@ -673,6 +680,7 @@ export class BrowserKernel {
       kernelWasmBytes: wasmBytes,
       vfsImage: new Uint8Array(),
       opfsImage: await referenceOpfsFile(options.vfsImageFile),
+      experimentalKifsV3Identity: options.experimentalKifsV3Identity,
       opfsImageIntegrity: options.integrity,
       rootfsPersistentImageBinding: persistentImageBinding,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
@@ -684,6 +692,7 @@ export class BrowserKernel {
       experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
       persistentComputerName: options.persistentComputerName,
       persistenceComputerLease: options.persistenceComputerLease,
+      kifsUpgradeProfile: options.kifsUpgradeProfile,
       requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: false,
     });
@@ -698,10 +707,12 @@ export class BrowserKernel {
     experimentalResizablePersistenceName?: string;
     persistentComputerName?: string;
     persistenceComputerLease?: BrowserPersistenceComputerLease;
+    kifsUpgradeProfile?: import("./vfs/overlay-generation-selection").SavedKifsProfile;
     requireExistingRootfsPersistence?: boolean;
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
     opfsImage?: OpfsFileReference;
+    experimentalKifsV3Identity?: string;
     opfsImageIntegrity?: OpfsImageIntegrity;
     rootfsPersistentImageBinding?: PersistentImageReadBinding;
     lazyUrlBase?: string;
@@ -875,6 +886,7 @@ export class BrowserKernel {
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
           opfsImage: opts.opfsImage,
+          experimentalKifsV3Identity: opts.experimentalKifsV3Identity,
           opfsImageIntegrity: opts.opfsImageIntegrity,
           rootfsPersistentImageBinding: opts.rootfsPersistentImageBinding,
           lazyUrlBase: opts.lazyUrlBase,
@@ -888,6 +900,7 @@ export class BrowserKernel {
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           experimentalFixedPersistenceName: opts.experimentalFixedPersistenceName,
           experimentalResizablePersistenceName: opts.experimentalResizablePersistenceName,
+          kifsUpgradeProfile: opts.kifsUpgradeProfile,
           requireExistingRootfsPersistence: opts.requireExistingRootfsPersistence,
           workerEntryUrl,
           config: {

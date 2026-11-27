@@ -712,6 +712,7 @@ static TMPFS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable in-kernel tmpfs authority. Returns the previous value.
 pub fn set_enabled(enabled: bool) -> bool {
+    crate::rootfs::revoke_stat_routes();
     TMPFS_ENABLED.swap(enabled, Ordering::SeqCst)
 }
 

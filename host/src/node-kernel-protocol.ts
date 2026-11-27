@@ -168,10 +168,12 @@ export interface InitMessage {
    */
   rootfsImage?: ArrayBuffer;
   rootfsImageFile?: string;
+  experimentalKifsV3Identity?: string;
   rootfsImageIntegrity?: import("./vfs/opfs-image-reader").OpfsImageIntegrity;
   rootfsPersistentImageBinding?: import("./vfs/image-integrity").PersistentImageReadBinding;
   experimentalFixedPersistencePath?: string;
   experimentalResizablePersistencePath?: string;
+  kifsUpgradeProfile?: import("./vfs/overlay-generation-selection").SavedKifsProfile;
   requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];

@@ -183,8 +183,10 @@ export interface InitMessage {
   opfsImage?: OpfsFileReference;
   opfsImageIntegrity?: OpfsImageIntegrity;
   rootfsPersistentImageBinding?: import("./vfs/image-integrity").PersistentImageReadBinding;
+  experimentalKifsV3Identity?: string;
   experimentalFixedPersistenceName?: string;
   experimentalResizablePersistenceName?: string;
+  kifsUpgradeProfile?: import("./vfs/overlay-generation-selection").SavedKifsProfile;
   requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];

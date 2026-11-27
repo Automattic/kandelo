@@ -1,3 +1,4 @@
+import type { StatLeaseBinding } from "./stat-lease";
 import type { ThreadTlsAllocation } from "./thread-allocator";
 import type {
   ForkHostImportWorkerInit,
@@ -35,6 +36,7 @@ export type HostToWorkerMessage =
  * to communicate with the CentralizedKernelWorker.
  */
 export interface CentralizedWorkerInitMessage {
+  statLeaseBinding?: StatLeaseBinding;
   type: "centralized_init";
   pid: number;
   /** User program bytes (compiled with channel_syscall.c — no kernel imports) */

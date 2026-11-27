@@ -3,6 +3,7 @@ __channel_base
 __cpp_exception
 __kandelo_klogctl_v1
 __kandelo_stack_capture_v1
+__kandelo_stat_cache_v1
 __wasm_dlclose
 __wasm_dlerror
 __wasm_dlopen

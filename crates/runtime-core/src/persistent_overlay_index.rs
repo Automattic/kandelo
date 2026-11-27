@@ -1,5 +1,7 @@
+use crate::positioned_storage::IndexReadCache;
+#[cfg(test)]
+use crate::positioned_storage::{CachedIndexPage, READ_CACHE_MAX_BYTES, READ_CACHE_PAGE_BYTES};
 use crate::persistent_overlay::{OverlayKey, OverlayStorage};
-use crate::IoBuffer;
 use sha2::{Digest, Sha256};
 use wasm_posix_shared::Errno;
 
@@ -18,69 +20,6 @@ const METADATA_RECORDS_PER_PAGE: usize = 14;
 const HASHED_METADATA_RECORD_BYTES: usize = 312;
 const HASHED_METADATA_RECORDS_PER_PAGE: usize = 13;
 const METADATA_PAGE_BYTES: usize = HASHED_METADATA_RECORD_BYTES * HASHED_METADATA_RECORDS_PER_PAGE;
-const READ_CACHE_PAGE_BYTES: usize = 4096;
-const READ_CACHE_MAX_PAGES: usize = 32;
-
-struct CachedIndexPage {
-    offset: u64,
-    length: usize,
-    bytes: IoBuffer<u8>,
-}
-
-struct IndexReadCache {
-    pages: IoBuffer<CachedIndexPage>,
-    limit: usize,
-}
-
-impl IndexReadCache {
-    fn new() -> Self {
-        let limit = (crate::io_buffer::IO_MEMORY.usage().1 / 64 / READ_CACHE_PAGE_BYTES)
-            .min(READ_CACHE_MAX_PAGES);
-        Self { pages: IoBuffer::new(), limit }
-    }
-
-    fn discard(&mut self) -> bool {
-        let owned = self.pages.capacity() != 0;
-        self.pages = IoBuffer::new();
-        owned
-    }
-
-    fn remember(&mut self, offset: u64, source: &[u8]) -> Result<(), Errno> {
-        if source.len() > READ_CACHE_PAGE_BYTES { return Err(Errno::EIO); }
-        if self.pages.len() < self.limit {
-            let prepared = (|| {
-                let mut bytes = IoBuffer::try_filled(READ_CACHE_PAGE_BYTES, 0)?;
-                self.pages.try_reserve(1)?;
-                bytes[..source.len()].copy_from_slice(source);
-                Ok(CachedIndexPage { offset, length: source.len(), bytes })
-            })();
-            match prepared {
-                Ok(page) => { self.pages.push(page); return Ok(()); }
-                Err(Errno::ENOMEM) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        if let Some(page) = self.pages.first_mut() {
-            page.bytes[..source.len()].copy_from_slice(source);
-            page.offset = offset;
-            page.length = source.len();
-            self.pages.rotate_left(1);
-        }
-        Ok(())
-    }
-
-    fn read_exact_at<S: OverlayStorage>(&mut self, storage: &mut S, offset: u64, destination: &mut [u8], admit: bool) -> Result<(), Errno> {
-        if destination.len() > READ_CACHE_PAGE_BYTES { return Err(Errno::EIO); }
-        if let Some(position) = self.pages.iter().position(|page| page.offset == offset && page.length == destination.len()) {
-            destination.copy_from_slice(&self.pages[position].bytes[..destination.len()]);
-            self.pages[position..].rotate_left(1);
-            return Ok(());
-        }
-        storage.read_exact_at(offset, destination)?;
-        if admit { self.remember(offset, destination) } else { Ok(()) }
-    }
-}
-
 pub(crate) struct CheckpointHeader {
     version: u32,
     base_digest: [u8; 32],
@@ -686,18 +625,28 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         &mut self,
         key: &OverlayKey,
     ) -> Result<Option<MetadataCheckpointEntry>, Errno> {
+        let (_, entry) = self.seek_metadata(key)?;
+        Ok(entry.filter(|entry| &entry.key == key))
+    }
+
+    /// Find the first record at or after a key without retaining the index.
+    pub(crate) fn seek_metadata(&mut self, key: &OverlayKey) -> Result<(u64, Option<MetadataCheckpointEntry>), Errno> {
         let mut low = 0;
         let mut high = self.metadata_count;
+        let mut following = None;
         while low < high {
             let middle = low + (high - low) / 2;
             let entry = self.read_metadata_entry(middle, true)?.ok_or(Errno::EIO)?;
             match entry.key.cmp(key) {
                 core::cmp::Ordering::Less => low = middle + 1,
-                core::cmp::Ordering::Greater => high = middle,
-                core::cmp::Ordering::Equal => return Ok(Some(entry)),
+                core::cmp::Ordering::Greater => {
+                    high = middle;
+                    following = Some(entry);
+                }
+                core::cmp::Ordering::Equal => return Ok((middle, Some(entry))),
             }
         }
-        Ok(None)
+        Ok((low, following))
     }
 
     pub fn lookup(
@@ -958,10 +907,11 @@ mod tests {
             let index = page * RECORDS_PER_PAGE;
             assert_eq!(checkpoint.lookup(7, index as u64), Ok(Some(records[index])));
         }
-        assert_eq!(checkpoint.read_cache.pages.len(), READ_CACHE_MAX_PAGES);
+        let max_pages = READ_CACHE_MAX_BYTES / READ_CACHE_PAGE_BYTES;
+        assert_eq!(checkpoint.read_cache.pages.len(), max_pages);
         let charged = IO_MEMORY.usage().0;
         assert!(charged > baseline);
-        assert!(charged <= baseline + 2 * READ_CACHE_MAX_PAGES * (READ_CACHE_PAGE_BYTES + core::mem::size_of::<CachedIndexPage>()));
+        assert!(charged <= baseline + 2 * max_pages * (READ_CACHE_PAGE_BYTES + core::mem::size_of::<CachedIndexPage>()));
         {
             let _pressure = test_budget(charged);
             assert_eq!(checkpoint.lookup(7, 4000), Ok(Some(records[4000])));
@@ -997,7 +947,7 @@ mod tests {
         storage.bytes[READ_CACHE_PAGE_BYTES..2 * READ_CACHE_PAGE_BYTES].fill(1);
         storage.bytes[2 * READ_CACHE_PAGE_BYTES..].fill(2);
         let mut cache = IndexReadCache::new();
-        cache.limit = 2;
+        cache.set_test_limit(2);
         let mut actual = [0; READ_CACHE_PAGE_BYTES];
         cache.read_exact_at(&mut storage, 0, &mut actual, true).unwrap();
         cache.read_exact_at(&mut storage, READ_CACHE_PAGE_BYTES as u64, &mut actual, true).unwrap();

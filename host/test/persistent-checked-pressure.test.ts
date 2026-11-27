@@ -60,7 +60,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
         const accept = (_pid: number, bytes: Uint8Array) => { output = (output + new TextDecoder().decode(bytes)).slice(-16384); };
         active = new NodeKernelHost({ rootfsImageFile: source.path, rootfsPersistentImageBinding: source.binding,
           kernelMaxPages: 1024, maxPages: 1024, maxWorkers: 1,
-          experimentalResizablePersistencePath: join(directory, phase.startsWith("snapshot") ? "snapshot.journal" : "journal"),
+          kifsUpgradeProfile: "legacy", experimentalResizablePersistencePath: join(directory, phase.startsWith("snapshot") ? "snapshot.journal" : "journal"),
           requireExistingRootfsPersistence: phase.endsWith("reopen"), onStdout: accept, onStderr: accept });
         await active.init(kernel.buffer);
         const observeMemory = async (stage: string) => {

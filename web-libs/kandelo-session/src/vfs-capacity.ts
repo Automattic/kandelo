@@ -1,9 +1,8 @@
 export const DEFAULT_VFS_PROFILE_MAX_BYTES = 256 * 1024 * 1024;
 export const MAIN_SHELL_VFS_PROFILE_MAX_BYTES = 512 * 1024 * 1024;
-// A product image must have room to copy the canonical shell's complete inode
-// inventory and then add its own files. SharedFS sizes its inode table from the
-// declared byte ceiling, so reusing the shell's exact ceiling can exhaust
-// inodes even while statfs still reports hundreds of MiB of free data blocks.
+export const MAIN_SHELL_VFS_INODE_CAPACITY = 64 * 1024;
+export const MAIN_SHELL_VFS_MIN_FREE_INODES = 32 * 1024;
+// The shell-derived byte profile also has to fit its bundled application data.
 export const SHELL_DERIVED_VFS_PROFILE_MAX_BYTES =
   768 * 1024 * 1024;
 // Product images need space for ordinary runtime state after their immutable

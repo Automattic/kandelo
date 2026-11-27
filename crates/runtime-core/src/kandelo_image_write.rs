@@ -516,6 +516,10 @@ fn r16(buf: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([buf[off], buf[off + 1]])
 }
 
+pub(crate) fn legacy_inode_capacity(max_blocks: u32) -> u32 {
+    (max_blocks / 4).max(INODES_PER_BLOCK).div_ceil(INODES_PER_BLOCK) * INODES_PER_BLOCK
+}
+
 impl KandeloImageWriter {
     /// Format an empty filesystem. Mirrors the vendor's `SharedFS.mkfs`,
     /// including its "grow the buffer if the metadata does not fit" step.
@@ -547,7 +551,7 @@ impl KandeloImageWriter {
         let total_inodes = match inode_capacity {
             Some(capacity) if capacity <= ROOT_INO => return Err(Errno::EINVAL),
             Some(capacity) => capacity,
-            None => core::cmp::max(32, max_blocks / 4).div_ceil(INODES_PER_BLOCK) * INODES_PER_BLOCK,
+            None => legacy_inode_capacity(max_blocks),
         };
 
         let inode_bitmap_blocks = total_inodes.div_ceil(BLOCK_SIZE as u32 * 8);

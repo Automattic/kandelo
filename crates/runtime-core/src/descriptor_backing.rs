@@ -455,8 +455,9 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
         && (crate::procfs::is_procfs_buf_handle(host_handle)
             || crate::executable_backing::is_executable_handle(host_handle)
             || is_synthetic_regular_handle(host_handle)
-            || crate::tmpfs::is_tmpfs_file_handle(host_handle)
-            || crate::rootfs::is_rootfs_file_handle(host_handle)))
+            || crate::tmpfs::is_tmpfs_file_handle(host_handle)))
+        || (matches!(file_type, FileType::Regular | FileType::Directory)
+            && crate::rootfs::is_rootfs_file_handle(host_handle))
 }
 
 /// Whether an encoded handle currently names a live backing owned here.
@@ -496,8 +497,8 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
         FileType::Regular if crate::tmpfs::is_tmpfs_file_handle(host_handle) => {
             crate::tmpfs::handle_is_live(host_handle)
         }
-        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
-            crate::rootfs::handle_is_live(host_handle)
+        FileType::Regular | FileType::Directory if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            crate::rootfs::owns_inode_description(host_handle, file_type == FileType::Directory)
         }
         _ => false,
     }
@@ -665,7 +666,7 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
                 return Err(Errno::EBADF);
             }
         }
-        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+        FileType::Regular | FileType::Directory if crate::rootfs::is_rootfs_file_handle(host_handle) => {
             if !crate::rootfs::add_ref_handle(host_handle) {
                 return Err(Errno::EBADF);
             }
@@ -715,7 +716,7 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
         FileType::Regular if crate::tmpfs::is_tmpfs_file_handle(host_handle) => {
             crate::tmpfs::release_handle(host_handle)
         }
-        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+        FileType::Regular | FileType::Directory if crate::rootfs::is_rootfs_file_handle(host_handle) => {
             crate::rootfs::release_handle(host_handle)
         }
         FileType::CharDevice if crate::exchange::is_exchange_handle(host_handle) => {

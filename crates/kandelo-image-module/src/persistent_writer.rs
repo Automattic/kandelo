@@ -116,26 +116,82 @@ impl BlockSource for HostTarget {
         {
             return Err(Errno::EIO);
         }
-        let mut consumed = 0;
-        while consumed < destination.len() {
-            let position = i64::try_from(offset + consumed as u64).map_err(|_| Errno::EOVERFLOW)?;
-            let count = (destination.len() - consumed).min(DATA_BYTES);
-            let result = unsafe {
-                host_image_target_read(
-                    self.0,
-                    position,
-                    destination[consumed..].as_mut_ptr(),
-                    count as u32,
-                )
-            };
-            let read = checked_result(i64::from(result))? as usize;
-            if read == 0 || read > count {
-                return Err(Errno::EIO);
-            }
-            consumed += read;
-        }
-        Ok(())
+        read_target(self.0, offset, destination)
     }
+}
+
+fn read_target(token: u32, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+    let mut consumed = 0;
+    while consumed < destination.len() {
+        let position = i64::try_from(offset + consumed as u64).map_err(|_| Errno::EOVERFLOW)?;
+        let count = (destination.len() - consumed).min(DATA_BYTES);
+        let result = unsafe {
+            host_image_target_read(
+                token,
+                position,
+                destination[consumed..].as_mut_ptr(),
+                count as u32,
+            )
+        };
+        let read = checked_result(i64::from(result))? as usize;
+        if read == 0 || read > count {
+            return Err(Errno::EIO);
+        }
+        consumed += read;
+    }
+    Ok(())
+}
+
+struct VolumeTarget(u32);
+
+impl runtime_core::positioned_storage::PositionedStorage for VolumeTarget {
+    fn len(&mut self) -> Result<u64, Errno> {
+        HostTarget(self.0, 0).get_size()
+    }
+
+    fn read_exact_at(&mut self, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+        read_target(self.0, offset, destination)
+    }
+
+    fn write_all_at(&mut self, offset: u64, source: &[u8]) -> Result<(), Errno> {
+        HostTarget(self.0, 0).write_all_at(offset, source)
+    }
+
+    fn flush(&mut self) -> Result<(), Errno> {
+        HostTarget(self.0, 0).flush()
+    }
+
+    fn truncate(&mut self, length: u64) -> Result<(), Errno> {
+        HostTarget(self.0, 0).set_size(length)
+    }
+}
+
+/// Build and verify a standalone KIFS v3 image in an empty target.
+///
+/// # Safety
+/// `identity` addresses 32 readable bytes in the image module's memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_stage_kifs_v3(
+    target: u32,
+    capacity_blocks: u64,
+    identity: *const [u8; 32],
+) -> i64 {
+    use runtime_core::positioned_storage::PositionedStorage;
+    let result = enter(|state| {
+        if !matches!(state, State::Idle) {
+            return Err(Errno::EBUSY);
+        }
+        let identity = unsafe { identity.as_ref() }.copied().ok_or(Errno::EINVAL)?;
+        super::seal_export_archives()?;
+        let stage = runtime_core::rootfs::stage_kifs_v3(
+            VolumeTarget(target),
+            capacity_blocks,
+            identity,
+            super::image_source,
+        )?;
+        i64::try_from(stage.into_volume().into_storage().len()?).map_err(|_| Errno::EOVERFLOW)
+    });
+    result.unwrap_or_else(|error| i64::from(super::err(error)))
 }
 
 enum State {

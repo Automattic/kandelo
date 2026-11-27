@@ -98,7 +98,7 @@ pub trait HostIO {
     ///
     /// Returns the number of bytes read (0 at EOF). Defaults to unsupported so
     /// mock hosts and hosts predating the overlay compile unchanged.
-    fn fetch_deferred(&mut self, _uri: &[u8], _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+    fn fetch_deferred(&mut self, _uri: &[u8], _buf: &mut [u8], _offset: u64, _size: u64) -> Result<usize, Errno> {
         Err(Errno::ENOSYS)
     }
     /// Forget a deferred resource rejected by the kernel's integrity checks.

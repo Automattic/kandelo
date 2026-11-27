@@ -208,12 +208,24 @@ describe("host_fetch_deferred provider seam", () => {
     } finally { warning.mockRestore(); }
   });
 
+  it.each(["EDQUOT", "ENOSPC"])("reports host %s on the physical storage boundary", code => {
+    const onHostDiagnostic = vi.fn();
+    const { kernel, memory } = kernelHarness({}, 4, { onHostDiagnostic });
+    const fail = () => { throw Object.assign(new Error("fixture storage failure"), { code }); };
+    kernel.setPersistentOverlayStorage({ len: () => 0, readExactAt: fail, writeAllAt: fail, flush: fail, truncate: fail, close() {} });
+    const imports = importsOf(kernel, memory);
+    expect(imports.env.host_overlay_write(0n, 4096, 1)).toBe(-28);
+    expect(imports.env.host_overlay_flush()).toBe(-28);
+    expect(onHostDiagnostic).toHaveBeenCalledOnce();
+    expect(onHostDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ source: "storage-capacity" }));
+  });
+
   it("reports ENOSYS when no deferred provider is installed", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);
 
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
       .toBe(-ENOSYS);
   });
 
@@ -237,7 +249,7 @@ describe("host_fetch_deferred provider seam", () => {
       "https://example.invalid/caf\u00e9.wasm?v=2&x=%20",
     ]) {
       const [p, l] = writeUri(memory, uri);
-      imports.env.host_fetch_deferred(p, l, 4096, 4, 0, 0);
+      imports.env.host_fetch_deferred(p, l, 4096, 4, 0, 0, 20, 1);
     }
 
     expect(seen).toEqual([
@@ -250,17 +262,17 @@ describe("host_fetch_deferred provider seam", () => {
   it("reassembles the full 64-bit offset, so a read past 4 GiB is not truncated", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);
-    const seen: bigint[] = [];
-    kernel.setRootfsDeferredProvider((_uri: string, offset: bigint) => {
-      seen.push(offset);
+    const seen: [bigint, number][] = [];
+    kernel.setRootfsDeferredProvider((_uri, offset, _bytes, size) => {
+      seen.push([offset, size]);
       return 0;
     });
 
     const [p, l] = writeUri(memory, "https://example.invalid/big.bin");
-    imports.env.host_fetch_deferred(p, l, 4096, 4, 9, 0);
-    imports.env.host_fetch_deferred(p, l, 4096, 4, 5, 1);
+    imports.env.host_fetch_deferred(p, l, 4096, 4, 9, 0, 20, 1);
+    imports.env.host_fetch_deferred(p, l, 4096, 4, 5, 1, 20, 1);
 
-    expect(seen).toEqual([9n, 0x1_0000_0005n]);
+    expect(seen).toEqual([[9n, 0x1_0000_0014], [0x1_0000_0005n, 0x1_0000_0014]]);
   });
 
   it("stages installed provider bytes into the destination exactly once", () => {
@@ -281,7 +293,7 @@ describe("host_fetch_deferred provider seam", () => {
     kernel.setRootfsDeferredProvider(provider);
 
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
       .toBe(2);
     expect(provider).toHaveBeenCalledOnce();
     expect(new Uint8Array(memory.buffer, 4096, 4))
@@ -301,7 +313,7 @@ describe("host_fetch_deferred provider seam", () => {
     kernel.setRootfsDeferredProvider(() => -EPERM);
 
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
       .toBe(-EPERM);
   });
 
@@ -319,7 +331,7 @@ describe("host_fetch_deferred provider seam", () => {
     const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
     new Uint8Array(memory.buffer, 4096, 8).fill(0xa5);
 
-    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0, 20, 1))
       .toBe(-EIO);
     expect(new Uint8Array(memory.buffer, 4096, 8))
       .toEqual(new Uint8Array(8).fill(0xa5));

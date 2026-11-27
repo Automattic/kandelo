@@ -789,6 +789,26 @@ describe("KandeloImageFs", () => {
     expect(no.freeBytes).toBe(ok.freeBytes);
   });
 
+  it("preserves the exported inode count across byte capacity changes and image reload", async () => {
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/f", Uint8Array.of(7), 0o644);
+    fs.setImageCapacity(64 * 1024 * 1024);
+    const legacy = fs.checkHeadroom(0, 0);
+    fs.setExportInodeCapacity(65_536);
+    const explicit = fs.checkHeadroom(0, 0);
+    expect(fs.exportCapacityBytes()).toBe(64 * 1024 * 1024);
+    expect(explicit.freeInodes - legacy.freeInodes).toBe(65_536 - 4_096);
+    expect(explicit.freeBytes).toBeLessThan(legacy.freeBytes);
+
+    const reloaded = KandeloImageFs.create();
+    reloaded.loadImage(await fs.saveImage());
+    reloaded.setImageCapacity(128 * 1024 * 1024);
+    const expanded = reloaded.checkHeadroom(0, 0);
+    expect(reloaded.exportCapacityBytes()).toBe(128 * 1024 * 1024);
+    expect(expanded.freeInodes).toBe(explicit.freeInodes);
+    expect(reloaded.readFile("/f")).toEqual(Uint8Array.of(7));
+  });
+
   it("refuses one archive declared with two different lengths", () => {
     // The member's size and the ARCHIVE's size are different numbers, and the
     // second is what bounds the fetch. Two lengths for one archive would make

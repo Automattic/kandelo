@@ -535,6 +535,12 @@ fn run_guest(engine: &Engine, module: &Module, memory: SharedMemory, channel: u6
     ] {
         linker.func_wrap("kernel", name, || -> i32 { 0 })?;
     }
+    use wasm_posix_shared::program_extensions::stat_cache_v1;
+    linker.func_wrap(
+        stat_cache_v1::MODULE,
+        stat_cache_v1::IMPORT,
+        |_path: i32, _output: i32, _request: i32| -> i32 { 0 },
+    )?;
     linker.define_unknown_imports_as_traps(module)?;
     let instance = linker.instantiate(&mut store, module)?;
     let start = instance.get_typed_func::<(), ()>(&mut store, "_start")?;

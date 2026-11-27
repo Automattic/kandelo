@@ -1,3 +1,7 @@
+import { createRetirementReceipt, stageRetirementReceipt, finishKifsRetirement } from "./kifs-generation-retirement";
+import { KIFS_GENERATION_SEAL_BYTES } from "./overlay-activation-codec";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import type { CentralizedKernelWorker } from "../kernel-worker";
 import { ERRNO } from "../generated/abi";
 import { digestOverlayStoragePrefix, parseSealedGenerationSlot, verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync, type OverlaySealSource } from "./overlay-generation-seal";
 import { InvalidOverlaySealError, type OverlayRecoveryEvidence, type OverlaySealCodec } from "./overlay-seal-codec";
@@ -39,7 +43,7 @@ const COMPACTION_SLOTS = ["g0", "g1", "g2"] as const;
 const INITIAL_GENERATION_SLOTS = [...COMPACTION_SLOTS, "g3"] as const;
 
 export type OverlayGenerationSlot = "legacy" | `g${number}`;
-export type OverlayGenerationFile = "journal" | "seal" | "index" | "activation0" | "activation1";
+export type OverlayGenerationFile = "journal" | "seal" | "index" | "activation0" | "activation1" | "volume" | "volume-seal" | "retirement";
 
 export interface OverlayGenerationFiles {
   readonly activationCodec: OverlayActivationCodec;
@@ -400,6 +404,7 @@ async function collectBootOverlayGenerationsInner(
 export interface OverlayCompactionHandoff {
   prepare(target: PersistentOverlayStorage): void;
   checkpoint(index: PersistentOverlayStorage): void;
+  verify?(): void;
   activate(): void;
   cancel(): void;
   fail(error: UnconfirmedOverlayActivationError): void;
@@ -927,6 +932,7 @@ async function compactControlledOverlayGeneration(
     writeOverlayGenerationSealSync(files.sealCodec, target, seal, generation, baseDigest, index,
       sourceProvenance);
     verifyOverlayGenerationSealSync(files.sealCodec, target, seal, baseDigest, false, index);
+    handoff.verify?.();
     sealedLength = target.len();
     const nextActivation = controls.next(generationActivationIdentity(files.sealCodec, { journal: target, slot, generation }, seal, baseDigest));
     activationAttempted = true;
@@ -1033,8 +1039,290 @@ export async function compactOverlayGenerationForBoot(
   }
 }
 
-export class LiveOverlayCompactor {
-  #selected: SelectedOverlayGeneration;
+type BootPersistenceKernel = Pick<CentralizedKernelWorker,
+  "enableResizableRootfsPersistence" | "enableFixedRootfsPersistence" | "convertUnindexedRootfsPersistence"
+  | "prepareRootfsPersistenceCompaction" | "checkpointPreparedRootfsPersistence"
+  | "activateRootfsPersistenceCompaction" | "cancelRootfsPersistenceCompaction" | "failPersistenceWriter"
+  | "rootfsJournalStateMemory"
+>;
+
+/**
+ * The shared Kandelo persistence boot protocol. The storage adapter supplies
+ * files protected by its exclusive computer lease.
+ */
+export async function bootOverlayPersistence(
+  kernel: BootPersistenceKernel,
+  files: OverlayGenerationFiles,
+  resizable: boolean,
+  requireExisting: boolean | undefined,
+  report: (message: string) => void,
+): Promise<{ active: SelectedOverlayGeneration; handoff: OverlayCompactionHandoff }> {
+  const selected = await enableBestOverlayGeneration(
+    files,
+    (journal, index, checkpointEnd) => {
+      if (resizable) kernel.enableResizableRootfsPersistence(journal, index, checkpointEnd);
+      else kernel.enableFixedRootfsPersistence(journal, index, checkpointEnd);
+    },
+    requireExisting,
+    (source, target, index) => kernel.convertUnindexedRootfsPersistence(source, target, index, resizable),
+    (error) => report(`Filesystem conversion cleanup failed (${error}).`),
+  );
+  const handoff = {
+    memoryPressure: () => kernel.rootfsJournalStateMemory().pressure,
+    prepare: (target: PersistentOverlayStorage) => kernel.prepareRootfsPersistenceCompaction(target),
+    checkpoint: (index: PersistentOverlayStorage) => kernel.checkpointPreparedRootfsPersistence(index),
+    activate: () => kernel.activateRootfsPersistenceCompaction(),
+    cancel: () => kernel.cancelRootfsPersistenceCompaction(),
+    fail: (error: UnconfirmedOverlayActivationError) => kernel.failPersistenceWriter(error),
+  };
+  const reportCleanup = (error: unknown) => report(`Filesystem generation cleanup failed (${error}).`);
+  const recovered = await collectBootOverlayGenerations(selected, files, reportCleanup);
+  const active = await compactOverlayGenerationForBoot(recovered, files, handoff, (error) => {
+    report(`Boot compaction deferred (ENOSPC) (${error}).`);
+  });
+  return { active, handoff };
+}
+
+/** Upgrade is opt-in while mounted writeback is being qualified. An
+ * activated KIFS generation always wins, regardless of the requested profile. */
+export type SavedKifsProfile = "development" | "custom" | "legacy";
+export type PersistenceBootReport = (message: string, source?: "Filesystem upgrade") => void;
+
+export function validateSavedKifsProfile(profile: unknown, resizable: boolean): void {
+  if (profile === undefined) return;
+  if (profile !== "development" && profile !== "custom" && profile !== "legacy") throw new Error("Unknown KIFS upgrade profile");
+  if (!resizable) throw new Error("KIFS upgrade requires a resizable computer");
+}
+
+type SavedKifsBootKernel = BootPersistenceKernel & Pick<CentralizedKernelWorker,
+  "loadConfiguredRootfs" | "mountSavedKifsV3" | "stageSavedKifsV3">;
+
+class DeferredKifsUpgrade extends Error {
+  constructor(limit: string, cause: unknown) {
+    super(`Filesystem upgrade deferred due to ${limit}. Continuing with the saved filesystem.`, { cause });
+  }
+}
+
+function upgradeResourceLimit(error: unknown): string | undefined {
+  const detail = error as { code?: string; errno?: number; name?: string } | null;
+  if (detail?.code === "ENOSPC" || detail?.code === "EDQUOT" || detail?.name === "QuotaExceededError") {
+    return "host storage quota or free space";
+  }
+  if (detail?.errno === ERRNO.ENOMEM || detail?.code === "ENOMEM") return "filesystem memory budget";
+  if (detail?.errno === ERRNO.ENOSPC) return "logical volume capacity";
+  return undefined;
+}
+
+async function mountSavedGeneration(
+  kernel: SavedKifsBootKernel, files: OverlayGenerationFiles, authority: OverlayActivationRecord,
+  expectedBase: string | undefined, controls: OverlayActivationControlPair, report: PersistenceBootReport,
+): Promise<SavedKifsGeneration | null> {
+  if (authority.slot === "legacy") return null;
+  const seal = await files.open(authority.slot, "volume-seal", false);
+  if (seal === null) return null;
+  const bytes = new Uint8Array(KIFS_GENERATION_SEAL_BYTES);
+  try {
+    // A legacy journal can use the same numbered slot as an abandoned KIFS
+    // staging attempt. Only the exact seal named by KOGA can select a volume.
+    if (seal.len() !== KIFS_GENERATION_SEAL_BYTES) return null;
+    const digest = digestOverlayStoragePrefix(files.sealCodec, seal, KIFS_GENERATION_SEAL_BYTES);
+    if (!digest.every((b, i) => b === authority.sealDigest[i])) return null;
+    seal.readExactAt(0, bytes);
+    nativeGenerationPolicy(() => files.activationCodec.kifsGenerationSource(authority, bytes));
+    if (expectedBase !== undefined && bytesToHex(authority.baseDigest) !== expectedBase) {
+      throw new NoValidOverlayGenerationError();
+    }
+  } finally { seal.close(); }
+  const storage = await files.open(authority.slot, "volume", false);
+  if (storage === null) throw new NoValidOverlayGenerationError();
+  try {
+    await controls.prepare();
+    kernel.mountSavedKifsV3(storage, bytesToHex(authority.sealDigest));
+    const active = { volume: storage, authority, retryRetirement: () => finishKifsRetirement(files, authority, bytes, report) };
+    await retireVerifiedSource(active, report);
+    return active;
+  } catch (error) {
+    storage.close();
+    throw error;
+  }
+}
+
+/** Resolve the durable authority under the lease before loading the checked base. */
+export async function bootResizableComputer(
+  kernel: SavedKifsBootKernel, files: OverlayGenerationFiles, requireExisting: boolean | undefined,
+  profile: SavedKifsProfile | undefined, expectedBase: string | undefined, report: PersistenceBootReport,
+  afterLegacyMount: () => void,
+) {
+  const controls = await openActivationControls(files);
+  try {
+    const current = controls.current;
+    if (current !== null) {
+      const active = await mountSavedGeneration(kernel, files, current, expectedBase, controls, report);
+      if (active !== null) return active;
+    } else {
+      // KIFS staging always follows durable anchoring of its predecessor.
+      // Even a lone staging file without either control is ambiguous.
+      for (const slot of ["g0", "g1"] as const) {
+        for (const kind of ["volume-seal", "volume", "retirement"] as const) {
+          const orphan = await files.open(slot, kind, false);
+          if (orphan !== null) { orphan.close(); throw new NoValidOverlayGenerationError(); }
+        }
+      }
+    }
+  } finally { controls.close(); }
+
+  kernel.loadConfiguredRootfs();
+  afterLegacyMount();
+  const legacy = await bootOverlayPersistence(kernel, files, true, requireExisting, report);
+  if (profile === undefined || profile === "legacy") return legacy;
+  let next: SavedKifsGeneration;
+  try {
+    next = await upgradeSavedGeneration(kernel, files, legacy.active, profile, report);
+  } catch (error) {
+    if (error instanceof DeferredKifsUpgrade) {
+      report(error.message, "Filesystem upgrade");
+      return legacy;
+    }
+    closeCandidateStorage(legacy.active);
+    throw error;
+  }
+  closeCandidateStorage(legacy.active);
+  await retireVerifiedSource(next, report);
+  return next;
+}
+
+function closeCandidateStorage(source: SelectedOverlayGeneration) {
+  try { source.index?.close(); } finally { source.journal.close(); }
+}
+
+export interface SavedKifsGeneration {
+  volume: PersistentOverlayStorage;
+  authority: OverlayActivationRecord;
+  retryRetirement?: () => Promise<void>;
+}
+
+async function retireVerifiedSource(active: SavedKifsGeneration, report: PersistenceBootReport) {
+  try {
+    await active.retryRetirement?.();
+    active.retryRetirement = undefined;
+  } catch (error) {
+    // The successor already owns writes. Retry a transient cleanup failure
+    // before its next compaction, while the authenticating seal still exists.
+    report(`Could not finish legacy journal retirement (${error}).`);
+  }
+}
+
+interface KifsGenerationHandoff {
+  stage(target: PersistentOverlayStorage, identity: string): void;
+  cancel?(): void;
+  activate(next: SavedKifsGeneration, identity: string): void;
+  fail(error: UnconfirmedOverlayActivationError): void;
+}
+
+async function publishKifsGeneration(
+  files: OverlayGenerationFiles, controls: OverlayActivationControlPair, source: OverlayActivationRecord,
+  handoff: KifsGenerationHandoff, reportCleanup: (error: unknown) => void,
+  retirement?: { receipt: Uint8Array; nonce: Uint8Array; report: PersistenceBootReport },
+): Promise<SavedKifsGeneration> {
+  await controls.prepare();
+  const seal = files.activationCodec.kifsGenerationSeal(source, retirement?.nonce ?? crypto.getRandomValues(new Uint8Array(32)));
+  const authority = files.activationCodec.kifsGenerationNext(source, seal);
+  let target: PersistentOverlayStorage | null;
+  try { target = await files.open(authority.slot, "volume", true); }
+  catch (error) {
+    const limit = retirement && upgradeResourceLimit(error);
+    if (limit) throw new DeferredKifsUpgrade(limit, error);
+    throw error;
+  }
+  if (target === null) throw new Error("Could not open KIFS staging volume");
+  const candidate: SavedKifsGeneration = { authority, volume: target };
+  const identity = bytesToHex(authority.sealDigest);
+  let mounted = false;
+  let publishing = false;
+  try {
+    if (retirement) {
+      await stageRetirementReceipt(files, authority, seal, retirement.receipt);
+      candidate.retryRetirement = () => finishKifsRetirement(files, authority, seal, retirement.report);
+    } else {
+      await files.remove(authority.slot, "retirement");
+    }
+    const marker = await files.open(authority.slot, "volume-seal", true);
+    if (marker === null) throw new Error("Could not open KIFS generation seal");
+    try {
+      marker.truncate(0);
+      marker.flush();
+      target.truncate(0);
+      target.flush();
+      // No event-loop yield between staging, publication and switching the
+      // native writer. A live source also rejects transactions while prepared.
+      handoff.stage(target, identity);
+      try {
+        marker.writeAllAt(0, seal);
+        marker.flush();
+        if (marker.len() !== seal.length) throw new NoValidOverlayGenerationError();
+        const saved = new Uint8Array(seal.length);
+        marker.readExactAt(0, saved);
+        nativeGenerationPolicy(() => files.activationCodec.kifsGenerationSource(authority, saved));
+      } catch (error) {
+        try { handoff.cancel?.(); }
+        catch (cancelError) {
+          const failed = new UnconfirmedOverlayActivationError(new AggregateError([error, cancelError]));
+          handoff.fail(failed);
+          throw failed;
+        }
+        throw error;
+      }
+      try {
+        publishing = true;
+        controls.publish(authority);
+        handoff.activate(candidate, identity);
+        mounted = true;
+      } catch (error) {
+        const failed = new UnconfirmedOverlayActivationError(error);
+        handoff.fail(failed);
+        throw failed;
+      }
+      return candidate;
+    } finally {
+      try { marker.close(); }
+      catch (error) { retainOverlayGenerationCleanup(files, marker, error); reportCleanup(error); }
+    }
+  } catch (error) {
+    const limit = !publishing && retirement && upgradeResourceLimit(error);
+    if (!limit) throw error;
+    // Source is still mounted. Reclaim candidate blocks before resuming
+    // its writer. A failure to release the target remains a storage error.
+    target.truncate(0);
+    target.flush();
+    throw new DeferredKifsUpgrade(limit, error);
+  } finally { if (!mounted) target.close(); }
+}
+
+async function upgradeSavedGeneration(
+  kernel: SavedKifsBootKernel, files: OverlayGenerationFiles, selected: SelectedOverlayGeneration,
+  profile: Exclude<SavedKifsProfile, "legacy">, report: PersistenceBootReport,
+): Promise<SavedKifsGeneration> {
+  const controls = await openActivationControls(files);
+  const reportCleanup = (error: unknown) => report(`KIFS upgrade cleanup failed (${error}).`);
+  try {
+    const source = controls.current;
+    if (!source) throw new NoValidOverlayGenerationError();
+    const identity = await selectedActivationIdentity(selected, files);
+    nativeGenerationPolicy(() => files.activationCodec.requireInventory(source, identity, false));
+    report("Upgrading the saved filesystem to KIFS v3. Copying and checking files.", "Filesystem upgrade");
+    const retirement = createRetirementReceipt(files, selected);
+    return await publishKifsGeneration(files, controls, source, {
+      stage(target, volumeId) {
+        kernel.stageSavedKifsV3(target, volumeId, profile === "development");
+        report("Verified the upgraded filesystem. Activating KIFS v3.", "Filesystem upgrade");
+      },
+      activate: (next, volumeId) => kernel.mountSavedKifsV3(next.volume, volumeId),
+      fail: error => kernel.failPersistenceWriter(error),
+    }, reportCleanup, { ...retirement, report });
+  } finally { closeActivationControls(controls, files, reportCleanup); }
+}
+
+export class LiveFilesystemCompactor {
   #timer: ReturnType<typeof setInterval> | null = null;
   #running: Promise<void> | null = null;
   #stopped = false;
@@ -1042,15 +1330,9 @@ export class LiveOverlayCompactor {
   #failure: unknown = null;
 
   constructor(
-    selected: SelectedOverlayGeneration,
-    private readonly files: OverlayGenerationFiles,
-    private readonly handoff: OverlayCompactionHandoff,
-    private readonly onGeneration: (next: SelectedOverlayGeneration) => void,
+    private readonly run: (force: boolean, proceed: () => boolean) => Promise<void>,
     private readonly onError: (error: unknown) => void,
-    private readonly minTailBytes = 32 * 1024 * 1024,
-  ) {
-    this.#selected = selected;
-  }
+  ) {}
 
   start(): void {
     if (this.#timer !== null || this.#stopped) return;
@@ -1075,28 +1357,16 @@ export class LiveOverlayCompactor {
     if (this.#stopped) throw new Error("persistent overlay compactor is stopped");
     // A syscall at the tail bound cannot wait for the periodic timer or its
     // failure backoff. Share a running handoff rather than starting two writers.
-    if (this.#running === null) this.#running = this.#compact(0);
+    if (this.#running === null) this.#running = this.#compact(true);
     await this.#running;
     if (this.#failure !== null) throw this.#failure;
     if (this.#stopped) throw new Error("persistent overlay compactor stopped during compaction");
   }
 
-  async #compact(minTailBytes = this.minTailBytes): Promise<void> {
-    const selected = this.#selected;
+  async #compact(force = false): Promise<void> {
     this.#failure = null;
     try {
-      const next = await compactOverlayGeneration(
-        selected,
-        this.files,
-        this.handoff,
-        minTailBytes,
-        () => !this.#stopped && this.#selected === selected,
-        this.onError,
-      );
-      if (next !== selected) {
-        this.#selected = next;
-        this.onGeneration(next);
-      }
+      await this.run(force, () => !this.#stopped);
     } catch (error) {
       this.#failure = error;
       if (error instanceof UnconfirmedOverlayActivationError) {
@@ -1109,4 +1379,64 @@ export class LiveOverlayCompactor {
       this.#running = null;
     }
   }
+}
+
+export class LiveOverlayCompactor extends LiveFilesystemCompactor {
+  constructor(
+    selected: SelectedOverlayGeneration, files: OverlayGenerationFiles, handoff: OverlayCompactionHandoff,
+    onGeneration: (next: SelectedOverlayGeneration) => void, onError: (error: unknown) => void,
+    minTailBytes = 32 * 1024 * 1024,
+  ) {
+    super(async (force, proceed) => {
+      const next = await compactOverlayGeneration(selected, files, handoff, force ? 0 : minTailBytes, proceed, onError);
+      if (next !== selected) {
+        selected = next;
+        onGeneration(next);
+      }
+    }, onError);
+  }
+}
+
+type LiveKifsKernel = Pick<CentralizedKernelWorker,
+  "kifsCompactionNeeded" | "prepareKifsHandoff" | "activateKifsHandoff" | "cancelKifsHandoff" | "failPersistenceWriter">;
+
+export function liveKifsCompactor(
+  active: SavedKifsGeneration, files: OverlayGenerationFiles, kernel: LiveKifsKernel,
+  onGeneration: (volume: PersistentOverlayStorage) => void, onError: (error: unknown) => void,
+): LiveFilesystemCompactor {
+  return new LiveFilesystemCompactor(async (force, proceed) => {
+    if (!force && !kernel.kifsCompactionNeeded()) return;
+    await withOverlayGenerationMetadata(files, async () => {
+      const controls = await openActivationControls(files);
+      const previous = active;
+      try {
+        const source = controls.current;
+        if (source === null || source.sequence !== previous.authority.sequence) throw new NoValidOverlayGenerationError();
+        nativeGenerationPolicy(() => files.activationCodec.requireInventory(source, previous.authority, false));
+        if (!proceed()) return;
+        if (previous.retryRetirement) {
+          await previous.retryRetirement();
+          previous.retryRetirement = undefined;
+        }
+        await publishKifsGeneration(files, controls, source, {
+          stage(target, identity) {
+            if (!proceed()) throw new Error("KIFS compaction stopped before staging");
+            kernel.prepareKifsHandoff(target, identity);
+          },
+          cancel: () => kernel.cancelKifsHandoff(),
+          activate(next, identity) {
+            kernel.activateKifsHandoff(next.volume, identity);
+            active = next;
+            onGeneration(next.volume);
+          },
+          fail: error => kernel.failPersistenceWriter(error),
+        }, onError);
+        // Both controls and the live mount now name the verified successor.
+        // Retire only the KIFS files of the previously mounted generation.
+        previous.volume.close();
+        await files.remove(source.slot, "volume");
+        await files.remove(source.slot, "volume-seal");
+      } finally { closeActivationControls(controls, files, onError); }
+    });
+  }, onError);
 }

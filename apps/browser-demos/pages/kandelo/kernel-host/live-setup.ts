@@ -172,6 +172,7 @@ export const PARTIAL_IMAGE = partialImageModule as {
   imageUrl: string;
   manifest: {
     image: string;
+    productId: string;
     sha256: string;
     packages: string[];
     activities: string[];
@@ -1978,9 +1979,11 @@ async function bootProfile(
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onHostDiagnostic: (diagnostic) => {
         if (!isCurrent()) return;
+        const upgrading = diagnostic.source === "Filesystem upgrade";
+        if (upgrading) tick(diagnostic.message);
         host.pushDmesg({
           t: bootElapsedMs(bootStartedAt),
-          level: "warn",
+          level: upgrading ? "info" : "warn",
           facility: "kernel",
           msg: diagnostic.message,
         });
@@ -2005,6 +2008,13 @@ async function bootProfile(
     // not accept (the lazy-asset directory above) is a type error, never a field the
     // host silently drops.
     if (opfsImage !== undefined && opfsImage !== null && persistence !== null) {
+      const kifsPreference = new URLSearchParams(location.search).get("experimentalKifsV3");
+      const developmentShell = (isPartialImageUrl(profile.vfsUrl) ? PARTIAL_IMAGE!.manifest.productId : profile.productId)
+        === "browser-main-shell";
+      const kifsUpgradeProfile = kifsPreference === "0" ? "legacy"
+        : developmentShell ? "development"
+        : kifsPreference === "1" ? "custom"
+        : undefined;
       try {
         try {
           await kernel.initFromOpfsImage({
@@ -2013,7 +2023,8 @@ async function bootProfile(
             persistentImageBinding: opfsImage.persistentImageBinding,
             lazyAssetDirectory,
             ...(experimentalPersistenceMode === "resizable"
-              ? { experimentalResizablePersistenceName: opfsImage.journalName }
+              ? { experimentalResizablePersistenceName: opfsImage.journalName,
+                kifsUpgradeProfile }
               : { experimentalFixedPersistenceName: opfsImage.journalName }),
             persistentComputerName: experimentalPersistenceName,
             persistenceComputerLease: experimentalPersistenceLease,

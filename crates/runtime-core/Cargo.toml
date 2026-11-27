@@ -22,6 +22,7 @@ wasm-artifact = { path = "../wasm-artifact" }
 kandelo-program-policy = { path = "../program-policy" }
 
 [features]
+namespace-benchmark = []
 # Diagnostic build: count the shared-mapping quiescence proofs a comparison
 # confirmed (memory.rs `CleanStamp`). Never enabled for a shipped kernel.
 shared-mapping-proof-verify = []

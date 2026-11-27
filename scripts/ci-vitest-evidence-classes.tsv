@@ -300,6 +300,7 @@ host/test/kernel-wasm-input-snapshot.test.ts	source-only
 host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
+host/test/kifs-v3-guest.test.ts	prepared-product
 host/test/klogctl.test.ts	prepared-product
 host/test/kmsg-poll.test.ts	prepared-product
 host/test/labwc-smoke.test.ts	prepared-product

@@ -987,6 +987,7 @@ export class WasmPosixKernel {
       uri: string,
       offset: bigint,
       dest: Uint8Array,
+      size: number,
     ) => number)
     | undefined = undefined;
   /** Evict only the transport resource rejected by native validation. */
@@ -1015,6 +1016,7 @@ export class WasmPosixKernel {
   #persistentOverlayTargetStorage: PersistentOverlayStorage | null = null;
   #persistentOverlayCompactionStorage: PersistentOverlayStorage | null = null;
   #reportedStorageReadFailure = false;
+  #reportedStorageSpaceFailure = false;
   #storageReadStaging: Uint8Array | null = null;
   #storageReadStagingInUse = false;
   /**
@@ -1828,6 +1830,7 @@ export class WasmPosixKernel {
       uri: string,
       offset: bigint,
       dest: Uint8Array,
+      size: number,
     ) => number,
   ): void {
     this.#rootfsDeferredProvider = provider;
@@ -2699,6 +2702,8 @@ export class WasmPosixKernel {
           bufLen: number,
           offsetLo: number,
           offsetHi: number,
+          sizeLo: number,
+          sizeHi: number,
         ): number => {
           try {
             return this.#hostFetchDeferred(
@@ -2709,6 +2714,7 @@ export class WasmPosixKernel {
                 bufLen,
                 "host_fetch_deferred destination",
               ),
+              Number(u64FromWords(sizeLo, sizeHi)),
             );
           } catch {
             return -14; // EFAULT
@@ -2753,17 +2759,17 @@ export class WasmPosixKernel {
           const storage = this.#persistentOverlayStorage;
           if (storage === null) return -38;
           try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
-          catch (error) { return negErrno(error); }
+          catch (error) { return this.#persistentWriteErrno("write", error); }
         },
         host_overlay_flush: (): number => {
           const storage = this.#persistentOverlayStorage;
           if (storage === null) return -38;
-          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+          try { storage.flush(); return 0; } catch (error) { return this.#persistentWriteErrno("flush", error); }
         },
         host_overlay_truncate: (length: bigint): number => {
           const storage = this.#persistentOverlayStorage;
           if (storage === null) return -38;
-          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+          try { storage.truncate(length); return 0; } catch (error) { return this.#persistentWriteErrno("truncate", error); }
         },
         host_overlay_target_len: (): bigint => {
           const storage = this.#persistentOverlayTargetStorage;
@@ -2785,17 +2791,17 @@ export class WasmPosixKernel {
           const storage = this.#persistentOverlayTargetStorage;
           if (storage === null) return -38;
           try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
-          catch (error) { return negErrno(error); }
+          catch (error) { return this.#persistentWriteErrno("write staging", error); }
         },
         host_overlay_target_flush: (): number => {
           const storage = this.#persistentOverlayTargetStorage;
           if (storage === null) return -38;
-          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+          try { storage.flush(); return 0; } catch (error) { return this.#persistentWriteErrno("flush staging", error); }
         },
         host_overlay_target_truncate: (length: bigint): number => {
           const storage = this.#persistentOverlayTargetStorage;
           if (storage === null) return -38;
-          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+          try { storage.truncate(length); return 0; } catch (error) { return this.#persistentWriteErrno("truncate staging", error); }
         },
         host_overlay_compaction_len: (): bigint => {
           const storage = this.#persistentOverlayCompactionStorage;
@@ -2817,17 +2823,17 @@ export class WasmPosixKernel {
           const storage = this.#persistentOverlayCompactionStorage;
           if (storage === null) return -38;
           try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
-          catch (error) { return negErrno(error); }
+          catch (error) { return this.#persistentWriteErrno("write compaction", error); }
         },
         host_overlay_compaction_flush: (): number => {
           const storage = this.#persistentOverlayCompactionStorage;
           if (storage === null) return -38;
-          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+          try { storage.flush(); return 0; } catch (error) { return this.#persistentWriteErrno("flush compaction", error); }
         },
         host_overlay_compaction_truncate: (length: bigint): number => {
           const storage = this.#persistentOverlayCompactionStorage;
           if (storage === null) return -38;
-          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+          try { storage.truncate(length); return 0; } catch (error) { return this.#persistentWriteErrno("truncate compaction", error); }
         },
         host_pwrite: (
           handle: bigint,
@@ -4729,11 +4735,13 @@ export class WasmPosixKernel {
     uri: string,
     offset: bigint,
     destination: RustLentKernelDestination,
+    size: number,
   ): number {
     const provider = this.#rootfsDeferredProvider;
     if (provider === undefined) {
       return -38; // ENOSYS
     }
+    if (!Number.isSafeInteger(size)) return -75; // EOVERFLOW
     const destinationCapacity = destination.capacity;
     let staged: Uint8Array;
     try {
@@ -4743,7 +4751,7 @@ export class WasmPosixKernel {
     }
     let result: number;
     try {
-      result = provider(uri, offset, staged);
+      result = provider(uri, offset, staged, size);
     } catch {
       return -5; // EIO: the provider violated its byte-source contract.
     }
@@ -4812,6 +4820,20 @@ export class WasmPosixKernel {
     } finally {
       this.#storageReadStagingInUse = false;
     }
+  }
+
+  #persistentWriteErrno(operation: string, error: unknown): number {
+    const quota = typeof error === "object" && error !== null && "code" in error && error.code === "EDQUOT";
+    const status = quota ? -28 : negErrno(error);
+    if (status === -28 && !this.#reportedStorageSpaceFailure) {
+      this.#reportedStorageSpaceFailure = true;
+      const message = `Host storage refused a filesystem ${operation} because its available space or quota was exhausted.`;
+      try {
+        if (this.callbacks.onHostDiagnostic) this.callbacks.onHostDiagnostic({ pid: 0, source: "storage-capacity", message });
+        else console.warn(message);
+      } catch { /* Keep the original storage errno if a diagnostic sink fails. */ }
+    }
+    return status;
   }
 
   #readOverlayIntoDestination(stage: string, storage: PersistentOverlayStorage, offset: bigint, destination: RustLentKernelDestination): number {

@@ -3988,6 +3988,15 @@ fixedSize: {}, maxCallerSize: {} }},\n",
          export const EXTENSION_REQUEST_KLOG_V1 = {} as const;\n\n",
         shared::extension_requests::KLOG_V1
     ));
+    out.push_str(&format!(
+        "export const RECORD_COMPLETION_EXIT = {} as const;\n",
+        shared::abi::RECORD_COMPLETION_EXIT
+    ));
+    out.push_str("export const KIFS_STAT_CERTIFICATE = {\n");
+    for (name, value) in shared::stat_cache_wire::FIELDS {
+        out.push_str(&format!("  {name}: {value},\n"));
+    }
+    out.push_str("} as const;\n\n");
     out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
     for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS
         .iter()
@@ -4866,6 +4875,12 @@ fn declared_snapshot_sections() -> Sections {
     // Kernel-host surface: no program marshals them, so they stay out of the
     // program digest (see `shared::extension_requests`).
     s.add(KernelHost, "extension_requests", extension_requests());
+    s.add(KernelHost, "record_completion_wire", json!({
+        "exit_signal_base": shared::abi::RECORD_COMPLETION_EXIT,
+    }));
+    s.add(KernelHost, "kifs_stat_certificate_wire", json!(
+        shared::stat_cache_wire::FIELDS.iter().copied().collect::<BTreeMap<_, _>>()
+    ));
     s.add(Program, "ioctl_request_contracts", ioctl_request_contracts());
     s.add(Program, "ioctl_request_families", ioctl_request_families());
     s.add(Program, "channel_status_codes", channel_status_codes());

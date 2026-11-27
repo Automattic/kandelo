@@ -228,6 +228,9 @@ fn entries() -> Vec<(String, SysfsKind, Vec<u8>)> {
 }
 
 pub fn lookup(path: &[u8]) -> Option<SysfsNode> {
+    if !is_namespace_path(path) {
+        return None;
+    }
     entries()
         .into_iter()
         .enumerate()

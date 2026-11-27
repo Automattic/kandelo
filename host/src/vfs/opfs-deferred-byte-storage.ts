@@ -1,4 +1,5 @@
-import { MAX_DEFERRED_IO_BYTES, type DeferredByteStorage } from "./deferred-byte-spool";
+import { MAX_DEFERRED_IO_BYTES } from "./deferred-byte-spool";
+import type { TemporaryImageStorage } from "./staged-rootfs-image";
 import { browserComputerDirectory, browserComputerIdForStorageName } from "../browser-computer-storage";
 
 const DIRECTORY = "kandelo-deferred-bytes";
@@ -29,7 +30,7 @@ async function acquireOwner(name: string): Promise<() => Promise<void>> {
   return async () => { release(); await holding; };
 }
 
-export async function openOpfsDeferredByteStorage(computerName?: string): Promise<DeferredByteStorage> {
+export async function openOpfsDeferredByteStorage(computerName?: string): Promise<TemporaryImageStorage> {
   if (!navigator.locks) throw new Error("Deferred OPFS byte storage requires Web Locks");
   return navigator.locks.request(CLEANUP_LOCK, { mode: "exclusive" }, async () => {
     const computerId = computerName === undefined ? null : browserComputerIdForStorageName(computerName);
@@ -66,6 +67,9 @@ export async function openOpfsDeferredByteStorage(computerName?: string): Promis
       return handle;
     };
     return {
+      getSize: () => live().getSize(),
+      setSize: length => live().truncate(length),
+      flush: () => live().flush(),
       readAt: (offset, destination) => {
         const chunk = buffer.subarray(0, Math.min(buffer.byteLength, destination.byteLength));
         const count = live().read(chunk, { at: offset });

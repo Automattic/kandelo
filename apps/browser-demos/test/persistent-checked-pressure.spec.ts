@@ -100,7 +100,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
             const computer = snapshotPhase ? `${name}-snapshot` : name;
             await active.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotPhase ? checkedSnapshot : base,
               persistentImageBinding: snapshotPhase ? snapshotBinding : parameters.binding,
-              experimentalResizablePersistenceName: computer, persistentComputerName: computer,
+              kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: computer, persistentComputerName: computer,
               requireExistingRootfsPersistence: phase.endsWith("reopen") });
             mark(`${phase}:initialized`);
             const observeMemory = async (stage: string) => {

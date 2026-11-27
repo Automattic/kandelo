@@ -5,6 +5,8 @@ import {
   RESERVED_MODULE_PREFIX,
   STACK_IMPORT,
   STACK_MODULE,
+  STAT_CACHE_IMPORT,
+  STAT_CACHE_MODULE,
 } from "./generated/program-extensions";
 
 interface Import { readonly module: string; readonly name: string; readonly kind: string }
@@ -16,6 +18,7 @@ interface FunctionImport {
 const EXTENSION_IMPORTS: ReadonlyMap<string, string> = new Map([
   [STACK_MODULE, STACK_IMPORT],
   [KLOG_MODULE, KLOG_IMPORT],
+  [STAT_CACHE_MODULE, STAT_CACHE_IMPORT],
 ]);
 const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set(EXTENSION_IMPORTS.values());
 const implemented = new Set<string>(EXTENSION_IMPORTS.keys());

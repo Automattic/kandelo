@@ -3217,7 +3217,20 @@ Machine-booting Playwright specs treat a missing image the same way.
 declares, and any Vite error overlay fails the spec with its message. Only a
 product outside the supported set is skipped as optional content.
 
-The canonical package shell has a 512 MiB filesystem ceiling. Products that
+Kandelo's development shell requests KIFS v3 by default for resizable
+checked-image OPFS computers. `experimentalKifsV3=0` keeps a legacy
+computer on its current filesystem. Other resizable checked-image
+computers can request conversion with `experimentalKifsV3=1`.
+An activated v3 computer reopens on v3 regardless of either setting.
+The development shell gets at least 1 GiB of sparse logical space.
+Custom volumes retain their declared capacity. The app reports
+progress while boot stages and verifies an upgrade under the computer
+lease. Subsequent boots inspect the checked-image header and the small
+activation records, then open the selected volume directly. Staging requires
+origin storage for the live data and metadata while the old generation
+is still present. See [saved-computer upgrades](persistence-durability.md#upgrading-a-saved-computer).
+
+The legacy image used to distribute the canonical shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
 profile: the image writer accounts free data bytes and free inodes
 separately against the declared ceiling, so merely having free data space
@@ -3934,7 +3947,11 @@ The main shell target resolves the canonical `packages/registry/shell` package
 into `local-binaries`; it does not invoke another package's source tree or
 fbDOOM build directly. The package recipe restores the exact package-built
 platform rootfs, adds the package-owned shell demo data, and serializes one
-image. Bash and `login` are embedded boot inputs. `sudo-lite`, upstream `sudo`,
+image. The shell declares 512 MiB of logical space and 65,536 inode slots,
+and the build requires at least 32,768 slots free after composition. In a
+stored computer, `df -i /` reports the entry limit and `df -k /` reports the
+block limit. Browser storage quota and runtime memory can impose separate
+limits. Bash and `login` are embedded boot inputs. `sudo-lite`, upstream `sudo`,
 and the ordinary command set retain authenticated package-backed lazy outputs
 that resolve through the normal VFS path on first use.
 The command set includes jq 1.8.2 at `/usr/bin/jq` (also `/bin/jq`),

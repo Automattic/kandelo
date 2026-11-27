@@ -71,6 +71,9 @@ use wasm_posix_shared::Errno;
 #[cfg(feature = "positioned-image")]
 mod persistent_writer;
 
+#[cfg(all(feature = "namespace-benchmark", target_arch = "wasm32"))]
+mod namespace_benchmark;
+
 /// Hand the caller a buffer in this module's memory to write into.
 ///
 /// The builder owns the allocation until it passes the pointer to an entry
@@ -929,6 +932,14 @@ pub unsafe extern "C" fn sm_lazy_entries(out_ptr: usize, out_len: usize) -> i32 
     }
 }
 
+fn seal_export_archives() -> Result<(), Errno> {
+    let declared = rootfs::archive_payloads()?;
+    for (archive_id, payload) in seal::seal_cohorts(&declared)? {
+        rootfs::set_archive_payload(archive_id, &payload)?;
+    }
+    Ok(())
+}
+
 /// Stream the built image's bytes at `offset` into `out`. Returns the byte
 /// count, 0 at end of image, or a negative errno.
 ///
@@ -969,19 +980,8 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     // Only at offset 0, which is where the export plan is built. A later chunk
     // is reading a plan whose payloads are already sealed.
     if offset == 0 {
-        let declared = match rootfs::archive_payloads() {
-            Ok(declared) => declared,
-            Err(error) => return err(error),
-        };
-        match seal::seal_cohorts(&declared) {
-            Ok(sealed) => {
-                for (archive_id, payload) in sealed {
-                    if let Err(e) = rootfs::set_archive_payload(archive_id, &payload) {
-                        return err(e);
-                    }
-                }
-            }
-            Err(e) => return err(e),
+        if let Err(error) = seal_export_archives() {
+            return err(error);
         }
     }
     let mut source = image_source;
@@ -1076,6 +1076,11 @@ pub unsafe extern "C" fn sm_image_read(offset: i64, out_ptr: usize, out_len: usi
 #[unsafe(no_mangle)]
 pub extern "C" fn sm_loaded_image_capacity() -> u64 {
     rootfs::loaded_image_capacity_bytes().unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_set_export_inode_capacity(inodes: u32) -> i32 {
+    ok_or_errno(rootfs::set_export_inode_capacity(inodes))
 }
 
 #[unsafe(no_mangle)]
@@ -2645,7 +2650,11 @@ mod tests {
         // refusal has one shape to cover rather than two.
         assert_eq!(
             image_source(
-                rootfs::ByteReq::Deferred { uri: b"test:blob/1".to_vec(), offset: 0 },
+                rootfs::ByteReq::Deferred {
+                    uri: b"test:blob/1".to_vec(),
+                    offset: 0,
+                    size: 4096,
+                },
                 &mut buf,
             ),
             Err(Errno::EIO),

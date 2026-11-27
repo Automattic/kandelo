@@ -115,8 +115,8 @@ pub fn pread(
     match decode(handle)? {
         Object::Executable(handle) => crate::executable_backing::read(handle, offset, dst, host),
         Object::Rootfs(h) => crate::rootfs::read(h, offset, dst, |req, buf| match req {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => {
-                host.fetch_deferred(&uri, buf, offset)
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => {
+                host.fetch_deferred(&uri, buf, offset, size)
             }
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
@@ -160,8 +160,8 @@ pub fn pwrite(handle: i64, offset: u64, src: &[u8], host: &mut dyn HostIO) -> Re
     match object {
         Object::Executable(_) => Err(Errno::EPERM),
         Object::Rootfs(h) => crate::rootfs::write(h, offset_i64, src, |req, buf| match req {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => {
-                host.fetch_deferred(&uri, buf, offset)
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => {
+                host.fetch_deferred(&uri, buf, offset, size)
             }
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
