@@ -18001,7 +18001,10 @@ export class CentralizedKernelWorker {
     let rawRetVal = -1n;
     let errVal = EIO;
     let recordOut: Uint8Array | null = null;
-    const combined = !this.resumePreparedSignals?.has(channel)
+    // Grouped channels publish signals and results through their Rust-owned
+    // completion protocol. The combined export prepares ordinary memory.
+    const combined = !(channel.source instanceof GroupProcessAddressSpace)
+      && !this.resumePreparedSignals?.has(channel)
       && typeof this.#kernelInstanceForEntry(entry).exports.kernel_handle_channel_record_complete === "function";
     const deliver = combined && ((this.activeChannelRequests.get(channel)?.requestFlags
       ?? new DataView(channel.memory.buffer, channel.channelOffset).getUint32(CH_REQUEST_FLAGS, true))
@@ -18124,8 +18127,7 @@ export class CentralizedKernelWorker {
           + this.formatSyscallReturn(syscallNr, publicationRetVal, normErr),
       );
     }
-    const token = !(channel.source instanceof GroupProcessAddressSpace)
-      && deliver && completion === 0 && rawRetVal === 0n && normErr === 0
+    const token = deliver && completion === 0 && rawRetVal === 0n && normErr === 0
       && (syscallNr === ABI_SYSCALLS.Stat || syscallNr === ABI_SYSCALLS.Lstat || syscallNr === ABI_SYSCALLS.Fstatat)
       ? this.#statLeaseTokenFor(channel.pid, channel.memory)
       : undefined;

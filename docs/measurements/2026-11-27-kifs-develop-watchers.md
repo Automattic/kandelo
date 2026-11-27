@@ -62,8 +62,7 @@ shell built earlier in this checkout. The browser comparison fixture pinned
 the kernel and served the saved image’s matching Coreutils bytes directly
 after the current Vite resolver rejected stale packaged artifacts. Rust
 still checked the length and digest declared by the image. These runs
-qualify the saved-shell path with those inputs. The exact fresh app package
-is a separate qualification.
+qualify the saved-shell path with those inputs.
 
 The v2 control had 512 MiB and 65,536 file entries. The upgraded v3 shell
 reported 1 GiB and a shared logical budget for data and metadata. Kernel
@@ -82,6 +81,34 @@ ABI snapshot and passed the program ABI 56 baseline check. The exact
 kernel passed Node and browser guest identity and interrupted-upgrade checks,
 including quota refusal and retry. The host passed 14 scratch and stat-lease
 checks and 19 grouped-memory tests against the exact kernel.
+
+## Fresh package and app
+
+The normal partial-shell build published kernel SHA-256
+`45d3e03d2ee091c57573114666fa1ebb1f838315173f88228a4a2aab86ad3a38`
+and shell SHA-256
+`5e9ed5ddb7e796842ee6a4d4466077687cc6d7a1298a52164124b41fee2d9a50`.
+The fresh kernel also passed the ABI snapshot check. The package pipeline
+succeeded after an isolated resolver retry of the initial `gawk` failure.
+
+The fresh Node shell exposed a grouped-channel completion error at the
+combined ordinary syscall export. That export is now selected only for
+ordinary memory. Node passed the four partial-shell tests and the
+19 grouped-memory kernel and worker tests after the change. A separate
+packaged KIFS v3 boot ran the grouped Bash, grep and sed pipeline.
+
+The app opened both saved formats and displayed their versions on Chromium,
+Firefox and WebKit through the normal artifact resolver. The legacy boot
+ignored the retired URL parameter. The v3 boot followed an explicitly
+staged upgrade. The first WebKit run reported a module-link error. The
+package-resolved rerun passed.
+
+Two additional Firefox pairs used the fresh package and normal lazy-asset
+resolution. V3’s 512 watched writes took 1.06–1.11× v2’s time, and the
+unwatched writes took 1.23–1.40×. Watched namespace churn took 0.35–0.50×.
+These runs had lower machine load than the frozen-image matrix.
+
+## Rollout
 
 The Rust-first host boundary check flags the two length words added to the
 existing `host_fetch_deferred` import. The host uses the filesystem’s

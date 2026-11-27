@@ -201,5 +201,38 @@
       {"phase":"v3","mode":"on","output":"profile-watch-ns 238020001","reads":1,"bytesRead":4096,"writes":545,"bytesWritten":2312832,"flushes":24},
       {"phase":"v3","mode":"off","output":"profile-watch-ns 507960000","reads":1,"bytesRead":4096,"writes":547,"bytesWritten":2320336,"flushes":27}
     ]
+  },
+  "freshPackage": {
+    "inputs": {
+      "kernel.wasm": "45d3e03d2ee091c57573114666fa1ebb1f838315173f88228a4a2aab86ad3a38",
+      "shell-partial.vfs.zst": "5e9ed5ddb7e796842ee6a4d4466077687cc6d7a1298a52164124b41fee2d9a50",
+      "kifs-capacity.wasm": "aaab45caa8aa0d7aa39f023610f2f3dde75be5c7511cb5c1171bc86352f1fd96",
+      "kandelo_image_module_positioned32.wasm": "3e2204ea9adbfd78c21dc922bc06177b5a94c76a00e40820b6ef248027a99c9a",
+      "index.js": "b815012931897f4ae4b64e9aa458091a334b5d8aee0c8d750d1b4568e0b12e1a",
+      "node-kernel-worker-entry.js": "8b59228f18c39aead5d4bc53608050de8949449bc208ca278af36e733b211d89",
+      "worker-main.js": "dfdcd8b116022ac2bb963fe512aa3f2423a6359cd5c22a51dd1e80997d71dfd5",
+      "kifs-saved-shell-workload.ts": "d9026954801345bb4e4c207099dd9dbf9f0f312333e8d9770a6ad44f12b3fcbc",
+      "kifs-v3-guest.test.ts": "ab378eb58298bbde945eab0519a9fb462441ad8ba77fc9c3de147191fd7eb2e2",
+      "kifs-v3-guest.spec.ts": "f8a05b6e384c877857fef37e2eff60b9542a8077076984c38446c22be5e2be1d",
+      "playwright.config.ts": "875613e2338e49183497cffca46012e40f2c6238395388f9fc5bbafc1ce6712e",
+      "vite.config.ts": "1d0be2b71ff4533ebb8753fdc640c44377cf8569b095b0d44bc471e6d036b4da",
+      "dev-lazy-asset-route.ts": "d2a0e279e88ab4a45b5cc3edfdcb775c316a62ca131112fe683b0d5671f89456",
+      "kernel-worker.ts": "6b1d4e03b64a186e9cad3dcc262eadf34bb8eb33598930ea65874c6dc159f7ec",
+      "stat-lease.ts": "22304a014afdb99abfda9bed007e40e00ba4c7efc49974dda5afe16d3ac47213",
+      "browser-kernel-worker-entry.ts": "bca201d9ba04da2f60c6e91464f2d3c6b1d746c3244b2921cf2dbf993e16ba0c",
+      "worker-main.ts": "8dbf30ea21dbb4206b9f737d8991066a534636d34bbf270c29f82436843a6e1a"
+    },
+    "app": {
+      "chromium": "passed",
+      "firefox": "passed",
+      "webkit": "passed"
+    },
+    "nodePartialImageTestsPassed": 4,
+    "nodeGroupedKernelAndWorkerTestsPassed": 19,
+    "nodeGroupedV3Pipeline": "passed",
+    "firefoxPairs": [
+      {"order":"forward","source":"5e9ed5ddb7e796842ee6a4d4466077687cc6d7a1298a52164124b41fee2d9a50","kernelSha256":"45d3e03d2ee091c57573114666fa1ebb1f838315173f88228a4a2aab86ad3a38","guestSha256":"aaab45caa8aa0d7aa39f023610f2f3dde75be5c7511cb5c1171bc86352f1fd96","loadBefore":"16:28:28  up 5 days 19:48,  3 users,  load average: 8.16, 10.89, 16.76","loadAfter":"16:28:53  up 5 days 19:49,  3 users,  load average: 9.12, 10.94, 16.61","v2WatchSamples":{"watched":[[260001,73000000,86179999],[420000,97279999,145780001],[320001,82339999,142220000]],"unwatched":[[180001,68619999,158440001],[139999,81400001,83119999],[440001,75480000,103880000]]},"v3WatchSamples":{"watched":[[419999,91740001,49820000],[260001,90259999,44920000],[520000,106040000,53080000]],"unwatched":[[520000,184640000,57559999],[200001,105759999,30220000],[440000,85859999,28980000]]}},
+      {"order":"reverse","source":"5e9ed5ddb7e796842ee6a4d4466077687cc6d7a1298a52164124b41fee2d9a50","kernelSha256":"45d3e03d2ee091c57573114666fa1ebb1f838315173f88228a4a2aab86ad3a38","guestSha256":"aaab45caa8aa0d7aa39f023610f2f3dde75be5c7511cb5c1171bc86352f1fd96","loadBefore":"16:28:53  up 5 days 19:49,  3 users,  load average: 9.12, 10.94, 16.61","loadAfter":"16:29:22  up 5 days 19:49,  3 users,  load average: 8.79, 10.71, 16.37","v2WatchSamples":{"watched":[[440000,94900000,107720001],[379999,100720000,93640001],[300000,69980001,205200000]],"unwatched":[[160001,69939999,78800000],[140000,63460000,78860000],[220000,94559999,137780000]]},"v3WatchSamples":{"watched":[[340000,100359999,48440001],[500000,95040000,55100001],[280000,109160000,53900000]],"unwatched":[[219999,84300001,33679999],[460000,85879999,39780001],[260001,97340000,46339999]]}}
+    ]
   }
 }
