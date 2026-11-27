@@ -282,6 +282,13 @@ pub const EXTENSION_REQUEST_DESCRIPTORS: &[SyscallArgDescriptor] = &[
                 crate::extension_requests::KMSG_CAPACITY_BYTES as u32,
             )]
     ),
+    entry!(
+        // kgpu op argument: one InOut struct whose length is the import's
+        // `size`. The kernel requires `size` to equal the op's struct size
+        // before touching it, so staging never exceeds `KgpuSubmit`.
+        crate::extension_requests::KGPU_V1,
+        [desc!(0, InOut, arg!(1), required)]
+    ),
 ];
 
 /// The descriptor entry for a channel request: a base syscall first, then an

@@ -1,9 +1,12 @@
-//! kgpu kernel contracts: the guest-facing ioctls and the kernel-to-host
-//! submission and completion records.
+//! kgpu kernel contracts: the guest-facing `kandelo.kgpu.v1` extension ops
+//! and the kernel-to-host submission and completion records.
 //!
-//! Ownership: this module is the single definition of (a) the DRM-style
-//! ioctls a guest GL driver issues against the GPU node and (b) the byte
-//! records the kernel exchanges with the GPU host adapter. Both sides read
+//! Ownership: this module is the single definition of (a) the ops and
+//! argument structs a guest GL driver passes to the
+//! `__kandelo_kgpu_v1(arg, size, op)` import and (b) the byte records the
+//! kernel exchanges with the GPU host adapter. The guest interface is a
+//! program extension, not ioctls, because the base program surface (and so
+//! its digest) is frozen; see `docs/program-extensions.md`. Both sides read
 //! the same definitions (the C header is generated from them by
 //! `cargo xtask dump-abi`), so the guest, kernel and host cannot drift.
 //!
@@ -37,11 +40,24 @@ pub const KGPU_MAX_STREAM: u32 = 1 << 20;
 /// of its own instead of the decoder rejecting a legitimate record.
 pub const KGPU_MAX_EXTENTS: u32 = 4096;
 
-// `_IOWR('d', nr, size)` = (3 << 30) | (size << 16) | ('d' << 8) | nr.
-pub const DRM_IOCTL_KGPU_CONTEXT_CREATE: u32 = 0xc008_64e8;
-pub const DRM_IOCTL_KGPU_CONTEXT_DESTROY: u32 = 0xc008_64e9;
-pub const DRM_IOCTL_KGPU_SUBMIT: u32 = 0xc028_64ea;
-pub const DRM_IOCTL_KGPU_WAIT: u32 = 0xc018_64eb;
+pub const KGPU_OP_CONTEXT_CREATE: i32 = 1;
+pub const KGPU_OP_CONTEXT_DESTROY: i32 = 2;
+pub const KGPU_OP_SUBMIT: i32 = 3;
+pub const KGPU_OP_WAIT: i32 = 4;
+
+/// The exact argument size an op requires; the import returns `-EINVAL`
+/// (-22) for any other `size`, so a short or long buffer never reaches a
+/// handler. `None` for an unknown op.
+pub fn op_arg_size(op: i32) -> Option<usize> {
+    use core::mem::size_of;
+    match op {
+        KGPU_OP_CONTEXT_CREATE => Some(size_of::<KgpuContextCreate>()),
+        KGPU_OP_CONTEXT_DESTROY => Some(size_of::<KgpuContextDestroy>()),
+        KGPU_OP_SUBMIT => Some(size_of::<KgpuSubmit>()),
+        KGPU_OP_WAIT => Some(size_of::<KgpuWait>()),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -424,10 +440,6 @@ mod tests {
     use super::*;
     use core::mem::size_of;
 
-    fn iowr(nr: u32, size: usize) -> u32 {
-        (3 << 30) | ((size as u32) << 16) | ((b'd' as u32) << 8) | nr
-    }
-
     #[test]
     fn struct_sizes_match_contract() {
         assert_eq!(size_of::<KgpuContextCreate>(), 8);
@@ -440,17 +452,37 @@ mod tests {
     }
 
     #[test]
-    fn ioctl_numbers() {
+    fn op_numbers_and_descriptor() {
+        assert_eq!(KGPU_OP_CONTEXT_CREATE, 1);
+        assert_eq!(KGPU_OP_CONTEXT_DESTROY, 2);
+        assert_eq!(KGPU_OP_SUBMIT, 3);
+        assert_eq!(KGPU_OP_WAIT, 4);
+        assert_eq!(crate::extension_requests::KGPU_V1, 602);
+        // The kernel stages the guest argument itself: one InOut buffer
+        // sized by the import's `size` argument, which the kernel then
+        // requires to equal the op's struct size (at most KgpuSubmit).
+        let d = crate::host_abi::request_arg_descriptor(crate::extension_requests::KGPU_V1)
+            .expect("descriptor for KGPU_V1");
+        assert_eq!(d.args.len(), 1);
+        assert_eq!(d.args[0].arg_index, 0);
         assert_eq!(
-            DRM_IOCTL_KGPU_CONTEXT_CREATE,
-            iowr(0xE8, size_of::<KgpuContextCreate>())
+            d.args[0].direction,
+            crate::host_abi::SyscallArgDirection::InOut
         );
-        assert_eq!(
-            DRM_IOCTL_KGPU_CONTEXT_DESTROY,
-            iowr(0xE9, size_of::<KgpuContextDestroy>())
-        );
-        assert_eq!(DRM_IOCTL_KGPU_SUBMIT, iowr(0xEA, size_of::<KgpuSubmit>()));
-        assert_eq!(DRM_IOCTL_KGPU_WAIT, iowr(0xEB, size_of::<KgpuWait>()));
+        assert!(matches!(
+            d.args[0].size,
+            crate::host_abi::SyscallArgSize::Arg { arg_index: 1, .. }
+        ));
+        for op in [
+            KGPU_OP_CONTEXT_CREATE,
+            KGPU_OP_CONTEXT_DESTROY,
+            KGPU_OP_SUBMIT,
+            KGPU_OP_WAIT,
+        ] {
+            assert!(op_arg_size(op).unwrap() <= size_of::<KgpuSubmit>());
+        }
+        assert_eq!(op_arg_size(0), None);
+        assert_eq!(op_arg_size(5), None);
     }
 
     fn ext(offset: u64, len: u32) -> Extent {

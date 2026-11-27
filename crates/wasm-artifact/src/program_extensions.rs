@@ -2,12 +2,12 @@
 use crate::facts::{ArtifactFacts, DescriptorKind};
 use alloc::{format, string::String, vec::Vec};
 use wasm_posix_program_abi::program_extensions::{
-    extension_import, is_extension_import_name, klog_v1 as klog, stack_v1 as stack,
+    extension_import, is_extension_import_name, kgpu_v1 as kgpu, klog_v1 as klog, stack_v1 as stack,
     memory_group_growth_v1 as growth,
     RESERVED_MODULE_PREFIX,
 };
 
-pub const IMPLEMENTED: &[&str] = &[stack::MODULE, klog::MODULE];
+pub const IMPLEMENTED: &[&str] = &[stack::MODULE, klog::MODULE, kgpu::MODULE];
 
 pub fn describe_failures(facts: &ArtifactFacts, supported: &[&str]) -> Vec<String> {
     let mut failures = Vec::new();
@@ -90,7 +90,7 @@ mod tests {
     fn extensions_are_explicit_and_do_not_change_base_admission() {
         let plain = read_artifact_facts(&wat::parse_str("(module)").unwrap()).unwrap();
         assert!(describe_failures(&plain, &[]).is_empty());
-        for ((module, name), wide) in [(stack::MODULE, stack::IMPORT), (klog::MODULE, klog::IMPORT)]
+        for ((module, name), wide) in [(stack::MODULE, stack::IMPORT), (klog::MODULE, klog::IMPORT), (kgpu::MODULE, kgpu::IMPORT)]
             .into_iter()
             .flat_map(|extension| [(extension, false), (extension, true)])
         {

@@ -89,6 +89,27 @@ pub mod klog_v1 {
     ];
 }
 
+/// GPU contexts, command-stream submission and fence waits.
+///
+/// WHY an extension: the base program surface is frozen, and a new GPU
+/// interface must not change the digest every supported program carries.
+/// Only a program that links the new GL driver imports this, so it is
+/// refused on a host that cannot serve it instead of failing at first use.
+pub mod kgpu_v1 {
+    pub const MODULE: &str = "kandelo.kgpu.v1";
+    pub const IMPORT: &str = "__kandelo_kgpu_v1";
+    /// (arg: pointer, size: i32, op: i32) -> i32. `size` must equal the op's
+    /// struct size. A non-negative return is the op's result; an error is a
+    /// negative errno and does not set the caller's `errno`.
+    pub const ERRORS: &[(&str, i32)] = &[
+        ("INVALID_ARGUMENT", -22),
+        ("INVALID_ADDRESS", -14),
+        ("NO_DEVICE", -19),
+        ("NOT_SUPPORTED", -95),
+        ("TIMED_OUT", -62),
+    ];
+}
+
 /// The grouped SDK delegates private frame allocation to the actual kernel.
 /// This required namespace is independent of both the base ABI and the physical
 /// memory layout namespace; no ordinary executable requests it.
@@ -103,6 +124,7 @@ pub mod memory_group_growth_v1 {
 pub const EXTENSIONS: &[(&str, &str)] = &[
     (stack_v1::MODULE, stack_v1::IMPORT),
     (klog_v1::MODULE, klog_v1::IMPORT),
+    (kgpu_v1::MODULE, kgpu_v1::IMPORT),
 ];
 
 /// The function import a known extension module supplies.

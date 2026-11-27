@@ -92,6 +92,11 @@ pub mod extension_requests {
     /// image, root or physical frame. The Wasm result is old pages or -1.
     pub const MEMORY_GROUP_GROW_V1: u32 = 601;
 
+    /// `kandelo.kgpu.v1`: GPU context, submit and wait ops. One InOut
+    /// argument struct staged by the kernel; the op number is the request's
+    /// second argument.
+    pub const KGPU_V1: u32 = 602;
+
     /// Size of the kernel message ring, and so the largest count a klog
     /// request can return. The ring lives in `runtime_core::kmsg`; the bound is
     /// here because the host's copy-back check needs it: the size actions
@@ -2405,7 +2410,8 @@ pub mod abi {
     /// 39: direct shared-group page-table scanning.
     /// 40: integrate kernel-owned epoll waits with those group contracts.
     /// 41: carry the engine-observed indirect-call trap in a signal exit.
-    pub const HOST_ADAPTER_VERSION: u32 = 41;
+    /// 42 adds the kgpu.v1 extension request.
+    pub const HOST_ADAPTER_VERSION: u32 = 42;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;

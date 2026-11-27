@@ -1587,6 +1587,17 @@
             "type": "arg"
           }
         }
+      ],
+      "602": [
+        {
+          "argIndex": 0,
+          "direction": "inout",
+          "required": true,
+          "size": {
+            "argIndex": 1,
+            "type": "arg"
+          }
+        }
       ]
     }
   },
@@ -2501,7 +2512,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 41,
+      "required_host_adapter_version": 42,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2733,7 +2744,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 41,
+    "version": 42,
     "wasm_indirect_call_traps": {
       "nullOrSignatureMismatch": 2,
       "signatureMismatch": 1

@@ -811,7 +811,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 41 as const;
+export const HOST_ADAPTER_VERSION = 42 as const;
 export const WASM_INDIRECT_CALL_TRAPS = {"nullOrSignatureMismatch":2,"signatureMismatch":1} as const;
 export const PROCESS_MEMORY_ACCESS_READ = 1 as const;
 export const PROCESS_MEMORY_ACCESS_WRITE = 2 as const;
@@ -2813,5 +2813,8 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   600: [
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, nullable: true, copyOutLength: { type: "return-value", multiplier: 1, maxValue: 131072 } },
+  ],
+  602: [
+    { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1 }, required: true },
   ],
 };
