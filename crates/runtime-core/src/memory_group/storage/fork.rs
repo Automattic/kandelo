@@ -125,7 +125,6 @@ impl Storage {
             return Err(Errno::EBUSY);
         }
         let root = image.allocation.ok_or(Errno::EIO)?.controls.address();
-        let mut entries = IoBuffer::try_filled(image.layout.maximum_pages as usize, 0)?;
         let mut copies = IoBuffer::try_filled(self.maximum_pages as usize, u32::MAX)?;
         let mut shared = PreparedMap::<u64, u8>::new();
         let mut shared_owners = IoBuffer::try_with_capacity(image.objects.len())?;
@@ -143,22 +142,24 @@ impl Storage {
             {
                 return Err(Errno::EIO);
             }
+            let mut entries = IoBuffer::try_filled(extent as usize, 0)?;
             let mut private_count = 0;
-            for at in 0..original.layout.maximum_pages {
-                let entry = memory.atomic_load(root + layout::ROOT_HEADER_BYTES + at * 4)?;
-                entries[at as usize] = entry;
-                if entry == 0 {
-                    continue;
-                }
+            // The parent barrier and root growth lock stabilize this image's
+            // entries. Other images may grow the backing, but cannot publish
+            // those new frames in this table while it is locked.
+            let physical_pages = memory.current_pages()?;
+            super::super::physical::visit_nonzero(memory, root + layout::ROOT_HEADER_BYTES,
+                original.layout.maximum_pages, |at, entry| {
                 let physical = entry >> 16;
                 if entry & 0xfffc != 0
                     || physical == 0
-                    || physical >= memory.current_pages()?
+                    || physical >= physical_pages
                     || physical >= self.maximum_pages
                     || at >= extent
                 {
                     return Err(Errno::EIO);
                 }
+                entries[at as usize] = entry;
                 let object = original
                     .objects
                     .keys()
@@ -179,7 +180,8 @@ impl Storage {
                     copies[physical as usize] = private_count;
                     private_count += 1;
                 }
-            }
+                Ok(())
+            })?;
             let layout = ImageLayout {
                 initial_pages: extent,
                 ..original.layout
@@ -256,7 +258,7 @@ impl Storage {
                 memory.write(child_root + 4, &image.layout.maximum_pages.to_le_bytes())?;
                 memory.write(child_root + 8, &image.layout.scratch_bytes.to_le_bytes())?;
                 memory.atomic_store(child_root + layout::ROOT_RUN, 1)?;
-                for (at, entry) in entries.iter().copied().enumerate().take(extent as usize) {
+                for (at, entry) in entries.iter().copied().enumerate() {
                     if entry == 0 {
                         continue;
                     }
@@ -375,6 +377,25 @@ mod tests {
             storage.initialize_fork_channel(&mut memory, parent, 16),
             Err(Errno::EBUSY)
         );
+    }
+
+    #[test]
+    fn fork_checks_the_sparse_tail_before_allocating_child_pages() {
+        let (mut groups, mut storage, mut memory, parent) = running();
+        let root = storage.descriptor(parent).unwrap();
+        let extent = memory.atomic_load(root.root).unwrap();
+        let maximum = memory.atomic_load(root.root + 4).unwrap();
+        assert!(extent < maximum);
+        let tail = root.root + layout::ROOT_HEADER_BYTES + (maximum - 1) * 4;
+        memory.atomic_store(tail, pte(&memory, root.root, 0)).unwrap();
+        let epoch = storage.begin_image_pause(&mut memory, parent).unwrap();
+        memory.atomic_store(root.replica + layout::REPLICA_ACK, epoch).unwrap();
+        let child = groups.prepare_image(parent.group(), 101, 1).unwrap();
+        let before = storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages;
+        assert_eq!(storage.prepare_private_fork(&mut memory, parent, epoch, child), Err(Errno::EIO));
+        assert_eq!(storage.pool().unwrap().snapshot(&mut memory).unwrap().allocated_pages, before);
+        assert_eq!(storage.descriptor(child), Err(Errno::ESRCH));
+        assert_eq!(memory.atomic_load(root.root + layout::ROOT_GROW_LOCK).unwrap(), 0);
     }
 
     #[test]
