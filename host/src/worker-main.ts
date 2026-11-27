@@ -1,3 +1,4 @@
+import { beginProcessWorkerExecution, isProcessWorkerStartupCanceled } from "./worker-quiescence";
 import { GROUPED_WORKER_EXTENSIONS } from './program-extensions';
 /**
  * Kernel worker entry points.
@@ -2980,7 +2981,8 @@ export async function centralizedWorkerMain(
   let processHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
   let kernelExitStatus: number | null = null;
   try {
-    const { memory: physicalMemory, programBytes, channelOffset, pid } = initData;
+    const { memory: physicalMemory, programBytes, channelOffset, pid, startupPermit } = initData;
+    if (isProcessWorkerStartupCanceled(startupPermit)) return;
     const memory = grouped?.source ?? physicalMemory;
     // WHY: the kernel keeps its own copy of the program bytes, and a running
     // process never reads them again. Detaching frees them at once: an idle
@@ -3062,6 +3064,7 @@ export async function centralizedWorkerMain(
         }
       }
 
+      if (!beginProcessWorkerExecution(startupPermit)) return;
       const instance = await WebAssembly.instantiate(module, importObject);
 
       // Initialize preopened directories
@@ -3953,6 +3956,10 @@ export async function centralizedWorkerMain(
       // WHY: reconstruction supplies copied identities; capture wraps that
       // resolved view so this child can safely become the parent of another
       // fresh instance without retaining the previous fork arena.
+      if (!beginProcessWorkerExecution(startupPermit)) {
+        processHostImportRuntime.clear();
+        return;
+      }
       const mainImportedStatePreparation =
         importedStateCapture.prepareActivation(
           0,
@@ -4336,6 +4343,7 @@ export async function centralizedWorkerMain(
         undefined,
         dlopenSupport.extensionImports,
       );
+      if (!beginProcessWorkerExecution(startupPermit)) return;
       const instance = await WebAssembly.instantiate(module, grouped ? grouped.imports(importObject, channelOffset) : importObject);
       processInstance = instance;
       grouped?.bind(instance, initData.isForkChild ? 0 : 1);

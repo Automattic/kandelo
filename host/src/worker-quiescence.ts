@@ -12,6 +12,31 @@ export interface WorkerQuiescence {
   settle(): void;
 }
 
+// An exec replacement can own process Memory before its first guest syscall.
+// The kernel host can cancel that startup without writing into an idle
+// syscall mailbox. A canceled worker still sends its own terminal fence.
+const WORKER_STARTING = 0;
+const WORKER_EXECUTING = 1;
+const WORKER_START_CANCELED = 2;
+
+export function createProcessWorkerStartupPermit(): Int32Array {
+  return new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+}
+
+export function cancelProcessWorkerStartup(permit?: Int32Array): boolean {
+  if (!permit) return false;
+  const previous = Atomics.compareExchange(permit, 0, WORKER_STARTING, WORKER_START_CANCELED);
+  return previous === WORKER_STARTING || previous === WORKER_START_CANCELED;
+}
+
+export function isProcessWorkerStartupCanceled(permit?: Int32Array): boolean {
+  return permit !== undefined && Atomics.load(permit, 0) === WORKER_START_CANCELED;
+}
+
+export function beginProcessWorkerExecution(permit?: Int32Array): boolean {
+  return permit === undefined || Atomics.compareExchange(permit, 0, WORKER_STARTING, WORKER_EXECUTING) === WORKER_STARTING;
+}
+
 export interface ProcessWorkerIdentity {
   readonly pid: number;
   readonly tid?: number;

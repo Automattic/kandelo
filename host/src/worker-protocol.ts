@@ -39,6 +39,8 @@ export type HostToWorkerMessage =
 export interface CentralizedWorkerInitMessage {
   type: "centralized_init";
   pid: number;
+  /** Per-image startup arbitration for ordinary exec replacements. */
+  startupPermit?: Int32Array;
   /** User program bytes (compiled with channel_syscall.c — no kernel imports) */
   programBytes: ArrayBuffer;
   /** Pre-compiled WebAssembly module (avoids recompilation in web workers) */

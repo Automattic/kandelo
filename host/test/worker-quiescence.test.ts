@@ -3,7 +3,11 @@ import { createWorkerAbsence, DeferredWorkerHandle } from "../src/deferred-worke
 import { MockWorkerAdapter } from "../src/worker-adapter";
 
 import {
+  beginProcessWorkerExecution,
+  cancelProcessWorkerStartup,
+  createProcessWorkerStartupPermit,
   createWorkerQuiescence,
+  isProcessWorkerStartupCanceled,
   createThreadWorkerReadiness,
   retireWorkerBatch,
   runWithProcessWorkerQuiescence,
@@ -13,6 +17,23 @@ import {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("exec replacement startup permit", () => {
+  it("blocks entry after the kernel host cancels startup", () => {
+    const permit = createProcessWorkerStartupPermit();
+    const workerPermit = structuredClone(permit);
+    expect(cancelProcessWorkerStartup(permit)).toBe(true);
+    expect(isProcessWorkerStartupCanceled(workerPermit)).toBe(true);
+    expect(beginProcessWorkerExecution(workerPermit)).toBe(false);
+  });
+
+  it("leaves an executing Worker on the ordinary retirement path", () => {
+    const permit = createProcessWorkerStartupPermit();
+    expect(beginProcessWorkerExecution(structuredClone(permit))).toBe(true);
+    expect(cancelProcessWorkerStartup(permit)).toBe(false);
+    expect(isProcessWorkerStartupCanceled(permit)).toBe(false);
+  });
 });
 
 describe("exact process Worker quiescence fences", () => {

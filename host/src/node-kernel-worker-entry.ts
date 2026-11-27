@@ -143,6 +143,8 @@ import {
   type WorkerQuiescence,
   waitForExecRetirement,
   waitForWorkerQuiescence,
+  cancelProcessWorkerStartup,
+  createProcessWorkerStartupPermit,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
@@ -305,6 +307,7 @@ interface ForkReplayContext {
 }
 
 interface ProcessInfo extends ProcessGenerationOwnership {
+  startupPermit?: Int32Array;
   workerAbsence?: WorkerAbsence;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
@@ -2764,9 +2767,32 @@ async function handleExec(
           initiatingInfo.channelOffset,
         );
       }
-      const handoffExitSignal = await retryKernelEntryResult(
-        () => kernelWorker.finalizeExecHandoffTermination(pid),
-      );
+
+      const {
+        memory: newMemory,
+        memoryLease: newMemoryLease,
+        layout: newLayout,
+        threadAllocator: newThreadAllocator,
+      } = prepared;
+      const newChannelOffset = newLayout.channelOffset;
+      // See the launch-continuation retry note on the root spawn path.
+      const handoffExitSignal = await retryKernelEntryResult(() => {
+        const signal = kernelWorker.finalizeExecHandoffTermination(pid);
+        if (signal > 0) return signal;
+        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+          preserveProcessState: true,
+          ptrWidth: newPtrWidth,
+          metadataPtrWidth: initiatingInfo.ptrWidth,
+          brkBase: newLayout.brkBase,
+          mmapBase: newLayout.mmapBase,
+          maxAddr: newLayout.maxAddr,
+          // Refresh kernel-side Process.argv and environment so procfs and
+          // kernel APIs reflect the replacement image.
+          argv: launchArgv,
+          env: envp,
+        });
+        return 0;
+      });
       if (handoffExitSignal > 0) {
         prepared.memoryLease.release();
         preparedLeaseConsumed = true;
@@ -2782,14 +2808,7 @@ async function handleExec(
         );
         return 0;
       }
-
-      const {
-        memory: newMemory,
-        memoryLease: newMemoryLease,
-        layout: newLayout,
-        threadAllocator: newThreadAllocator,
-      } = prepared;
-      const newChannelOffset = newLayout.channelOffset;
+      replacementRegistered = true;
       replacementForkHostImports = forkHostImportOwnerRuntime.createWorker({
         pid,
         generationId: replacementExternrefGeneration.id,
@@ -2806,9 +2825,11 @@ async function handleExec(
         },
       });
 
+      const startupPermit = createProcessWorkerStartupPermit();
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         pid,
+        startupPermit,
         programBytes,
         programModule,
         memory: newMemory,
@@ -2838,21 +2859,6 @@ async function handleExec(
         }
         return workerAdapter.createWorker(initData);
       });
-      // See the launch-continuation retry note on the root spawn path.
-      await retryKernelEntryResult(() =>
-        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-          preserveProcessState: true,
-          ptrWidth: newPtrWidth,
-          metadataPtrWidth: initiatingInfo.ptrWidth,
-          brkBase: newLayout.brkBase,
-          mmapBase: newLayout.mmapBase,
-          maxAddr: newLayout.maxAddr,
-          // Refresh kernel-side Process.argv and environment so procfs and
-          // kernel APIs reflect the replacement image.
-          argv: launchArgv,
-          env: envp,
-        }));
-      replacementRegistered = true;
       bindForkHostImports(replacementWorker, replacementForkHostImports);
 
       // Clear thread module cache — new program binary is different
@@ -2861,6 +2867,7 @@ async function handleExec(
       registerObservedProcess(pid, {
         memory: newMemory,
         memoryLease: newMemoryLease,
+        startupPermit,
         workerQuiescence: createWorkerQuiescence(),
         execRetirement: createWorkerQuiescence(),
         programBytes,
@@ -3596,13 +3603,18 @@ async function finishProcessExit(
     // Required where the terminate leak is present (Bun today); V8 benefits
     // from the same exact terminal fence instead of relying on forced Worker
     // termination.
+    // A canceled startup may still be loading its Worker entry module.
+    // Wait for the real fence using the existing exec retirement bound.
+    const retirementWait = cancelProcessWorkerStartup(info.startupPermit)
+      ? EXEC_WORKER_RETIREMENT_WAIT_MS
+      : PROCESS_WORKER_QUIESCENCE_WAIT_MS;
     try {
       await kernelWorker.killBlockedProcessForTeardown(pid);
     } catch (error) {
       console.warn(`[kernel-worker] pid=${pid} retirement wake failed: ${String(error)}`);
     }
     const [, threadsQuiescent] = await Promise.all([
-      waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS),
+      waitForProcessWorkerRetirement(info, retirementWait),
       terminateThreadWorkers(pid),
     ]);
     await terminateTrackedWorker(expectedWorker);
