@@ -16,6 +16,22 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Positioned root filesystem
+
+Host-adapter 42 extends `host_fetch_deferred` with the low and high words
+of the resource length declared by the filesystem. The host uses the length
+to bound deferred storage. Rust verifies the resource before use. Rebuild
+the kernel and host together. Program ABI 56 and its digest are unchanged.
+
+The optional rootfs stat lease is gated by
+`kernel_rootfs_supports_stat_lease()`. A mounted filesystem that supports it
+can certify an ordinary stat result through `kernel_rootfs_stat_lease()`.
+Grouped-memory programs use the ordinary stat syscall.
+
+`kernel_rootfs_compact_kifs_v3()` writes a verified compact snapshot of
+the quiescent volume through the positioned target storage imports. It
+returns zero or a negative errno.
+
 ## Integrated grouped and ordinary host contracts
 
 Host-adapter 38 combines the grouped ownership interfaces below with develop's
@@ -152,12 +168,6 @@ host must rebuild together. This interface does not establish final browser
 memory, resource or desktop acceptance.
 
 ## Supported persistent-program baseline
-
-Kernel-host adapter version 42 carries the declared resource byte length on each deferred read. The kernel and host must be rebuilt together. Guest programs retain their ABI 56 digest.
-
-The optional `kernel_rootfs_compact_kifs_v3()` kernel export writes a
-verified compact snapshot of the quiescent mounted volume through the
-positioned target storage imports. It returns zero or a negative errno.
 
 Kernel-host adapter version 21 extends internal grouped mapping descriptions
 from 112 to 136 bytes (mapping protocol v4). The added u64 object ID, initial

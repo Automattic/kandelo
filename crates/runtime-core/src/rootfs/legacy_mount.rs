@@ -201,7 +201,7 @@ pub(super) fn unlink(comps: &[&[u8]]) -> Result<(), Errno> {
     })
 }
 
-pub(super) fn rename(old_comps: &[&[u8]], new_comps: &[&[u8]]) -> Result<(), Errno> {
+pub(super) fn rename(old_comps: &[&[u8]], new_comps: &[&[u8]]) -> Result<Option<u64>, Errno> {
     let into_own_subtree = new_comps.len() > old_comps.len()
         && new_comps.starts_with(old_comps);
     let mut allocated = if resizable_persistence_enabled() {
@@ -281,10 +281,12 @@ pub(super) fn rename(old_comps: &[&[u8]], new_comps: &[&[u8]]) -> Result<(), Err
 
         // Renaming a name to itself (same inode) is a no-op.
         if new_existing == Some(old_target) {
-            return Ok(());
+            return Ok(None);
         }
 
-        let old_is_dir = state.get(old_target).ok_or(Errno::ENOENT)?.is_dir();
+        let source = state.get(old_target).ok_or(Errno::ENOENT)?;
+        let ino = source.ino;
+        let old_is_dir = source.is_dir();
 
         if let Some(existing) = new_existing {
             let new_is_dir = state.get(existing).ok_or(Errno::ENOENT)?.is_dir();
@@ -338,7 +340,7 @@ pub(super) fn rename(old_comps: &[&[u8]], new_comps: &[&[u8]]) -> Result<(), Err
             state.recompute_dir_nlink(new_parent);
         }
         state.persistent_allocated_blocks = allocated.as_ref().map(|committed| committed.allocated);
-        Ok(())
+        Ok(Some(ino))
     })
 }
 

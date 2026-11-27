@@ -4907,10 +4907,12 @@ tmpfs descriptor. Mutations queue rename and change records with raw basenames
 for immediate directory children. Duplicated watcher descriptors share the
 queue until the last reference closes. A full queue reports overflow, so a
 consumer can rescan. Watches on the same directory share a bounded index
-of child inodes and names. The next write after a namespace change refreshes
-that directory's index. If an index exceeds the memory budget, writes still
-resolve the names from the directory itself. The last watch releases its
-index. See [guest VFS events](posix-status.md) for the record format.
+of child inodes and names. Resident directories rebuild their index after a
+namespace change. Positioned directories build their index on the first
+write and update it as names are committed. The shared index budget is
+2 MiB. If a directory exceeds the budget, the kernel enumerates its names
+directly. The last watch releases its index. See
+[guest VFS events](posix-status.md) for the record format.
 
 ### Inspection of the live filesystem
 

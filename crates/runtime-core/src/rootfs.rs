@@ -4487,7 +4487,14 @@ pub fn is_dir(path: &[u8]) -> bool {
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     let path_entry = if flags & (O_CREAT | O_TRUNC) != 0 { crate::vfs_events::Entry::capture(path, lstat) } else { None };
     let result = open_mutation(path, flags, mode, uid, gid)?;
-    if let Some(entry) = path_entry { entry.committed(flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY); }
+    if let Some(entry) = path_entry {
+        let changed = flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY;
+        let identity = file_handle_to_inode(result).ok().and_then(|index| ROOTFS.with(|state| {
+            state.get(index).map(|inode| rootfs_file_id(inode.ino))
+        }));
+        if let Some(identity) = identity { entry.committed_as(Some(identity), changed); }
+        else { entry.committed(changed); }
+    }
     Ok(result)
 }
 
@@ -6354,12 +6361,16 @@ fn publish_handle_change(handle: i64) {
     let Ok(index) = file_handle_to_inode(handle) else { return; };
     ROOTFS.with(|state| {
         let Some(inode) = state.get(index) else { return; };
-        let target = crate::vfs_events::identity(inode.stat());
+        let target = rootfs_file_id(inode.ino);
         let mut mount = state.mounted_filesystem();
         crate::vfs_events::changed(target, |dir_id, directory, names, emit| {
             mount.watched_aliases(index, dir_id, directory, names, emit);
         });
     });
+}
+
+fn rootfs_file_id(ino: u64) -> crate::lock::FileId {
+    crate::lock::FileId::Host { dev: ROOTFS_DEV, ino }
 }
 
 /// Open a directory stream over a rootfs directory, returning an encoded handle.
@@ -6440,7 +6451,7 @@ fn mkdir_mutation(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errn
 pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
     let path_entry = crate::vfs_events::Entry::capture(path, lstat);
     let result = rmdir_mutation(path)?;
-    if let Some(entry) = path_entry { entry.committed(false); }
+    if let Some(entry) = path_entry { entry.committed_as(None, false); }
     Ok(result)
 }
 
@@ -6456,7 +6467,7 @@ fn rmdir_mutation(path: &[u8]) -> Result<(), Errno> {
 pub fn unlink(path: &[u8]) -> Result<(), Errno> {
     let path_entry = crate::vfs_events::Entry::capture(path, lstat);
     let result = unlink_mutation(path)?;
-    if let Some(entry) = path_entry { entry.committed(false); }
+    if let Some(entry) = path_entry { entry.committed_as(None, false); }
     crate::fs_changes::publish(2, path);
     Ok(result)
 }
@@ -6477,27 +6488,19 @@ fn unlink_mutation(path: &[u8]) -> Result<(), Errno> {
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let old_entry = crate::vfs_events::Entry::capture(old, lstat);
     let new_entry = crate::vfs_events::Entry::capture(new, lstat);
-    let result = rename_mutation(old, new)?;
-    if let Some(entry) = old_entry { entry.committed(false); }
-    if let Some(entry) = new_entry { entry.committed(false); }
-    Ok(result)
-}
-
-fn rename_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
-    rename_unmarked(old, new)?;
-    crate::fs_changes::publish(2, old);
-    crate::fs_changes::publish(1, new);
-    mark_var_log_names(new);
-    Ok(())
-}
-
-fn rename_unmarked(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let old_comps = split_components(old);
     let new_comps = split_components(new);
     if old_comps.is_empty() || new_comps.is_empty() {
         return Err(Errno::EBUSY); // cannot rename the root
     }
-    mounted::rename(old, new, &old_comps, &new_comps)
+    if let Some(ino) = mounted::rename(old, new, &old_comps, &new_comps)? {
+        if let Some(entry) = old_entry { entry.committed_as(None, false); }
+        if let Some(entry) = new_entry { entry.committed_as(Some(rootfs_file_id(ino)), false); }
+    }
+    crate::fs_changes::publish(2, old);
+    crate::fs_changes::publish(1, new);
+    mark_var_log_names(new);
+    Ok(())
 }
 
 /// Create a hard link `new` to the existing file `old` within the rootfs. Hard
@@ -12117,6 +12120,7 @@ mod tests {
         rename(b"/watched", b"/moved").unwrap();
         link(b"/source", b"/moved/second").unwrap();
         unlink(b"/moved/alias").unwrap();
+        rename(b"/source", b"/moved/second").unwrap(); // same inode, no event
         assert_eq!(sys_write(&mut process, &mut host, file, b"after"), Ok(5));
         for watcher in watchers {
             let mut buf = [0; 256];

@@ -202,7 +202,7 @@ impl MountedKifs {
         old: &[u8],
         new: &[u8],
         pins: &mut [Option<Inode>],
-    ) -> Result<(), Errno> {
+    ) -> Result<Option<u64>, Errno> {
         let origin = self.parent(&split_components(old))?;
         let (source, record) = self
             .namespace
@@ -211,7 +211,7 @@ impl MountedKifs {
         let target = self.parent(&split_components(new))?;
         let replaced = self.namespace.lookup(target.0, target.1)?;
         if replaced.is_some_and(|(number, _)| number == source) {
-            return Ok(());
+            return Ok(None);
         }
         // Only live directory descriptions own paths. Admit every replacement
         // before committing so an allocation error leaves the namespace intact.
@@ -244,7 +244,7 @@ impl MountedKifs {
         for (index, path) in moved.iter() {
             self.directory_paths[*index].1 = path.clone();
         }
-        Ok(())
+        Ok(Some(source))
     }
 
     pub(super) fn open_target<'a>(

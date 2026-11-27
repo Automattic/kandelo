@@ -347,7 +347,7 @@ pub(super) fn rename(
     new: &[u8],
     old_components: &[&[u8]],
     new_components: &[&[u8]],
-) -> Result<(), Errno> {
+) -> Result<Option<u64>, Errno> {
     dispatch(
         (),
         |mount, pins, ()| mount.rename(old, new, pins),

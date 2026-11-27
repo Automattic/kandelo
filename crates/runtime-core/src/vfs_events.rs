@@ -342,6 +342,11 @@ impl<'a> Entry<'a> {
 
     pub(crate) fn committed(self, data_changed: bool) {
         let after = (self.lookup)(self.path).ok().map(identity);
+        self.committed_as(after, data_changed);
+    }
+
+    /// Publish a name whose post-mutation identity is already known.
+    pub(crate) fn committed_as(self, after: Option<FileId>, data_changed: bool) {
         let kind = if self.before != after { RENAME } else if data_changed && after.is_some() { CHANGE } else { return };
         dispatch(|watch, directories| {
             if Some(watch.target) == self.parent {
