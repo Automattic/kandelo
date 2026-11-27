@@ -6633,6 +6633,19 @@ pub fn handle_is_live(handle: i64) -> bool {
 }
 
 
+/// Pin the directory inode until its last open description reference is dropped.
+pub(crate) fn retain_directory(path: &[u8]) -> Result<(i64, WasmStat), Errno> {
+    let index = walk_to_inode(path)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::ENOENT)?;
+        if !matches!(inode.kind, InodeKind::Dir(_)) {
+            return Err(Errno::ENOTDIR);
+        }
+        inode.open_count = inode.open_count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok((inode_to_file_handle(index), inode.stat()))
+    })
+}
+
 // Directory descriptions retain the dev/inode observed when opened. Validate
 // that identity even if the pathname was renamed and replaced before binding.
 pub(crate) fn watch_directory(path: &[u8], id: crate::lock::FileId) -> Result<u32, Errno> {

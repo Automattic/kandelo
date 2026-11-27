@@ -5354,10 +5354,12 @@ fn tmpfs_stamp_now(host: &mut dyn HostIO) -> Result<(), Errno> {
 /// Open a tmpfs directory for iteration. Mirrors `devfs_open_dir`: a
 /// `FileType::Directory` OFD carrying the tmpfs directory sentinel in both
 /// `host_handle` and `dir_host_handle`; getdents regenerates entries from the
-/// live store, so there is no host handle and no backing to refcount.
+/// live store. The shared OFD pins the directory inode for metadata operations.
 fn open_scratch_tmpfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
     proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
-        if cfg!(feature = "vfs-events") { description.file_id = Some(crate::vfs_events::identity(crate::tmpfs::lstat(&resolved)?)); }
+        let (handle, stat) = crate::tmpfs::retain_directory(&resolved)?;
+        description.set_directory_inode(handle);
+        description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino });
         description.dir_host_handle = crate::tmpfs::TMPFS_DIR_SENTINEL;
         Ok(crate::tmpfs::TMPFS_DIR_SENTINEL)
     })
@@ -5376,7 +5378,9 @@ fn open_rootfs(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effective_mod
 /// regenerates entries from the live store, so there is no host handle.
 fn open_rootfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
     proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
-        if cfg!(feature = "vfs-events") { description.file_id = Some(crate::vfs_events::identity(crate::rootfs::lstat(&resolved)?)); }
+        let (handle, stat) = crate::rootfs::retain_directory(&resolved)?;
+        description.set_directory_inode(handle);
+        description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino });
         description.dir_host_handle = crate::rootfs::ROOTFS_DIR_SENTINEL;
         Ok(crate::rootfs::ROOTFS_DIR_SENTINEL)
     })
@@ -9418,10 +9422,10 @@ pub(crate) fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -
         crate::sysfs::lookup(&ofd.path)
             .map(|node| crate::sysfs::stat(&node))
             .ok_or(Errno::EBADF)
-    } else if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
-        crate::tmpfs::fstat(ofd.host_handle)
-    } else if crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
-        crate::rootfs::fstat(ofd.host_handle)
+    } else if crate::tmpfs::is_tmpfs_file_handle(ofd.metadata_handle()) {
+        crate::tmpfs::fstat(ofd.metadata_handle())
+    } else if crate::rootfs::is_rootfs_file_handle(ofd.metadata_handle()) {
+        crate::rootfs::fstat(ofd.metadata_handle())
     } else if ofd.file_type == FileType::Regular
         && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
     {
@@ -12647,8 +12651,8 @@ pub fn sys_utimensat(
             }
             return Err(Errno::EPERM);
         }
-        let handle = ofd.host_handle;
-        if ofd.file_type == FileType::Regular
+        let handle = ofd.metadata_handle();
+        if matches!(ofd.file_type, FileType::Regular | FileType::Directory)
             && (crate::rootfs::is_rootfs_file_handle(handle) || crate::tmpfs::is_tmpfs_file_handle(handle))
         {
             let stat = sys_fstat(proc, host, dirfd)?;
@@ -29462,6 +29466,49 @@ mod tests {
             Err(Errno::EBADF),
         );
         sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn directory_futimens_follows_the_open_inode_until_the_last_dup_closes() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/tmp", 0o1777, 0, 0, 2).unwrap();
+        let mut proc = Process::new(100);
+        let mut host = MockHostIO::new();
+        for (path, moved) in [
+            (b"/tmp/dir-owner".as_slice(), b"/tmp/dir-moved".as_slice()),
+            (b"/dir-owner".as_slice(), b"/dir-moved".as_slice()),
+        ] {
+            sys_mkdir(&mut proc, &mut host, path, 0o700).unwrap();
+            let fd = sys_open(&mut proc, &mut host, path, O_RDONLY | O_DIRECTORY, 0).unwrap();
+            let duplicate = sys_dup(&mut proc, fd).unwrap();
+            let inode = sys_fstat(&proc, &mut host, fd).unwrap().st_ino;
+            let handle = proc.ofd_table.get(resolve_io_ofd(&proc, fd).unwrap()).unwrap().metadata_handle();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_rename(&mut proc, &mut host, path, moved).unwrap();
+            sys_mkdir(&mut proc, &mut host, path, 0o700).unwrap();
+            for seconds in [12345, 67890] {
+                if seconds == 67890 {
+                    sys_rmdir(&mut proc, &mut host, moved).unwrap();
+                }
+                let times = [WasmTimespec { tv_sec: seconds, tv_nsec: 0 }; 2];
+                sys_utimensat(&mut proc, &mut host, duplicate, b"", Some(&times), 0).unwrap();
+                let held = sys_fstat(&proc, &mut host, duplicate).unwrap();
+                assert_eq!(held.st_ino, inode);
+                assert_eq!(held.st_mtime_sec, seconds as u64);
+                assert_ne!(fs_lstat(&mut host, path).unwrap().st_mtime_sec, seconds as u64);
+            }
+            sys_close(&mut proc, &mut host, duplicate).unwrap();
+            let released = if crate::tmpfs::claims_path(path) {
+                crate::tmpfs::fstat(handle)
+            } else {
+                crate::rootfs::fstat(handle)
+            };
+            assert!(matches!(released, Err(Errno::EBADF)));
+            sys_rmdir(&mut proc, &mut host, path).unwrap();
+        }
     }
 
     #[test]
