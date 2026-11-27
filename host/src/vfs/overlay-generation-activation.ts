@@ -31,6 +31,24 @@ export function decodeOverlayActivation(bytes: Uint8Array, codec: OverlayActivat
   return codec.decode(bytes);
 }
 
+/** Read-only selection for both boot and the saved-image binding inspector. */
+export function selectOverlayActivationReplicas(
+  codec: OverlayActivationCodec, copies: readonly (Uint8Array | null)[],
+) {
+  const replicas: [OverlayActivationRecord | null, OverlayActivationRecord | null] = [null, null];
+  let invalid = false;
+  for (const replica of [0, 1] as const) {
+    const bytes = copies[replica];
+    if (!bytes?.length) continue;
+    try { replicas[replica] = decodeOverlayActivation(bytes, codec); }
+    catch (error) {
+      if (!(error instanceof InvalidOverlayActivationError)) throw error;
+      invalid = true;
+    }
+  }
+  return { replicas, current: codec.select(replicas, invalid) };
+}
+
 export function sameOverlayActivationIdentity(
   left: Omit<OverlayActivationRecord, "sequence">,
   right: Omit<OverlayActivationRecord, "sequence">,
@@ -49,7 +67,7 @@ export class OverlayActivationControlPair {
   private closed = false;
   private publicationFailed = false;
   private currentRecord: OverlayActivationRecord | null = null;
-  private readonly replicas: [OverlayActivationRecord | null, OverlayActivationRecord | null] = [null, null];
+  private replicas: [OverlayActivationRecord | null, OverlayActivationRecord | null] = [null, null];
   private repaired = false;
 
   private constructor(private readonly files: OverlayActivationFiles,
@@ -135,25 +153,18 @@ export class OverlayActivationControlPair {
   }
 
   private read(): void {
-    let invalid = false;
-    for (const replica of [0, 1] as const) {
-      const handle = this.handles[replica];
-      if (handle === null) continue;
+    const copies = this.handles.map(handle => {
+      if (handle === null) return null;
       const length = handle.len();
-      if (length === 0) continue;
-      if (length !== OVERLAY_ACTIVATION_BYTES) { invalid = true; continue; }
+      if (length === 0) return null;
+      if (length !== OVERLAY_ACTIVATION_BYTES) return Uint8Array.of(0);
       const bytes = new Uint8Array(OVERLAY_ACTIVATION_BYTES);
       handle.readExactAt(0, bytes);
-      try {
-        const record = decodeOverlayActivation(bytes, this.files.activationCodec);
-        this.replicas[replica] = record;
-      }
-      catch (error) {
-        if (!(error instanceof InvalidOverlayActivationError)) throw error;
-        invalid = true;
-      }
-    }
-    this.currentRecord = this.files.activationCodec.select(this.replicas, invalid);
+      return bytes;
+    });
+    const { current, replicas } = selectOverlayActivationReplicas(this.files.activationCodec, copies);
+    this.currentRecord = current;
+    this.replicas = replicas;
   }
 
   private repairCurrent(): void {

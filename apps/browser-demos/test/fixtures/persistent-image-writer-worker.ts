@@ -5,6 +5,7 @@ import { OpfsImageReader } from "../../../../host/src/vfs/opfs-image-reader";
 interface Job {
   file: FileSystemFileHandle;
   cancelFile: FileSystemFileHandle;
+  volumeFile: FileSystemFileHandle;
   moduleBytes: ArrayBuffer;
   policy: "crc32c" | "sha256";
 }
@@ -73,6 +74,12 @@ scope.onmessage = async ({ data }) => {
     const content = new Uint8Array(512 * 1024 + 17);
     for (let index = 0; index < content.length; index++) content[index] = index % 251;
     source.writeFile("/large", content, 0o600);
+    const volume = await OpfsOverlayStorageFile.openHandle(data.volumeFile);
+    let volumeLength: number;
+    try {
+      volumeLength = source.stageKifsV3To(volume, 262_144, new Uint8Array(32).fill(19));
+      if (volumeLength !== volume.len()) throw new Error("KIFS v3 volume length differs from the target");
+    } finally { volume.close(); }
     output = await OpfsOverlayStorageFile.openHandle(data.file);
     const phases: string[] = [];
     let written = 0;
@@ -100,7 +107,7 @@ scope.onmessage = async ({ data }) => {
     if (recovered.length !== content.length || !recovered.every((byte, index) => byte === content[index])) {
       throw new Error("Persistent image readback changed file contents");
     }
-    reply = { result, binding, phases, written, verified, value, mountedRead, progressCancelled, producerCancelled };
+    reply = { result, binding, phases, written, verified, value, mountedRead, progressCancelled, producerCancelled, volumeLength };
   } catch (error) {
     reply = { error: String(error), stack: (error as Error)?.stack };
   } finally {

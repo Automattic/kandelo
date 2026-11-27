@@ -736,6 +736,7 @@ static TMPFS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable in-kernel tmpfs authority. Returns the previous value.
 pub fn set_enabled(enabled: bool) -> bool {
+    crate::rootfs::revoke_stat_routes();
     TMPFS_ENABLED.swap(enabled, Ordering::SeqCst)
 }
 
@@ -2025,6 +2026,7 @@ fn publish_handle_change(handle: i64) {
         let Some(inode) = state.get(index) else { return; };
         let target = crate::vfs_events::identity(inode.stat());
         crate::vfs_events::changed(target, |dir_id, dir_index, names, emit| {
+            let crate::vfs_events::WatchedDirectory::Resident(dir_index) = dir_index else { return; };
             let Some(dir) = state.get(dir_index) else { return; };
             if crate::vfs_events::identity(dir.stat()) != dir_id { return; }
             if let InodeKind::Dir(entries) = &dir.kind {

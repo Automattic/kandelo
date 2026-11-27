@@ -11,7 +11,7 @@ export interface ImageCodecMemoryUsage {
 export type ImageCodecRequest =
   | { type: "stage"; file: OpfsFileReference; moduleBytes: Uint8Array; maximumLength: number; observeMemory?: boolean }
   | { type: "write"; file: OpfsFileReference; moduleBytes: Uint8Array; payloadLength: number; policy: PersistentImageIntegrityPolicy; observeMemory?: boolean }
-  | { type: "inspect"; prefix: Uint8Array; moduleBytes: Uint8Array; physicalLength: number; identitySha256: string; policy: PersistentImageIntegrityPolicy; observeMemory?: boolean }
+  | { type: "inspect"; journalName?: string; prefix: Uint8Array; moduleBytes: Uint8Array; physicalLength: number; identitySha256: string; policy: PersistentImageIntegrityPolicy; observeMemory?: boolean }
   | { type: "control"; operation: 19 | 20; input: Uint8Array; moduleBytes: Uint8Array; observeMemory?: boolean }
   | { type: "input"; bytes: Uint8Array | null }
   | { type: "progress-ack" }

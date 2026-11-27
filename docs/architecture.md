@@ -3252,7 +3252,32 @@ types, seek constants and errno values to the host.
 
 ### The in-kernel root filesystem
 
-At boot the worker entry hands the kernel worker the decoded image bytes
+The Rust VFS resolves paths and checks permissions before dispatching
+to the mounted filesystem. KIFS v2 and v3 share the mount interface
+for pathname and descriptor I/O, namespace changes, capacity and
+sync. Backends implement their own allocation and persistence.
+The worker negotiates stat certification after mounting. A mount
+without certification uses the ordinary stat syscall.
+
+An activated KIFS v3 saved computer mounts its own positioned volume.
+Rust owns the copy-on-write tree of inode records, directory entries and
+file block references. File data and metadata consume one logical capacity.
+The worker supplies positioned I/O through a Node file or an OPFS handle.
+A mounted transaction combines adjacent appends in a bounded kernel buffer
+and drains it before installing a new live root. Reads follow that root.
+Grouped publication flushes the appended
+pages, writes and flushes one superblock, then writes and flushes the second.
+The two root replicas recover commits within a volume. Separate generation
+controls select a volume during upgrade or compaction. Ordinary v3 boot opens
+the selected volume directly. [Persistence and synchronization guarantees](persistence-durability.md#live-writes-synchronization-and-power-failure)
+
+Node and browser boot use the same generation selection protocol.
+The worker entries provide their storage handles. The activated
+generation selects the format for a saved computer. A format upgrade
+stages and verifies a successor before publishing it. Worker runtime
+paths use the configured snapshot and writeback capabilities.
+
+On the image-backed path, the worker entry hands the kernel worker the decoded image bytes
 (`configureRootfsOverlay`), and `init` calls `kernel_rootfs_load_image`. The
 kernel parses the image itself: it mounts the image's KIFS filesystem
 (`crates/runtime-core/src/kandelo_image_fs.rs`), walks it, and reads the
@@ -3262,7 +3287,7 @@ retired `KLZY` section, or one whose metadata declares a different
 `kernelAbi`, is refused (`EINVAL` / `EPROTO`), and the boot fails at that
 cause; there is no host-side fallback.
 
-Normally, the kernel keeps the tree's metadata, every guest change, and
+On the in-memory overlay path, the kernel keeps the tree's metadata, every guest change, and
 every file the guest creates in its own memory. Unmodified file content stays
 in the image:
 the kernel reads it on demand through `host_image_read`, a positioned window
@@ -3270,6 +3295,14 @@ onto the bytes the worker entry holds (`imageReadFromContainer` in
 `host/src/vfs/rootfs-lazy-archives.ts`). Writing to an image-backed file
 copies it into kernel memory first unless experimental fixed-overwrite or
 resizable persistence is enabled.
+
+The Rust rootfs uses a mounted-filesystem interface for pathname metadata,
+symlink reads and pathname-based directory listing. Its two backends are the replayed
+legacy namespace and the standalone authenticated volume. Create and
+delete permission checks can reuse ancestor search from the current VFS
+resolution on either backend. The worker negotiates fast stat using the
+active mount's certification capability after mount. If the capability
+or the certificate export is unavailable, stat uses the ordinary syscall.
 
 `crates/runtime-core/src/persistent_overlay.rs` prototypes a separate,
 append-only durable overlay bound to a specific base-image SHA-256 digest. It
@@ -4874,10 +4907,12 @@ tmpfs descriptor. Mutations queue rename and change records with raw basenames
 for immediate directory children. Duplicated watcher descriptors share the
 queue until the last reference closes. A full queue reports overflow, so a
 consumer can rescan. Watches on the same directory share a bounded index
-of child inodes and names. The next write after a namespace change refreshes
-that directory's index. If an index exceeds the memory budget, writes still
-resolve the names from the directory itself. The last watch releases its
-index. See [guest VFS events](posix-status.md) for the record format.
+of child inodes and names. Resident directories rebuild their index after a
+namespace change. Positioned directories build their index on the first
+write and update it as names are committed. The shared index budget is
+2 MiB. If a directory exceeds the budget, the kernel enumerates its names
+directly. The last watch releases its index. See
+[guest VFS events](posix-status.md) for the record format.
 
 ### Inspection of the live filesystem
 

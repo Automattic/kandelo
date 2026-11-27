@@ -811,7 +811,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 41 as const;
+export const HOST_ADAPTER_VERSION = 42 as const;
 export const WASM_INDIRECT_CALL_TRAPS = {"nullOrSignatureMismatch":2,"signatureMismatch":1} as const;
 export const PROCESS_MEMORY_ACCESS_READ = 1 as const;
 export const PROCESS_MEMORY_ACCESS_WRITE = 2 as const;
@@ -920,6 +920,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_reap_exited_child",
   "kernel_remove_process",
   "kernel_reset_tcp_connection",
+  "kernel_rootfs_deferred_transfer_size_address",
   "kernel_rootfs_take_compaction_request",
   "kernel_set_current_tid",
   "kernel_set_cwd",
@@ -967,7 +968,9 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_group_owned_mapping_validate",
   "kernel_group_retirement_control",
   "kernel_group_root_control",
+  "kernel_handle_channel_record_complete",
   "kernel_initial_group_exec_target_admit",
+  "kernel_rootfs_stat_lease",
   "kernel_memory_group_capabilities",
   "kernel_memory_group_configure",
   "kernel_memory_group_create",
@@ -991,6 +994,15 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_owned_mapping_finish",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
+  "kernel_rootfs_activate_kifs_handoff",
+  "kernel_rootfs_cancel_kifs_handoff",
+  "kernel_rootfs_compact_kifs_v3",
+  "kernel_rootfs_format_version",
+  "kernel_rootfs_kifs_compaction_needed",
+  "kernel_rootfs_mount_kifs_v3",
+  "kernel_rootfs_prepare_kifs_handoff",
+  "kernel_rootfs_stage_saved_kifs_v3",
+  "kernel_rootfs_supports_stat_lease",
   "kernel_rootfs_rename_file",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
@@ -2312,6 +2324,30 @@ export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [
 /* Kernel request serving the kandelo.klog.v1 program extension
 * (kernel-host surface; see shared::extension_requests). */
 export const EXTENSION_REQUEST_KLOG_V1 = 600 as const;
+
+export const RECORD_COMPLETION_EXIT = 256 as const;
+export const KIFS_STAT_CERTIFICATE = {
+  MAGIC: 827542603,
+  MAGIC_OFFSET: 0,
+  LENGTH_OFFSET: 4,
+  PID_OFFSET: 8,
+  TID_OFFSET: 12,
+  SCOPE_OFFSET: 16,
+  ROUTE_OFFSET: 24,
+  PATHNAME_GENERATION_OFFSET: 32,
+  INODE_GENERATION_OFFSET: 40,
+  BUCKET_OFFSET: 48,
+  SYSCALL_OFFSET: 52,
+  FLAGS_OFFSET: 56,
+  PATH_LENGTH_OFFSET: 60,
+  PATH_OFFSET: 64,
+  PATH_BYTES: 96,
+  STAT_OFFSET: 160,
+  STAT_BYTES: 112,
+  GENERATIONS_OFFSET: 272,
+  INODE_BUCKETS: 256,
+  BYTES: 2320,
+} as const;
 
 export const EXTENSION_REQUEST_MEMORY_GROUP_GROW_V1 = 601 as const;
 

@@ -66,6 +66,24 @@
     },
     {
       "kind": "function",
+      "module": "kandelo.stat-cache.v1",
+      "name": "__kandelo_stat_cache_v1",
+      "params": [
+        "pointer",
+        "i32",
+        "i32"
+      ],
+      "results": [
+        "i32"
+      ],
+      "wire": {
+        "FLAGS_MAX": 16777215,
+        "SYSCALL_BITS": 8,
+        "SYSCALL_MASK": 255
+      }
+    },
+    {
+      "kind": "function",
       "module": "kandelo.memory-group-growth.v1",
       "name": "__kandelo_memory_group_grow_v1",
       "params": [

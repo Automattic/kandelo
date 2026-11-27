@@ -434,3 +434,19 @@ it("turns completed transfer progress into a visible native-integrity error with
   await wiring.whenFetchSettles();
   expect(fetches).toBe(2);
 });
+
+it("checks the full declared length before returning a positioned window from a cached URI", async () => {
+  const { deferredProvider, whenFetchSettles, dispose } = buildRootfsLazyWiring(async () => Uint8Array.of(1, 2));
+  try {
+    const destination = Uint8Array.of(42);
+    expect(deferredProvider("file", 0n, destination, 3)).toBe(-11);
+    await whenFetchSettles();
+    expect(deferredProvider("file", 0n, destination, 3)).toBe(-5);
+    expect(deferredProvider("file", 0n, destination, 1)).toBe(-5);
+    expect(destination[0]).toBe(42);
+    expect(deferredProvider("file", 1n, destination, 2)).toBe(1);
+    expect(destination[0]).toBe(2);
+  } finally {
+    dispose();
+  }
+});

@@ -15,6 +15,7 @@ use crate::persistent_overlay_index::{
 use crate::metadata_budget::{MetadataReservation, ROOTFS_METADATA};
 use crate::io_buffer::{IoBuffer, reserve_payload};
 use crate::prepared_map::{MapMemory, PreparedEntry, PreparedMap};
+use crate::path::validate_dirent_name;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
@@ -180,35 +181,7 @@ impl DirtyFileSizes {
     }
 }
 
-pub trait OverlayStorage {
-    fn len(&mut self) -> Result<u64, Errno>;
-    fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno>;
-    fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno>;
-    fn flush(&mut self) -> Result<(), Errno>;
-    fn truncate(&mut self, len: u64) -> Result<(), Errno>;
-}
-
-impl<T: OverlayStorage + ?Sized> OverlayStorage for Box<T> {
-    fn len(&mut self) -> Result<u64, Errno> {
-        (**self).len()
-    }
-
-    fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
-        (**self).read_exact_at(offset, dst)
-    }
-
-    fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
-        (**self).write_all_at(offset, src)
-    }
-
-    fn flush(&mut self) -> Result<(), Errno> {
-        (**self).flush()
-    }
-
-    fn truncate(&mut self, len: u64) -> Result<(), Errno> {
-        (**self).truncate(len)
-    }
-}
+pub use crate::positioned_storage::PositionedStorage as OverlayStorage;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum OverlayKey {
@@ -868,29 +841,66 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         Ok(result)
     }
 
-    pub fn for_each_metadata<F>(&mut self, mut visit: F) -> Result<(), Errno>
+    pub fn for_each_metadata<F>(&mut self, visit: F) -> Result<(), Errno>
     where
         F: FnMut(&OverlayKey, Option<&[u8]>) -> Result<(), Errno>,
     {
-        let mut indexed_position = 0u64;
+        self.for_each_metadata_between(None, None, visit)
+    }
+
+    pub(crate) fn for_each_inode<F>(&mut self, mut visit: F) -> Result<(), Errno>
+    where
+        F: FnMut(u64, Option<&[u8]>) -> Result<(), Errno>,
+    {
+        self.for_each_metadata_between(None, Some(&OverlayKey::FileSize(0)), |key, value| {
+            let OverlayKey::Inode(ino) = key else { return Err(Errno::EIO) };
+            visit(*ino, value)
+        })
+    }
+
+    /// Visit directory mutations ordered by parent and name. Values of `None`
+    /// are removal records and must shadow entries in the checked base.
+    pub(crate) fn for_each_dirent<F>(&mut self, first_parent: u64, end_parent: Option<u64>, visit: F) -> Result<(), Errno>
+    where
+        F: FnMut(&OverlayKey, Option<&[u8]>) -> Result<(), Errno>,
+    {
+        let boundary = |parent| OverlayKey::Dirent { parent, name: Vec::new() };
+        let start = boundary(first_parent);
+        let end = end_parent.map(boundary);
+        self.for_each_metadata_between(Some(&start), end.as_ref(), visit)
+    }
+
+    fn for_each_metadata_between<F>(
+        &mut self,
+        start: Option<&OverlayKey>,
+        end: Option<&OverlayKey>,
+        mut visit: F,
+    ) -> Result<(), Errno>
+    where
+        F: FnMut(&OverlayKey, Option<&[u8]>) -> Result<(), Errno>,
+    {
         let mut checkpoint = self
             .checkpoint
             .as_mut()
             .filter(|checkpoint| checkpoint.has_metadata_index());
         if let Some(checkpoint) = checkpoint.as_mut() { checkpoint.reclaim_supplemental_read_cache(); }
-        let mut indexed = match checkpoint.as_mut() {
-            Some(ref mut checkpoint) => checkpoint.metadata_entry_at(0)?,
-            None => None,
+        let (mut indexed_position, mut indexed) = match (checkpoint.as_mut(), start) {
+            (Some(checkpoint), Some(start)) => checkpoint.seek_metadata(start)?,
+            (Some(checkpoint), None) => (0, checkpoint.metadata_entry_at(0)?),
+            (None, _) => (0, None),
         };
-        let mut tail = self.state.entries.iter().peekable();
+        let mut tail = self.state.entries.range_between(start, None).peekable();
         let mut indexed_bytes = IoBuffer::new();
         while indexed.is_some() || tail.peek().is_some() {
-            let ordering = match (indexed.as_ref(), tail.peek()) {
-                (Some(indexed), Some((key, _))) => indexed.key.cmp(key),
-                (Some(_), None) => core::cmp::Ordering::Less,
-                (None, Some(_)) => core::cmp::Ordering::Greater,
+            use core::cmp::Ordering;
+            let (ordering, key) = match (indexed.as_ref(), tail.peek()) {
+                (Some(indexed), Some((key, _))) if &indexed.key > *key => (Ordering::Greater, *key),
+                (Some(indexed), Some((key, _))) => (indexed.key.cmp(key), &indexed.key),
+                (Some(indexed), None) => (Ordering::Less, &indexed.key),
+                (None, Some((key, _))) => (Ordering::Greater, *key),
                 (None, None) => break,
             };
+            if end.is_some_and(|end| key >= end) { break; }
             match ordering {
                 core::cmp::Ordering::Less => {
                     let entry = indexed.as_ref().ok_or(Errno::EIO)?;
@@ -3230,17 +3240,6 @@ impl<'a, S: OverlayStorage> CompactedTransactions<'a, S> {
             .expect("validated compacted record changed");
         self.consumed = next;
         Ok(Some((record, self.transaction_start)))
-    }
-}
-
-pub(crate) fn validate_dirent_name(parent: u64, name: &[u8]) -> Result<(), Errno> {
-    if parent != 0 && !name.is_empty() && name.len() <= 255
-        && name != b"." && name != b".."
-        && !name.iter().any(|byte| *byte == 0 || *byte == b'/')
-    {
-        Ok(())
-    } else {
-        Err(Errno::EINVAL)
     }
 }
 
@@ -6080,6 +6079,53 @@ mod tests {
         assert_eq!(recovered.visible_file_size(7, 0), Ok(16384));
         assert_eq!(recovered.visible_zero_from(7), Ok(Some(2)));
         assert_eq!(recovered.metadata_value(&directory_key(b"old")), Ok(Some(None)));
+    }
+
+    #[test]
+    fn directory_range_merges_checkpoint_and_tail_without_reading_unrelated_values() {
+        let digest = [53; 32];
+        let key = |parent, name: &[u8]| OverlayKey::Dirent { parent, name: name.to_vec() };
+        let put = |parent, name, inode: u64| Mutation::Put {
+            key: key(parent, name), value: inode.to_le_bytes().to_vec(),
+        };
+        let mut source = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        source.commit(&[
+            Mutation::Put { key: inode_key(), value: vec![1; 128] },
+            put(4, b"before", 81),
+            put(5, b"existing", 82),
+            put(5, b"removed", 83),
+            put(5, b"replaced", 84),
+            put(6, b"outside", 85),
+        ]).unwrap();
+        let mut compacted = source.compact_metadata_into(MemoryStorage::default()).unwrap();
+        let end = compacted.end;
+        let index = compacted.checkpoint_blocks_with_metadata_into(MemoryStorage::default()).unwrap();
+        let mut journal = OverlayJournal::open_with_checkpoint_metadata(
+            compacted.into_storage(), index.into_storage(), digest, end,
+        ).unwrap();
+        journal.commit(&[
+            put(4, b"tail-before", 90),
+            put(5, b"added", 91),
+            Mutation::Delete { key: key(5, b"removed") },
+            put(5, b"replaced", 92),
+            put(6, b"tail-after", 93),
+        ]).unwrap();
+        let bytes_read = Arc::new(AtomicU64::new(0));
+        journal.storage.read_bytes = Some(bytes_read.clone());
+        let mut actual = Vec::new();
+        journal.for_each_dirent(5, Some(6), |key, value| {
+            actual.push((key.clone(), value.map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))));
+            Ok(())
+        }).unwrap();
+        assert_eq!(actual, vec![
+            (key(5, b"added"), Some(91)),
+            (key(5, b"existing"), Some(82)),
+            (key(5, b"removed"), None),
+            (key(5, b"replaced"), Some(92)),
+        ]);
+        assert_eq!(bytes_read.load(Ordering::Relaxed), 8, "only the surviving indexed value is read");
+        journal.for_each_dirent(6, Some(6), |_, _| panic!("empty range")).unwrap();
+        journal.for_each_dirent(7, None, |_, _| panic!("past the last record")).unwrap();
     }
 
     #[test]

@@ -662,7 +662,7 @@ fn target_pread(
         crate::executable_backing::read(host_handle, offset, buf, host)
     } else if crate::rootfs::is_rootfs_file_handle(host_handle) {
         crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
                 Ok(0)

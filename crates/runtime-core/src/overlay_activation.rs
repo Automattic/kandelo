@@ -1,5 +1,6 @@
 use sha2::{Digest, Sha256};
 use wasm_posix_shared::Errno;
+mod kifs_generation;
 
 pub const RECORD_BYTES: usize = 128;
 pub const WIRE_BYTES: usize = 120;
@@ -226,6 +227,7 @@ pub unsafe fn codec_ffi(operation: u32, input: *const u8, input_length: u32, out
         13..=16 => crate::overlay_recovery::codec(operation, input, output),
         19 | 20 => crate::image_binding::codec(operation, input, output),
         21..=25 => crate::overlay_generation_policy::codec(operation, input, output),
+        26..=30 => kifs_generation::codec(operation, input, output),
         10 if input == [0] && output.len() >= 8 => {
             output[..8].copy_from_slice(b"KOSC\x02\x00\x00\x00");
             Ok(8)

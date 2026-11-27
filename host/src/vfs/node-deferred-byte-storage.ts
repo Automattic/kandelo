@@ -1,8 +1,8 @@
-import { closeSync, constants, openSync, readSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, openSync, readSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import type { DeferredByteStorage } from "./deferred-byte-spool";
+import type { TemporaryImageStorage } from "./staged-rootfs-image";
 
-export function openNodeDeferredByteStorage(directory: string): DeferredByteStorage {
+export function openNodeDeferredByteStorage(directory: string): TemporaryImageStorage {
   if (constants.O_NOFOLLOW === undefined) throw new Error("Deferred byte storage requires no-follow opens");
   const path = join(directory, "rootfs-deferred-bytes");
   let descriptor: number | null = openSync(path,
@@ -18,6 +18,9 @@ export function openNodeDeferredByteStorage(directory: string): DeferredByteStor
     return descriptor;
   };
   return {
+    getSize: () => fstatSync(live()).size,
+    setSize: length => ftruncateSync(live(), length),
+    flush: () => fsyncSync(live()),
     readAt: (offset, destination) => readSync(live(), destination, 0, destination.byteLength, offset),
     writeAt: (offset, source) => writeSync(live(), source, 0, source.byteLength, offset),
     close: () => {

@@ -10,6 +10,7 @@ import { createKernelScratchTestInstance } from "./support/kernel-scratch-instan
 const ENOSYS = 38;
 const EIO = 5;
 const EPERM = 1;
+const DEFERRED_SIZE_ADDRESS = 128;
 
 /** Write a URI into kernel memory and return its (pointer, length) pair.
  *
@@ -34,6 +35,7 @@ function kernelHarness(
   callbacks: KernelCallbacks = {},
 ): { kernel: WasmPosixKernel & Record<string, any>; memory: WebAssembly.Memory } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  new DataView(memory.buffer).setBigUint64(DEFERRED_SIZE_ADDRESS, 0x1_0000_0014n, true);
   const kernel = createWasmPosixKernelTestHarness({
     memory,
     callbacks,
@@ -41,7 +43,11 @@ function kernelHarness(
     instance: createKernelScratchTestInstance(
       pointerWidth,
       memory,
-      () => exports,
+      () => ({
+        kernel_rootfs_deferred_transfer_size_address: () =>
+          pointerWidth === 8 ? BigInt(DEFERRED_SIZE_ADDRESS) : DEFERRED_SIZE_ADDRESS,
+        ...exports,
+      }),
       (capacity) => {
         const allocator = exports.kernel_alloc_scratch;
         if (typeof allocator !== "function") {
@@ -49,6 +55,8 @@ function kernelHarness(
         }
         return Reflect.apply(allocator, undefined, [capacity]) as number | bigint;
       },
+      4,
+      ["kernel_rootfs_deferred_transfer_size_address"],
     ),
   }) as WasmPosixKernel & Record<string, any>;
   return { kernel, memory };
@@ -208,6 +216,18 @@ describe("host_fetch_deferred provider seam", () => {
     } finally { warning.mockRestore(); }
   });
 
+  it.each(["EDQUOT", "ENOSPC"])("reports host %s on the physical storage boundary", code => {
+    const onHostDiagnostic = vi.fn();
+    const { kernel, memory } = kernelHarness({}, 4, { onHostDiagnostic });
+    const fail = () => { throw Object.assign(new Error("fixture storage failure"), { code }); };
+    kernel.setPersistentOverlayStorage({ len: () => 0, readExactAt: fail, writeAllAt: fail, flush: fail, truncate: fail, close() {} });
+    const imports = importsOf(kernel, memory);
+    expect(imports.env.host_overlay_write(0n, 4096, 1)).toBe(-28);
+    expect(imports.env.host_overlay_flush()).toBe(-28);
+    expect(onHostDiagnostic).toHaveBeenCalledOnce();
+    expect(onHostDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ source: "storage-capacity" }));
+  });
+
   it("reports ENOSYS when no deferred provider is installed", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);
@@ -250,9 +270,9 @@ describe("host_fetch_deferred provider seam", () => {
   it("reassembles the full 64-bit offset, so a read past 4 GiB is not truncated", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);
-    const seen: bigint[] = [];
-    kernel.setRootfsDeferredProvider((_uri: string, offset: bigint) => {
-      seen.push(offset);
+    const seen: [bigint, number][] = [];
+    kernel.setRootfsDeferredProvider((_uri, offset, _bytes, size) => {
+      seen.push([offset, size]);
       return 0;
     });
 
@@ -260,7 +280,31 @@ describe("host_fetch_deferred provider seam", () => {
     imports.env.host_fetch_deferred(p, l, 4096, 4, 9, 0);
     imports.env.host_fetch_deferred(p, l, 4096, 4, 5, 1);
 
-    expect(seen).toEqual([9n, 0x1_0000_0005n]);
+    expect(seen).toEqual([[9n, 0x1_0000_0014], [0x1_0000_0005n, 0x1_0000_0014]]);
+  });
+
+  it.each([4, 8] as const)("binds the transfer descriptor once and snapshots each bound for width %s", width => {
+    const address = vi.fn(() => width === 8 ? BigInt(DEFERRED_SIZE_ADDRESS) : DEFERRED_SIZE_ADDRESS);
+    const { kernel, memory } = kernelHarness({ kernel_rootfs_deferred_transfer_size_address: address }, width);
+    const imports = importsOf(kernel, memory);
+    const view = new DataView(memory.buffer);
+    const provider = vi.fn((_uri: string, _offset: bigint, _bytes: Uint8Array, _size: number) => 0);
+    kernel.setRootfsDeferredProvider(provider);
+    const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
+    const pointer = (value: number) => width === 8 ? BigInt(value) : value;
+    const fetch = () => imports.env.host_fetch_deferred(pointer(uriPtr), uriLen, pointer(4096), 0, 0, 0);
+
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 0xffff_ffff_ffff_ffffn, true);
+    expect(fetch()).toBe(-EIO);
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 2n ** 53n, true);
+    expect(fetch()).toBe(-75); // EOVERFLOW
+    expect(provider).not.toHaveBeenCalled();
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 0n, true);
+    expect(fetch()).toBe(0);
+    view.setBigUint64(DEFERRED_SIZE_ADDRESS, 123n, true);
+    expect(fetch()).toBe(0);
+    expect(provider.mock.calls.map(call => call[3])).toEqual([0, 123]);
+    expect(address).toHaveBeenCalledOnce();
   });
 
   it("stages installed provider bytes into the destination exactly once", () => {

@@ -958,6 +958,7 @@ export class WasmPosixKernel {
   #memoryGeneration: object = intrinsicObjectFreeze({});
   readonly #kernelEntryGate = new KernelEntryGate();
   #kernelPtrWidth: 4 | 8 = 4;
+  #deferredTransferSizeAddress: KernelPointer | undefined;
   #testEngine: WasmPosixKernelTestHarnessOptions["engine"] | undefined;
   /**
    * One wrapper owns exactly one kernel Wasm generation.
@@ -999,6 +1000,7 @@ export class WasmPosixKernel {
       uri: string,
       offset: bigint,
       dest: Uint8Array,
+      size: number,
     ) => number)
     | undefined = undefined;
   /** Evict only the transport resource rejected by native validation. */
@@ -1028,6 +1030,7 @@ export class WasmPosixKernel {
   #persistentOverlayTargetStorage: PersistentOverlayStorage | null = null;
   #persistentOverlayCompactionStorage: PersistentOverlayStorage | null = null;
   #reportedStorageReadFailure = false;
+  #reportedStorageSpaceFailure = false;
   #storageReadStaging: Uint8Array | null = null;
   #storageReadStagingInUse = false;
   /**
@@ -1847,6 +1850,7 @@ export class WasmPosixKernel {
       uri: string,
       offset: bigint,
       dest: Uint8Array,
+      size: number,
     ) => number,
   ): void {
     this.#rootfsDeferredProvider = provider;
@@ -1929,6 +1933,7 @@ export class WasmPosixKernel {
       this.#instance = testRuntime.instance ?? null;
       this.#memory = testRuntime.memory ?? null;
       this.#kernelPtrWidth = testRuntime.pointerWidth ?? 4;
+      this.#bindDeferredTransferSize();
       this.#testEngine = testRuntime.engine;
       if (
         testRuntime.initialized
@@ -2489,6 +2494,7 @@ export class WasmPosixKernel {
         rawInstance,
         this.#kernelEntryGate,
       );
+      this.#bindDeferredTransferSize();
       this.#initializationState = "initialized";
       const exports = this.#instance.exports;
       const configureCursor = exports.kernel_kms_cursor_configure;
@@ -2596,6 +2602,7 @@ export class WasmPosixKernel {
     this.#memoryGeneration = intrinsicObjectFreeze({});
     this.#memory = null;
     this.#kernelPtrWidth = 4;
+    this.#deferredTransferSizeAddress = undefined;
     this.#initializationState = "uninitialized";
     throw error;
   }
@@ -2836,17 +2843,17 @@ export class WasmPosixKernel {
           const storage = this.#persistentOverlayStorage;
           if (storage === null) return -38;
           try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
-          catch (error) { return negErrno(error); }
+          catch (error) { return this.#persistentWriteErrno("write", error); }
         },
         host_overlay_flush: (): number => {
           const storage = this.#persistentOverlayStorage;
           if (storage === null) return -38;
-          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+          try { storage.flush(); return 0; } catch (error) { return this.#persistentWriteErrno("flush", error); }
         },
         host_overlay_truncate: (length: bigint): number => {
           const storage = this.#persistentOverlayStorage;
           if (storage === null) return -38;
-          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+          try { storage.truncate(length); return 0; } catch (error) { return this.#persistentWriteErrno("truncate", error); }
         },
         host_overlay_target_len: (): bigint => {
           const storage = this.#persistentOverlayTargetStorage;
@@ -2868,17 +2875,17 @@ export class WasmPosixKernel {
           const storage = this.#persistentOverlayTargetStorage;
           if (storage === null) return -38;
           try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
-          catch (error) { return negErrno(error); }
+          catch (error) { return this.#persistentWriteErrno("write staging", error); }
         },
         host_overlay_target_flush: (): number => {
           const storage = this.#persistentOverlayTargetStorage;
           if (storage === null) return -38;
-          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+          try { storage.flush(); return 0; } catch (error) { return this.#persistentWriteErrno("flush staging", error); }
         },
         host_overlay_target_truncate: (length: bigint): number => {
           const storage = this.#persistentOverlayTargetStorage;
           if (storage === null) return -38;
-          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+          try { storage.truncate(length); return 0; } catch (error) { return this.#persistentWriteErrno("truncate staging", error); }
         },
         host_overlay_compaction_len: (): bigint => {
           const storage = this.#persistentOverlayCompactionStorage;
@@ -2900,17 +2907,17 @@ export class WasmPosixKernel {
           const storage = this.#persistentOverlayCompactionStorage;
           if (storage === null) return -38;
           try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
-          catch (error) { return negErrno(error); }
+          catch (error) { return this.#persistentWriteErrno("write compaction", error); }
         },
         host_overlay_compaction_flush: (): number => {
           const storage = this.#persistentOverlayCompactionStorage;
           if (storage === null) return -38;
-          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+          try { storage.flush(); return 0; } catch (error) { return this.#persistentWriteErrno("flush compaction", error); }
         },
         host_overlay_compaction_truncate: (length: bigint): number => {
           const storage = this.#persistentOverlayCompactionStorage;
           if (storage === null) return -38;
-          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+          try { storage.truncate(length); return 0; } catch (error) { return this.#persistentWriteErrno("truncate compaction", error); }
         },
         host_pwrite: (
           handle: bigint,
@@ -4854,19 +4861,6 @@ export class WasmPosixKernel {
     );
   }
 
-  /**
-   * host_fetch_deferred(uri_ptr, uri_len, buf_ptr, buf_len, offset) -> i32
-   *
-   * Serve positioned bytes of the deferred resource at `uri` from the installed
-   * provider. Bytes are staged outside kernel memory and published once (never
-   * lend a live view of Rust-owned memory to the provider), mirroring
-   * `#hostReadAt`. Reports ENOSYS when no provider is installed, so the seam is
-   * truthfully unbacked until the worker wires it.
-   *
-   * The address is whatever the image recorded, relayed verbatim. This host
-   * does not interpret it, and relaying it is not a decision that it may be
-   * fetched — that decision belongs to the provider that goes and fetches.
-   */
   #hostExchangeSourceRead(
     source: bigint,
     offset: bigint,
@@ -4902,6 +4896,24 @@ export class WasmPosixKernel {
     return result;
   }
 
+  #bindDeferredTransferSize(): void {
+    const address = this.#instance?.exports.kernel_rootfs_deferred_transfer_size_address;
+    if (typeof address !== "function") return;
+    const pointer = this.toKernelPtr(address());
+    if (pointer === 0 || pointer === 0n) {
+      throw new Error("Kernel returned a null deferred transfer descriptor");
+    }
+    this.#readKernelBytes(pointer, 8);
+    this.#deferredTransferSizeAddress = pointer;
+  }
+
+  /**
+   * Serve positioned bytes using the URI and resource length recorded in the
+   * filesystem. The provider decides whether it can serve that URI and uses
+   * the length to bound its storage. Stage provider output outside Rust-owned
+   * memory and copy the result after validating the count. An absent provider
+   * reports ENOSYS.
+   */
   #hostFetchDeferred(
     uri: string,
     offset: bigint,
@@ -4911,6 +4923,16 @@ export class WasmPosixKernel {
     if (provider === undefined) {
       return -38; // ENOSYS
     }
+    const sizeAddress = this.#deferredTransferSizeAddress;
+    if (sizeAddress === undefined) return -38; // ENOSYS
+    const sizeBytes = this.#readKernelBytes(sizeAddress, 8);
+    const sizeView = new IntrinsicDataView(typedArrayBuffer(sizeBytes));
+    const low = dataViewGetUint32(sizeView, 0, true);
+    const high = dataViewGetUint32(sizeView, 4, true);
+    // MAX marks the idle descriptor. Snapshot it before entering the provider.
+    if (low === 0xffff_ffff && high === 0xffff_ffff) return -5; // EIO
+    const size = high * 2 ** 32 + low;
+    if (!intrinsicNumberIsSafeInteger(size)) return -75; // EOVERFLOW
     const destinationCapacity = destination.capacity;
     let staged: Uint8Array;
     try {
@@ -4920,7 +4942,7 @@ export class WasmPosixKernel {
     }
     let result: number;
     try {
-      result = provider(uri, offset, staged);
+      result = provider(uri, offset, staged, size);
     } catch {
       return -5; // EIO: the provider violated its byte-source contract.
     }
@@ -4989,6 +5011,20 @@ export class WasmPosixKernel {
     } finally {
       this.#storageReadStagingInUse = false;
     }
+  }
+
+  #persistentWriteErrno(operation: string, error: unknown): number {
+    const quota = typeof error === "object" && error !== null && "code" in error && error.code === "EDQUOT";
+    const status = quota ? -28 : negErrno(error);
+    if (status === -28 && !this.#reportedStorageSpaceFailure) {
+      this.#reportedStorageSpaceFailure = true;
+      const message = `Host storage refused a filesystem ${operation} because its available space or quota was exhausted.`;
+      try {
+        if (this.callbacks.onHostDiagnostic) this.callbacks.onHostDiagnostic({ pid: 0, source: "storage-capacity", message });
+        else console.warn(message);
+      } catch { /* Keep the original storage errno if a diagnostic sink fails. */ }
+    }
+    return status;
   }
 
   #readOverlayIntoDestination(stage: string, storage: PersistentOverlayStorage, offset: bigint, destination: RustLentKernelDestination): number {

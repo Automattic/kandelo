@@ -392,10 +392,6 @@ export type ProcessLifecycle<Info extends ProcessLifecycleInfo> =
 export function configureRootfsOverlayFromImage(
   kernel: CentralizedKernelWorker,
   options: {
-    /** Read the image at a CONTAINER offset; `0` at or past the end. */
-    imageRead: (at: number, dest: Uint8Array) => number;
-    imageLength: number;
-    persistentImageBinding?: PersistentImageReadBinding;
     /** Report lazy transfer progress. The fetch is the host's, so its progress is too. */
     onLazyProgress?: DeferredProgress;
     foreignPrefixes: string[];
@@ -411,8 +407,14 @@ export function configureRootfsOverlayFromImage(
     /** Where the deployment serves package members; consulted after
      *  `lazyUrlMap`. See `lazyAssetDirectory` in `browser-kernel-protocol.ts`. */
     lazyAssetDirectory?: string;
-  },
-): () => Map<string, number> {
+  } & ({
+    /** Read the image at a CONTAINER offset; `0` at or past the end. */
+    imageRead: (at: number, dest: Uint8Array) => number;
+    imageLength: number;
+    persistentImageBinding?: PersistentImageReadBinding;
+  } | { standaloneVolume: true }),
+): (standalone?: boolean) => Map<string, number> {
+  let declaredSizes = "standaloneVolume" in options;
   let resourceLimits: Map<string, number> | undefined;
   const rejectedResources = new Set<string>();
   const metadataBudget = options.deferredByteSpool?.metadataBudget ?? kernel.rootfsTransportMetadataBudget();
@@ -437,9 +439,9 @@ export function configureRootfsOverlayFromImage(
   };
   const fetchUrlBytes =
     installedLazyFetcher
-      ? async (url: string, onProgress?: DeferredByteProgress) => {
+      ? async (url: string, onProgress?: DeferredByteProgress, size?: number) => {
         const resolved = resolveAddress(url);
-        const limit = resourceLimits?.get(url);
+        const limit = declaredSizes ? size : resourceLimits?.get(url);
         if (limit === undefined) throw new Error(`No native lazy resource bound for ${url}`);
         const prepare: LazyPrepare | undefined = installedLazyPrepare === undefined
           ? undefined
@@ -476,6 +478,13 @@ export function configureRootfsOverlayFromImage(
     resourceLimits = undefined;
     rejectedResources.clear();
   };
+  const reject = (uri: string) => { rejectedResources.add(uri); discardDeferred(uri); };
+  if ("standaloneVolume" in options) {
+    kernel.configureRootfsTransport(deferredProvider, options.foreignPrefixes, options.nosuid,
+      whenFetchSettles, reject, close);
+    // Node can resolve new repository URLs lazily. There is no URL census on a volume boot.
+    return () => new Map<string, number>();
+  }
   kernel.configureRootfsOverlay(
     deferredProvider,
     options.foreignPrefixes,
@@ -483,14 +492,20 @@ export function configureRootfsOverlayFromImage(
     options.imageLength,
     options.imageRead,
     whenFetchSettles,
-    uri => { rejectedResources.add(uri); discardDeferred(uri); },
+    reject,
     close,
     options.persistentImageBinding,
   );
   // Populate only after native image validation, outside Wasm imports. These
   // are transfer bounds, never a second filesystem or content authority.
-  return () => {
+  return (standalone = false) => {
     if (disposed) throw new Error("Root filesystem deferred transport is disposed");
+    if (standalone) {
+      declaredSizes = true;
+      if (resourceLimits instanceof StorageMetadataMap) resourceLimits.dispose();
+      resourceLimits = undefined;
+      return new Map<string, number>();
+    }
     const next = kernel.rootfsLazyResourceLimits(metadataBudget);
     if (resourceLimits instanceof StorageMetadataMap) resourceLimits.dispose();
     resourceLimits = next;

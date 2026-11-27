@@ -59,6 +59,10 @@ import {
 } from "./source-rootfs-shell-overlay";
 import type { ProgramOriginalResolver } from "./program-originals";
 import {
+  MAIN_SHELL_VFS_INODE_CAPACITY,
+  MAIN_SHELL_VFS_MIN_FREE_INODES,
+} from "../../../web-libs/kandelo-session/src/vfs-capacity";
+import {
   CANONICAL_SHELL_SELECTION,
   filterDemoConfigForSelection,
   partialShellSelection,
@@ -2009,8 +2013,13 @@ export async function buildSourceRootfsShellImage(
 
   // Serialized here rather than through saveImage so the compressed-size
   // budget is checked before anything is written.
+  fs.setExportInodeCapacity(MAIN_SHELL_VFS_INODE_CAPACITY);
   const serialized = await serializeImage(fs, inputs.outFile, {
     expectedMaxByteLength: sourceCapacity.maxByteLength,
+    headroom: {
+      minimumFreeBytes: 0,
+      minimumFreeInodes: MAIN_SHELL_VFS_MIN_FREE_INODES,
+    },
     metadata: {
       ...sourceMetadata,
       version: 1,

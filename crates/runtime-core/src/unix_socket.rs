@@ -51,12 +51,20 @@ pub(crate) struct PreparedUnixRename {
 
 /// Global registry mapping resolved paths to listening Unix sockets.
 pub struct UnixSocketRegistry {
+    pathname_generation: u64,
     entries: PreparedMap<Vec<u8>, UnixSocketEntry>,
 }
 
 impl UnixSocketRegistry {
+    pub(crate) fn pathname_generation(&self) -> u64 { self.pathname_generation }
+
+    fn note_pathname_change(&mut self) {
+        self.pathname_generation = self.pathname_generation.saturating_add(1);
+    }
+
     pub const fn new() -> Self {
         UnixSocketRegistry {
+            pathname_generation: 0,
             entries: PreparedMap::new(),
         }
     }
@@ -82,7 +90,9 @@ impl UnixSocketRegistry {
 
     pub(crate) fn publish_registration(&mut self, prepared: PreparedUnixName) -> bool {
         if self.entries.contains_key(prepared.0.key()) { return false; }
+        let is_pathname = prepared.0.key().first() == Some(&b'/');
         self.entries.insert_prepared(prepared.0);
+        if is_pathname { self.note_pathname_change(); }
         true
     }
 
@@ -177,6 +187,7 @@ impl UnixSocketRegistry {
         }
         for (_, entry) in prepared.moves { self.entries.insert_prepared(entry.0); }
         if let Some(path) = prepared.displaced { self.entries.remove(path.as_ref()); }
+        if changed { self.note_pathname_change(); }
         changed
     }
 
@@ -189,14 +200,17 @@ impl UnixSocketRegistry {
 
     /// Remove a Unix socket registration by path.
     pub fn unregister(&mut self, path: &[u8]) -> bool {
-        self.entries.remove(path).is_some()
+        let removed = self.entries.remove(path).is_some();
+        if removed && path.first() == Some(&b'/') { self.note_pathname_change(); }
+        removed
     }
 
     /// Remove every registration at or below `prefix`: a directory tree the
     /// kernel removes on its own.
     pub fn unregister_under(&mut self, prefix: &[u8]) {
-        self.entries
-            .retain(|path, _| !crate::fifo::contains_path(path, prefix));
+        let before = self.entries.len();
+        self.entries.retain(|path, _| !crate::fifo::contains_path(path, prefix));
+        if self.entries.len() != before { self.note_pathname_change(); }
     }
 
     /// Remove all registrations for a given pid (process cleanup).

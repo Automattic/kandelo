@@ -40,7 +40,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
               active = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024,
                 rootfsMetadataBytes: parameters.budget, maxMemoryPages: 1024, memoryProfile: "constrained" });
               await active.initFromOpfsImage({ kernelWasm, vfsImageFile: base, persistentImageBinding: parameters.binding,
-                experimentalResizablePersistenceName: name, persistentComputerName: name });
+                kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: name, persistentComputerName: name });
               if (phase === "replace") {
                 for (let index = 0; index < parameters.count; index++) {
                   const suffix = String(index).padStart(4, "0");
@@ -137,7 +137,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
           active = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, maxMemoryPages: 1024, memoryProfile: "constrained" });
           await active.initFromOpfsImage({ kernelWasm, vfsImageFile: base,
             persistentImageBinding: { ...parameters.binding, dataCachePages: 2, indexCachePages: 2 },
-            experimentalResizablePersistenceName: name, persistentComputerName: name });
+            kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: name, persistentComputerName: name });
           const before = await statistics();
           const offset = 5 * 1024 * 1024 + 37;
           const length = 1024 * 1024 - 257;
@@ -222,7 +222,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
             const boot = async (existing: boolean) => {
               active = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, maxMemoryPages: 1024, memoryProfile: "constrained" });
               await active.initFromOpfsImage({ kernelWasm, vfsImageFile: file, persistentImageBinding: fixture.binding,
-                experimentalResizablePersistenceName: journalName, persistentComputerName: journalName,
+                kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: journalName, persistentComputerName: journalName,
                 requireExistingRootfsPersistence: existing });
               return active;
             };

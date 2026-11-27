@@ -172,8 +172,8 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
 export const PARTIAL_IMAGE = partialImageModule as {
   imageUrl: string;
   manifest: {
-    productId: string;
     image: string;
+    productId: string;
     sha256: string;
     packages: string[];
     activities: string[];
@@ -1954,6 +1954,7 @@ async function bootProfile(
     );
   };
   let kernel: BrowserKernel | null = null;
+  let filesystemUpgradeMessage: string | undefined;
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
@@ -1985,9 +1986,14 @@ async function bootProfile(
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onHostDiagnostic: (diagnostic) => {
         if (!isCurrent()) return;
+        const upgrading = diagnostic.source === "Filesystem upgrade";
+        if (upgrading) {
+          filesystemUpgradeMessage = diagnostic.message;
+          tick(diagnostic.message);
+        }
         host.pushDmesg({
           t: bootElapsedMs(bootStartedAt),
-          level: "warn",
+          level: upgrading ? "info" : "warn",
           facility: "kernel",
           msg: diagnostic.message,
         });
@@ -2012,6 +2018,10 @@ async function bootProfile(
     // not accept (the lazy-asset directory above) is a type error, never a field the
     // host silently drops.
     if (opfsImage !== undefined && opfsImage !== null && persistence !== null) {
+      // The Library owns first boot. Keep a failed initialization eligible for
+      // retry, and let initialized computers reopen their saved generation.
+      const initializeKifsV3 = markFilesystemInitialized !== undefined
+        && !requireExistingFilesystem && !opfsImage.journalInitialized;
       try {
         try {
           await kernel.initFromOpfsImage({
@@ -2025,6 +2035,7 @@ async function bootProfile(
             persistentComputerName: experimentalPersistenceName,
             persistenceComputerLease: experimentalPersistenceLease,
             requireExistingRootfsPersistence: opfsImage.journalInitialized,
+            ...(initializeKifsV3 ? { kifsUpgradeProfile: "development" } : {}),
           });
         } catch (error) {
           if (isNoValidOverlayGenerationError(error) &&
@@ -2035,6 +2046,10 @@ async function bootProfile(
             if (previous !== null) throw new RetryPreviousPersistenceGeneration(previous);
           }
           throw error;
+        }
+        if (initializeKifsV3 && kernel.getRootfsFormatVersion() !== 3) {
+          const reason = filesystemUpgradeMessage === undefined ? "" : ` ${filesystemUpgradeMessage}`;
+          throw new Error(`Could not initialize the new computer as KIFS v3.${reason}`);
         }
         await assertPersistentImageBootMetadata(kernel, opfsImage.composition);
         if (profileId !== opfsImage.composition.profileId) {
@@ -2139,8 +2154,10 @@ async function bootProfile(
     };
     host.services = createServiceControls(host, agentIdentity(), assertCurrent);
     const storageId = persistence === null ? null : browserComputerIdForStorageName(persistence.name);
+    const version = kernel.getRootfsFormatVersion();
     host.setFilesystemConfiguration(opfsImage && persistence ? {
       storage: "opfs",
+      version,
       computerId: storageId ?? undefined,
       format: JOURNALED_OPFS_IMAGE_STORAGE_FORMAT,
       directory: storageId === null ? "kandelo-persistent-overlay" : `kandelo/computers/${storageId}/filesystem`,
@@ -2150,7 +2167,7 @@ async function bootProfile(
       baseBytes: opfsImage.length,
       verification: opfsImage.integrityPolicy,
       journalNamespace: opfsImage.journalName,
-    } : { storage: "memory" });
+    } : { storage: "memory", version });
     host.imageActivities = {
       list: async () => {
         assertCurrent();

@@ -58,6 +58,8 @@ struct WatchList {
 pub(crate) struct DirectoryIndex {
     version: u64,
     entries: Option<IndexedNames>,
+    positioned: Option<PositionedIndex>,
+    positioned_attempted: bool,
 }
 
 struct IndexedNames {
@@ -71,7 +73,95 @@ struct IndexedName {
     cookie: u64,
 }
 
+struct PositionedIndex {
+    entries: Vec<(u64, usize, usize)>,
+    names: Vec<u8>,
+    reservation: MetadataReservation<'static>,
+}
+
+impl PositionedIndex {
+    fn append(&mut self, name: &[u8], inode: u64) -> Result<(), Errno> {
+        let end = self.names.len().checked_add(name.len()).ok_or(Errno::ENOMEM)?;
+        let count = self.entries.len() + 1;
+        if count > self.entries.capacity() || end > self.names.capacity() {
+            let entries = self.entries.capacity().max(count.next_power_of_two());
+            let bytes = self.names.capacity().max(end.next_power_of_two());
+            let charge = |entries: usize, bytes: usize| {
+                entries.checked_mul(size_of::<(u64, usize, usize)>())
+                    .and_then(|index| index.checked_add(bytes)).ok_or(Errno::ENOMEM)
+            };
+            self.reservation.resize(charge(entries, bytes)?)?;
+            self.entries.try_reserve_exact(entries - self.entries.len()).map_err(|_| Errno::ENOMEM)?;
+            self.names.try_reserve_exact(bytes - self.names.len()).map_err(|_| Errno::ENOMEM)?;
+            self.reservation.resize(charge(self.entries.capacity(), self.names.capacity())?)?;
+        }
+        self.entries.push((inode, self.names.len(), end));
+        self.names.extend_from_slice(name);
+        Ok(())
+    }
+
+    fn update(&mut self, name: &[u8], before: Option<FileId>, after: Option<FileId>) -> Result<(), Errno> {
+        if let Some(FileId::Host { ino, .. }) = before {
+            let start = self.entries.partition_point(|&(number, _, _)| number < ino);
+            if let Some(offset) = self.entries[start..].iter().take_while(|&&(number, _, _)| number == ino)
+                .position(|&(_, start, end)| &self.names[start..end] == name) {
+                self.entries.remove(start + offset);
+            }
+        }
+        if let Some(FileId::Host { ino, .. }) = after {
+            let position = self.entries.partition_point(|&(number, start, end)| {
+                (number, &self.names[start..end]) < (ino, name)
+            });
+            if self.entries.get(position).is_some_and(|&(number, start, end)| {
+                number == ino && &self.names[start..end] == name
+            }) {
+                return Ok(());
+            }
+            self.append(name, ino)?;
+            self.entries[position..].rotate_right(1);
+        }
+        Ok(())
+    }
+}
+
+type VisitName<'a> = dyn FnMut(&[u8], u64) -> Result<(), Errno> + 'a;
+
 impl DirectoryIndex {
+    /// Index a positioned directory on first use. Namespace events keep the
+    /// index current. Large directories can still stream aliases in budget.
+    pub(crate) fn matching_positioned(
+        &mut self,
+        inode: u64,
+        mut enumerate: impl FnMut(&mut VisitName<'_>) -> Result<(), Errno>,
+        emit: &mut dyn FnMut(&[u8]),
+    ) {
+        if !self.positioned_attempted {
+            self.positioned_attempted = true;
+            self.positioned = (|| {
+                let mut index = PositionedIndex {
+                    entries: Vec::new(), names: Vec::new(),
+                    reservation: DIRECTORY_INDEX_BUDGET.reserve(0).ok()?,
+                };
+                enumerate(&mut |name, child| index.append(name, child)).ok()?;
+                index.entries.sort_unstable_by(|&(left, start, end), &(right, other_start, other_end)| {
+                    (left, &index.names[start..end]).cmp(&(right, &index.names[other_start..other_end]))
+                });
+                Some(index)
+            })();
+        }
+        if let Some(index) = &self.positioned {
+            let start = index.entries.partition_point(|&(number, _, _)| number < inode);
+            for &(_, start, end) in index.entries[start..].iter().take_while(|&&(number, _, _)| number == inode) {
+                emit(&index.names[start..end]);
+            }
+        } else {
+            let _ = enumerate(&mut |name, child| {
+                if child == inode { emit(name); }
+                Ok(())
+            });
+        }
+    }
+
     pub(crate) fn matching_names<'a, I: Iterator<Item = (&'a [u8], u32, u64)>>(
         &mut self,
         inode: u32,
@@ -125,8 +215,14 @@ struct Record {
 struct Watch {
     owner: OfdId,
     target: FileId,
-    directory: Option<u32>,
+    directory: Option<WatchedDirectory>,
     queue: VecDeque<Record>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum WatchedDirectory {
+    Resident(u32),
+    Positioned,
 }
 
 impl Watch {
@@ -155,7 +251,7 @@ pub(crate) fn active() -> bool {
     cfg!(feature = "vfs-events") && ACTIVE.load(Ordering::Acquire)
 }
 
-pub(crate) fn bind(device: &OpenFileDesc, target: FileId, directory: Option<u32>) -> Result<(), Errno> {
+pub(crate) fn bind(device: &OpenFileDesc, target: FileId, directory: Option<WatchedDirectory>) -> Result<(), Errno> {
     let mut watches = WATCHES.lock();
     if watches.entries.iter().any(|watch| watch.owner == device.ofd_id) { return Err(Errno::EBUSY); }
     if watches.entries.len() == MAX_WATCHES { return Err(Errno::ENOSPC); }
@@ -246,9 +342,27 @@ impl<'a> Entry<'a> {
 
     pub(crate) fn committed(self, data_changed: bool) {
         let after = (self.lookup)(self.path).ok().map(identity);
+        self.committed_as(after, data_changed);
+    }
+
+    /// Publish a name whose post-mutation identity is already known.
+    pub(crate) fn committed_as(self, after: Option<FileId>, data_changed: bool) {
         let kind = if self.before != after { RENAME } else if data_changed && after.is_some() { CHANGE } else { return };
-        dispatch(|watch, _| {
-            if Some(watch.target) == self.parent { watch.append(kind, self.name); }
+        dispatch(|watch, directories| {
+            if Some(watch.target) == self.parent {
+                if kind == RENAME && matches!(watch.directory, Some(WatchedDirectory::Positioned)) {
+                    let position = directories.binary_search_by_key(&watch.target, |(id, _)| *id)
+                        .expect("watched directory missing");
+                    let index = &mut directories[position].1;
+                    if index.positioned.as_mut().is_some_and(|names| names.update(self.name, self.before, after).is_err()) {
+                        // Names are append-only within a snapshot. Reclaim
+                        // retired names by rebuilding after admission fails.
+                        index.positioned = None;
+                        index.positioned_attempted = false;
+                    }
+                }
+                watch.append(kind, self.name);
+            }
             if Some(watch.target) == self.before || Some(watch.target) == after { watch.append(kind, b""); }
         });
     }
@@ -258,7 +372,7 @@ impl<'a> Entry<'a> {
 /// changed since open. Look for aliases only in directories with subscribers.
 pub(crate) fn changed(
     target: FileId,
-    mut children: impl FnMut(FileId, u32, &mut DirectoryIndex, &mut dyn FnMut(&[u8])),
+    mut children: impl FnMut(FileId, WatchedDirectory, &mut DirectoryIndex, &mut dyn FnMut(&[u8])),
 ) {
     dispatch(|watch, directories| {
         if watch.target == target { watch.append(CHANGE, b""); }

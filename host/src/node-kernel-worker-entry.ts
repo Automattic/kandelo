@@ -64,9 +64,8 @@ import type {
 import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
 import { parseSealedGenerationSlot } from "./vfs/overlay-generation-seal";
-import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { LiveOverlayCompactor, type LiveFilesystemCompactor, NoValidOverlayGenerationError, validateSavedKifsProfile } from "./vfs/overlay-generation-selection";
 import { UnconfirmedOverlayActivationError } from "./vfs/overlay-generation-activation";
 import { OverlayGenerationMetadata } from "./vfs/overlay-generation-metadata";
 import {
@@ -233,7 +232,7 @@ let kernelWorker: CentralizedKernelWorker;
 let groupedSession: GroupedSessionRuntime | undefined;
 let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
-let liveOverlayCompactor: LiveOverlayCompactor | null = null;
+let liveOverlayCompactor: LiveFilesystemCompactor | null = null;
 let overlayGenerationMetadata: OverlayGenerationMetadata | null = null;
 let persistentOverlayLock: import("node:sqlite").DatabaseSync | null = null;
 let pcmDriver: NodePcmDriver | null = null;
@@ -1058,13 +1057,44 @@ function cleanupSessionDir(): Promise<void> {
 const remoteSegmentRuntime = new RemoteSegmentRuntime();
 let connectedNamesFile: ConnectedNamesFile | undefined;
 
+async function acquireRootfsStorageLock(path: string): Promise<import("node:sqlite").DatabaseSync> {
+  if (!isAbsolute(path) || basename(path) === "." || basename(path) === "..") {
+    throw new Error("rootfs persistence path must be an absolute file path");
+  }
+  const lockPath = `${path}.lock`;
+  const lockStat = lstatSync(lockPath, { throwIfNoEntry: false });
+  if (lockStat !== undefined && (!lockStat.isFile() || lockStat.nlink !== 1)) {
+    throw new Error(`rootfs persistence has a legacy or invalid lock at ${lockPath}; verify its owner has stopped before removing it`);
+  }
+  const sqliteModuleName = "node:sqlite";
+  const { DatabaseSync }: typeof import("node:sqlite") = await import(sqliteModuleName);
+  const lock = new DatabaseSync(lockPath, { timeout: 0 });
+  try {
+    lock.exec("BEGIN EXCLUSIVE");
+    return lock;
+  } catch (error) {
+    lock.close();
+    throw error;
+  }
+}
+
 async function handleInit(msg: InitMessage) {
   observeProcessGenerations = msg.observeProcessGenerations === true;
   if (observeProcessGenerations) generationObservations.enable();
   processMemoryCreators.assertOpen("kernel initialization");
   initReady = false;
   injectedExecWorkerConstructionFailure = false;
-  if (msg.rootfsImageFile !== undefined) {
+  validateSavedKifsProfile(msg.kifsUpgradeProfile, msg.experimentalResizablePersistencePath !== undefined);
+  const v3Identity = msg.experimentalKifsV3Identity;
+  if (v3Identity !== undefined) {
+    if (msg.rootfsImageFile === undefined || msg.rootfsImage !== undefined
+      || msg.rootfsImageIntegrity !== undefined || msg.rootfsPersistentImageBinding !== undefined
+      || msg.experimentalFixedPersistencePath !== undefined || msg.experimentalResizablePersistencePath !== undefined
+      || msg.requireExistingRootfsPersistence || (msg.extraMounts?.length ?? 0) !== 0
+      || msg.rootfsMountSpec !== undefined || (msg.sessionSeedTrees?.length ?? 0) !== 0) {
+      throw new Error("KIFS v3 requires a standalone disposable rootfs file with default mounts");
+    }
+  } else if (msg.rootfsImageFile !== undefined) {
     if (msg.rootfsImage !== undefined) {
       throw new Error("rootfs image cannot have both file and in-memory sources");
     }
@@ -1077,7 +1107,7 @@ async function handleInit(msg: InitMessage) {
   } else if (msg.rootfsPersistentImageBinding !== undefined) {
     throw new Error("persistent image binding requires a file source");
   }
-  const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null;
+  const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null || v3Identity !== undefined;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
@@ -1320,22 +1350,32 @@ async function handleInit(msg: InitMessage) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them.
-  let finalizeRootfsTransport: (() => Map<string, number>) | undefined;
-  if (rootImage.has()) {
+  let finalizeRootfsTransport: ((standalone?: boolean) => Map<string, number>) | undefined;
+  if (v3Identity !== undefined) {
+    const path = msg.rootfsImageFile!;
+    persistentOverlayLock = await acquireRootfsStorageLock(path);
+    const storage = OverlayStorageFile.open(new HostFileSystem(dirname(path)),
+      `/${basename(path)}`, false, true, storageCloseLedger);
+    persistentOverlay = storage;
+    kernelWorker.configureKifsV3Root(storage, v3Identity, rootImage.nosuid());
+  }
+  if (v3Identity !== undefined || rootImage.has()) {
     const reader = nodeImageReader;
     const rootfsContainer = msg.rootfsImage === undefined
       ? null
       : new Uint8Array(msg.rootfsImage);
-    if (msg.experimentalFixedPersistencePath !== undefined || msg.experimentalResizablePersistencePath !== undefined) {
+    if (v3Identity !== undefined || msg.experimentalFixedPersistencePath !== undefined || msg.experimentalResizablePersistencePath !== undefined) {
       if (sessionDir === null) throw new Error("Persistent rootfs byte storage requires a session directory");
       deferredByteSpool = await DeferredByteSpool.open(() => openNodeDeferredByteStorage(sessionDir!), kernelWorker.rootfsTransportMetadataBudget());
     }
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: reader === null
-        ? imageReadFromContainer(rootfsContainer!)
-        : (at, destination) => reader.readAt(at, destination),
-      imageLength: reader?.length ?? rootfsContainer!.byteLength,
-      persistentImageBinding: msg.rootfsPersistentImageBinding,
+      ...(v3Identity !== undefined ? { standaloneVolume: true as const } : {
+        imageRead: reader === null
+          ? imageReadFromContainer(rootfsContainer!)
+          : (at, destination) => reader.readAt(at, destination),
+        imageLength: reader?.length ?? rootfsContainer!.byteLength,
+        persistentImageBinding: msg.rootfsPersistentImageBinding,
+      }),
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
@@ -1363,21 +1403,24 @@ async function handleInit(msg: InitMessage) {
   if (msg.config.exchangeByteLimit !== undefined) {
     kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
   }
-  await kernelWorker.init(msg.kernelWasmBytes);
+  await kernelWorker.init(msg.kernelWasmBytes, msg.experimentalResizablePersistencePath !== undefined);
   groupedSession = msg.config.experimentalMemoryGroup === undefined ? undefined : new GroupedSessionRuntime(
     kernelWorker, workerAdapter, msg.config.experimentalMemoryGroup, true,
     (pid, status, generation) => { reportProcessExit(pid, status); ownedJobs.detached(pid); },
     (pid, error) => post({ type: 'host_diagnostic', pid, source: 'grouped runtime', message: error.message }));
-  const rootfsResourceLimits = finalizeRootfsTransport?.();
-  if (rootImage.has() && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
-    // Read metadata after native validation, outside a Wasm import callback.
-    // Freshness checking still starts only on the first lazy read, off-thread.
-    repoLazyAssetResolver = new NodeLazyAssetResolver(
-      [...(rootfsResourceLimits?.keys() ?? [])].filter(
-        (url) => !/^[a-z][a-z0-9+.-]*:/i.test(url),
-      ),
-    );
-  }
+  const finishTransport = (standalone = false) => {
+    const rootfsResourceLimits = finalizeRootfsTransport?.(standalone);
+    if (finalizeRootfsTransport !== undefined && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
+      // Read metadata after native validation, outside a Wasm import callback.
+      // Freshness checking still starts only on the first lazy read, off-thread.
+      repoLazyAssetResolver = new NodeLazyAssetResolver(
+        [...(rootfsResourceLimits?.keys() ?? [])].filter(
+          (url) => !/^[a-z][a-z0-9+.-]*:/i.test(url),
+        ),
+      );
+    }
+  };
+  if (msg.experimentalResizablePersistencePath === undefined) finishTransport();
 
   const pcmTransport = kernelWorker.claimPcmTransport(false);
   pcmDriver = new NodePcmDriver({
@@ -1398,19 +1441,8 @@ async function handleInit(msg: InitMessage) {
   if (persistencePath !== undefined) {
     const path = persistencePath;
     const resizable = msg.experimentalResizablePersistencePath !== undefined;
-    if (!isAbsolute(path) || basename(path) === "." || basename(path) === "..") {
-      throw new Error("rootfs persistence path must be an absolute file path");
-    }
-    const lockPath = `${path}.lock`;
-    const lockStat = lstatSync(lockPath, { throwIfNoEntry: false });
-    if (lockStat !== undefined && (!lockStat.isFile() || lockStat.nlink !== 1)) {
-      throw new Error(`rootfs persistence has a legacy or invalid lock at ${lockPath}; verify its owner has stopped before removing it`);
-    }
-    const sqliteModuleName = "node:sqlite";
-    const { DatabaseSync }: typeof import("node:sqlite") = await import(sqliteModuleName);
-    const lock = new DatabaseSync(lockPath, { timeout: 0 });
+    const lock = await acquireRootfsStorageLock(path);
     try {
-      lock.exec("BEGIN EXCLUSIVE");
       persistentOverlayLock = lock;
       const backend = new HostFileSystem(dirname(path));
       overlayGenerationMetadata = new OverlayGenerationMetadata(kernelWorker.rootfsTransportMetadataBudget());
@@ -1449,43 +1481,33 @@ async function handleInit(msg: InitMessage) {
           }
         },
       } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
-      const selected = await enableBestOverlayGeneration(
-        files,
-        (storage, index, checkpointEnd) => {
-          if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
-          else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
-        },
-        msg.requireExistingRootfsPersistence,
-        (source, target, index) => kernelWorker.convertUnindexedRootfsPersistence(source, target, index, resizable),
-        (error) => {
-          post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `conversion cleanup failed: ${error}` });
-        },
+      const boot = await kernelWorker.bootComputerPersistence(
+        files, resizable, msg.requireExistingRootfsPersistence,
+        (message, source) => post({
+          type: "host_diagnostic", pid: 0, source: source ?? "Persistent rootfs", message,
+        }),
+        msg.kifsUpgradeProfile, () => finishTransport(),
       );
-      const handoff = {
-        memoryPressure: () => kernelWorker.rootfsJournalStateMemory().pressure,
-        prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
-        checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
-        activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
-        cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
-        fail: (error: UnconfirmedOverlayActivationError) => kernelWorker.failPersistenceWriter(error),
-      };
-      const recovered = await collectBootOverlayGenerations(selected, files, (error) => {
-        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${error}` });
-      });
-      const active = await compactOverlayGenerationForBoot(recovered, files, handoff, (error) => {
-        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `boot compaction deferred (ENOSPC): ${error}` });
-      });
-      persistentOverlay = active.journal;
-      persistentOverlayIndex = active.index ?? null;
-      persistentOverlayLock = lock;
-      processMemoryCreators.assertOpen("persistent compactor initialization");
-      liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
-        persistentOverlay = next.journal;
-        persistentOverlayIndex = next.index ?? null;
-      }, (error) => {
-        if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
-        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
-      });
+      if ("volume" in boot) {
+        persistentOverlay = boot.volume;
+        finishTransport(true);
+        liveOverlayCompactor = kernelWorker.createLiveKifsCompactor(boot, files, volume => {
+          persistentOverlay = volume;
+        }, error => post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs",
+          message: `KIFS compaction failed: ${error}` }));
+      } else {
+        const { active, handoff } = boot;
+        persistentOverlay = active.journal;
+        persistentOverlayIndex = active.index ?? null;
+        processMemoryCreators.assertOpen("persistent compactor initialization");
+        liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+          persistentOverlay = next.journal;
+          persistentOverlayIndex = next.index ?? null;
+        }, (error) => {
+          if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
+          post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
+        });
+      }
     } catch (error) {
       if (persistentOverlayLock !== lock) lock.close();
       throw error;
@@ -1499,6 +1521,7 @@ async function handleInit(msg: InitMessage) {
 
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
+  kernelWorker.startRootfsWriteback();
   liveOverlayCompactor?.start();
   if (liveOverlayCompactor !== null) {
     const compactor = liveOverlayCompactor;
@@ -1677,6 +1700,7 @@ async function handleSpawn(msg: SpawnMessage) {
       createdForkHostImports = forkHostImports;
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
+        statLeaseBinding: kernelWorker.createStatLeaseBinding(pid, memory, ptrWidth, programModule),
         pid,
         programBytes,
         programModule,
@@ -2808,6 +2832,7 @@ async function handleExec(
 
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
+        statLeaseBinding: kernelWorker.createStatLeaseBinding(pid, newMemory, newPtrWidth, programModule),
         pid,
         programBytes,
         programModule,
@@ -3786,6 +3811,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function performDestroy() {
+  kernelWorker?.stopRootfsWriteback();
   await groupedSession?.destroy();
   groupedSession = undefined;
   await liveOverlayCompactor?.stop();
@@ -4118,7 +4144,7 @@ async function handleClipboardOffer(
 async function handleExportRootfsImage(
   msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
 ) {
-  if (!rootImage.has()) {
+  if (!kernelWorker?.hasRootfs()) {
     respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
     return;
   }
@@ -4133,9 +4159,10 @@ async function handleExportRootfsImage(
           "rootfs export requires a quiescent kernel with no live or tearing-down processes",
         );
       }
-      // The kernel exports the image it owns: the base tree with every guest
-      // change reconciled into it (`kernel_rootfs_export_container_read`).
-      return kernelWorker.rootfsExportContainerRead();
+      return kernelWorker.exportRootfsImageBytes(() => {
+        if (sessionDir === null) throw new Error("Rootfs snapshot requires a session directory");
+        return openNodeDeferredByteStorage(sessionDir);
+      });
     });
     respondTransferredBytes(msg.requestId, image);
   } catch (error) {
@@ -4149,7 +4176,7 @@ async function handleExportRootfsImage(
 async function handleExportRootfsImageToFile(
   msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
 ) {
-  if (!rootImage.has()) {
+  if (!kernelWorker?.hasRootfs()) {
     respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
     return;
   }
@@ -4164,8 +4191,7 @@ async function handleExportRootfsImageToFile(
       }
       const file = openSync(msg.path, "wx+", 0o600);
       try {
-        const integrity = writeAndVerifyRootfsImage(
-          (visit) => kernelWorker.rootfsExportContainerVisitBorrowed(visit),
+        const integrity = kernelWorker.writeRootfsImageTo(
           {
             writeAllAt(offset, bytes) {
               let written = 0;

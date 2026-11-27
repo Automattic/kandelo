@@ -69,9 +69,8 @@ import { DeferredByteSpool } from "./vfs/deferred-byte-spool";
 import { openOpfsDeferredByteStorage } from "./vfs/opfs-deferred-byte-storage";
 import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
-import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { LiveOverlayCompactor, type LiveFilesystemCompactor, NoValidOverlayGenerationError, validateSavedKifsProfile } from "./vfs/overlay-generation-selection";
 import { UnconfirmedOverlayActivationError } from "./vfs/overlay-generation-activation";
 import { OverlayGenerationMetadata } from "./vfs/overlay-generation-metadata";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -206,7 +205,7 @@ let kernelWorker: CentralizedKernelWorker;
 let groupedSession: GroupedSessionRuntime | undefined;
 let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
-let liveOverlayCompactor: LiveOverlayCompactor | null = null;
+let liveOverlayCompactor: LiveFilesystemCompactor | null = null;
 let overlayGenerationMetadata: OverlayGenerationMetadata | null = null;
 let opfsImageReader: OpfsImageReader | null = null;
 const storageCloseLedger = new StorageCloseLedger();
@@ -956,7 +955,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   processMemoryCreators.assertOpen("kernel initialization");
   initReady = false;
   initFailure = null;
-  if (msg.opfsImage !== undefined) {
+  validateSavedKifsProfile(msg.kifsUpgradeProfile, msg.experimentalResizablePersistenceName !== undefined);
+  const v3Identity = msg.experimentalKifsV3Identity;
+  if (v3Identity !== undefined) {
+    if (msg.opfsImage === undefined || msg.vfsImage.byteLength !== 0
+      || msg.opfsImageIntegrity !== undefined || msg.rootfsPersistentImageBinding !== undefined
+      || msg.experimentalFixedPersistenceName !== undefined || msg.experimentalResizablePersistenceName !== undefined
+      || msg.requireExistingRootfsPersistence || msg.rootfsMountSpec !== undefined) {
+      throw new Error("KIFS v3 requires a standalone disposable OPFS file with default mounts");
+    }
+  } else if (msg.opfsImage !== undefined) {
     if (msg.vfsImage.byteLength !== 0) {
       throw new Error("rootfs image cannot have both OPFS and in-memory sources");
     }
@@ -1274,17 +1282,25 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them. Mirrors the Node entry.
-  let finalizeRootfsTransport: (() => void) | undefined;
-  if (rootImage.has()) {
-    if (msg.experimentalFixedPersistenceName !== undefined || msg.experimentalResizablePersistenceName !== undefined) {
+  let finalizeRootfsTransport: ((standalone?: boolean) => void) | undefined;
+  if (v3Identity !== undefined) {
+    const file = await openOpfsFileReference(msg.opfsImage!);
+    const storage = await OpfsOverlayStorageFile.openHandle(file, storageCloseLedger);
+    persistentOverlay = storage;
+    kernelWorker.configureKifsV3Root(storage, v3Identity, rootImage.nosuid());
+  }
+  if (v3Identity !== undefined || rootImage.has()) {
+    if (v3Identity !== undefined || msg.experimentalFixedPersistenceName !== undefined || msg.experimentalResizablePersistenceName !== undefined) {
       deferredByteSpool = await DeferredByteSpool.open(() => openOpfsDeferredByteStorage(msg.experimentalResizablePersistenceName ?? msg.experimentalFixedPersistenceName), kernelWorker.rootfsTransportMetadataBudget());
     }
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: opfsImageReader === null
-        ? imageReadFromContainer(msg.vfsImage)
-        : (at, destination) => opfsImageReader!.readAt(at, destination),
-      imageLength: opfsImageReader?.length ?? msg.vfsImage.byteLength,
-      persistentImageBinding: msg.rootfsPersistentImageBinding,
+      ...(v3Identity !== undefined ? { standaloneVolume: true as const } : {
+        imageRead: opfsImageReader === null
+          ? imageReadFromContainer(msg.vfsImage)
+          : (at, destination) => opfsImageReader!.readAt(at, destination),
+        imageLength: opfsImageReader?.length ?? msg.vfsImage.byteLength,
+        persistentImageBinding: msg.rootfsPersistentImageBinding,
+      }),
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
@@ -1312,7 +1328,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   if (msg.config.exchangeByteLimit !== undefined) {
     kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
   }
-  await kernelWorker.init(msg.kernelWasmBytes);
+  await kernelWorker.init(msg.kernelWasmBytes, msg.experimentalResizablePersistenceName !== undefined);
   // [RUNTIME-WORKAROUND: JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN]
   // Group participants retire independently while peers keep allocating. On
   // JSC provision the admitted extent before any instance binds, so later
@@ -1323,7 +1339,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     (pid, status, generation) => { post({ type: 'exit', pid, status, generation }); ownedJobs.detached(pid); },
     (pid, error) => post({ type: 'host_diagnostic', pid, source: 'grouped runtime', message: error.message }),
     isJavaScriptCoreUserAgent(navigator.userAgent) ? msg.config.experimentalMemoryGroup.maximumPages : 1);
-  finalizeRootfsTransport?.();
+  if (msg.experimentalResizablePersistenceName === undefined) finalizeRootfsTransport?.();
 
   // Install the TLS-MITM CA certificate so guest OpenSSL trusts it. This runs
   // after `init` because the kernel owns `/`, and before any guest process is
@@ -1335,7 +1351,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // session is terminated by the MITM, so a guest that does not trust the CA
   // would otherwise fail later with a confusing certificate error.
   const installBrowserCa = () => {
-    if (!rootImage.has()) return;
+    if (!rootImage.has() || v3Identity !== undefined) return;
     try {
       kernelWorker.rootfsMkdirParents(BROWSER_MITM_CA_BUNDLE_PATH, 0o755);
       if (msg.experimentalResizablePersistenceName !== undefined) {
@@ -1459,42 +1475,33 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       ),
       remove: (slot, file) => OpfsOverlayStorageFile.removeFile(persistenceName, slot, file),
     } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
-    const selected = await enableBestOverlayGeneration(
-      files,
-      (storage, index, checkpointEnd) => {
-        if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
-        else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
-      },
-      msg.requireExistingRootfsPersistence,
-      (source, target, index) => kernelWorker.convertUnindexedRootfsPersistence(source, target, index, resizable),
-      (error) => {
-        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `conversion cleanup failed: ${formatError(error)}` });
-      },
+    const boot = await kernelWorker.bootComputerPersistence(
+      files, resizable, msg.requireExistingRootfsPersistence,
+      (message, source) => post({
+        type: "host_diagnostic", pid: 0, source: source ?? "Persistent rootfs", message,
+      }),
+      msg.kifsUpgradeProfile, () => finalizeRootfsTransport?.(),
     );
-    const handoff = {
-      memoryPressure: () => kernelWorker.rootfsJournalStateMemory().pressure,
-      prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
-      checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
-      activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
-      cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
-      fail: (error: UnconfirmedOverlayActivationError) => kernelWorker.failPersistenceWriter(error),
-    };
-    const recovered = await collectBootOverlayGenerations(selected, files, (error) => {
-      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${formatError(error)}` });
-    });
-    const active = await compactOverlayGenerationForBoot(recovered, files, handoff, (error) => {
-      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `boot compaction deferred (ENOSPC): ${formatError(error)}` });
-    });
-    persistentOverlay = active.journal;
-    persistentOverlayIndex = active.index ?? null;
-    processMemoryCreators.assertOpen("persistent compactor initialization");
-    liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
-      persistentOverlay = next.journal;
-      persistentOverlayIndex = next.index ?? null;
-    }, (error) => {
-      if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
-      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${formatError(error)}` });
-    });
+    if ("volume" in boot) {
+      persistentOverlay = boot.volume;
+      finalizeRootfsTransport?.(true);
+      liveOverlayCompactor = kernelWorker.createLiveKifsCompactor(boot, files, volume => {
+        persistentOverlay = volume;
+      }, error => post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs",
+        message: `KIFS compaction failed: ${error}` }));
+    } else {
+      const { active, handoff } = boot;
+      persistentOverlay = active.journal;
+      persistentOverlayIndex = active.index ?? null;
+      processMemoryCreators.assertOpen("persistent compactor initialization");
+      liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+        persistentOverlay = next.journal;
+        persistentOverlayIndex = next.index ?? null;
+      }, (error) => {
+        if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${formatError(error)}` });
+      });
+    }
   }
 
   if (msg.experimentalResizablePersistenceName !== undefined) installBrowserCa();
@@ -1506,6 +1513,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
+  kernelWorker.startRootfsWriteback();
   liveOverlayCompactor?.start();
   if (liveOverlayCompactor !== null) {
     const compactor = liveOverlayCompactor;
@@ -1523,7 +1531,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   pcmConnection.onmessage = event => {
     if (event.data?.type === "attach") pcmConnection?.postMessage(pcmMirror?.transport);
   };
-  post({ type: "ready", pcmPort: connection.port2 }, [connection.port2]);
+  post({ type: "ready", pcmPort: connection.port2, rootfsFormatVersion: kernelWorker.getRootfsFormatVersion() }, [connection.port2]);
 }
 
 // ── Spawn ──
@@ -1693,6 +1701,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       createdForkHostImports = forkHostImports;
       const initData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
+        statLeaseBinding: kernelWorker.createStatLeaseBinding(pid, memory, ptrWidth, programModule),
         pid,
         programBytes,
         programModule,
@@ -3021,6 +3030,7 @@ async function handleExec(
 
       const execInitData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
+        statLeaseBinding: kernelWorker.createStatLeaseBinding(pid, newMemory, ptrWidth, programModule),
         pid,
         programBytes: bytes,
         programModule,
@@ -4187,7 +4197,7 @@ async function handleClipboardOffer(
 async function handleExportRootfsImage(
   msg: Extract<MainToKernelMessage, { type: "export_rootfs_image" }>,
 ) {
-  if (!rootImage.has()) {
+  if (!kernelWorker?.hasRootfs()) {
     respondError(msg.requestId, "VFS is not initialized");
     return;
   }
@@ -4206,9 +4216,7 @@ async function handleExportRootfsImage(
           "rootfs export requires a quiescent kernel with no live or tearing-down processes",
         );
       }
-      // The kernel exports the image it owns: the base tree with every guest
-      // change reconciled into it (`kernel_rootfs_export_container_read`).
-      return kernelWorker.rootfsExportContainerRead();
+      return kernelWorker.exportRootfsImageBytes(() => openOpfsDeferredByteStorage());
     });
     respondTransferredBytes(msg.requestId, image);
   } catch (error) {
@@ -4219,7 +4227,7 @@ async function handleExportRootfsImage(
 async function handleExportRootfsImageToFile(
   msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
 ) {
-  if (!rootImage.has()) {
+  if (!kernelWorker?.hasRootfs()) {
     respondError(msg.requestId, "VFS is not initialized");
     return;
   }
@@ -4241,8 +4249,7 @@ async function handleExportRootfsImageToFile(
           throw new Error("rootfs export requires an empty OPFS staging file");
         }
         started = true;
-        const integrity = writeAndVerifyRootfsImage(
-          (visit) => kernelWorker.rootfsExportContainerVisitBorrowed(visit),
+        const integrity = kernelWorker.writeRootfsImageTo(
           {
             writeAllAt(offset, bytes) {
               let written = 0;
@@ -4536,6 +4543,7 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
+  kernelWorker?.stopRootfsWriteback();
   // Stop admitting frames immediately, but drain process owners in parallel.
   // Observe rejection now and report it only after all other cleanup runs.
   const bitmapRetirement = kernelWorker.closeKmsBitmapRelays().then(

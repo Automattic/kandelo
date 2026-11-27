@@ -1,0 +1,5731 @@
+{
+  "matrices": {
+    "qualification-round-1": {
+      "node": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 202.504417,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 187990016,
+              "finalRss": 235225088,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 196.54029100000002,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 240861184,
+              "finalRss": 267943936,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 183.36362499999996,
+              "bootPages": 32,
+              "finalPages": 280,
+              "bootRss": 254017536,
+              "finalRss": 371294208,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  3428316375,
+                  77205958,
+                  131051250,
+                  8876417,
+                  1571147208
+                ],
+                [
+                  3335247125,
+                  45712875,
+                  129167375,
+                  8079459,
+                  1596118083
+                ],
+                [
+                  3366894208,
+                  40326625,
+                  129620875,
+                  9318750,
+                  1759097000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  115831333,
+                  8072917,
+                  4295000,
+                  1566852208
+                ],
+                [
+                  114898459,
+                  8061416,
+                  4109750,
+                  1592008333
+                ],
+                [
+                  115095667,
+                  7903000,
+                  4220083,
+                  1754876917
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13709202,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 306.0587080000005,
+              "bootPages": 36,
+              "finalPages": 187,
+              "bootRss": 344866816,
+              "finalRss": 357974016,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2541960,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 74.37970800000039,
+              "bootPages": 27,
+              "finalPages": 253,
+              "bootRss": 345899008,
+              "finalRss": 442810368,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  239303000,
+                  25627625,
+                  25154458,
+                  7453875,
+                  95672084
+                ],
+                [
+                  210233417,
+                  24254500,
+                  22543542,
+                  5296583,
+                  95792333
+                ],
+                [
+                  199516333,
+                  18809917,
+                  27952416,
+                  5250250,
+                  92743959
+                ]
+              ],
+              "operationDetails": [
+                [
+                  15458833,
+                  9560125,
+                  456417,
+                  95215667
+                ],
+                [
+                  12758500,
+                  9653500,
+                  168250,
+                  95624083
+                ],
+                [
+                  18158875,
+                  9646333,
+                  265834,
+                  92478125
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17193352,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 3366.894208,
+              "random stat": 45.712875,
+              "write and sync": 129.620875,
+              "verified read": 8.876417,
+              "delete": 1596.118083
+            },
+            "v3": {
+              "create": 210.233417,
+              "random stat": 24.2545,
+              "write and sync": 25.154458,
+              "verified read": 5.296583,
+              "delete": 95.672084
+            }
+          },
+          "ratios": {
+            "create": 0.062441349211528295,
+            "random stat": 0.530583560977077,
+            "write and sync": 0.19406178210106975,
+            "verified read": 0.5967028137592003,
+            "delete": 0.05994047998013941
+          },
+          "load": {
+            "before": "13:53:52  up 5 days 17:14,  3 users,  load average: 7.55, 9.27, 9.46",
+            "after": "13:54:14  up 5 days 17:14,  3 users,  load average: 6.61, 8.89, 9.32"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 204.18116600000002,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 187891712,
+              "finalRss": 240058368,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 191.3137089999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 239976448,
+              "finalRss": 270172160,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 304.311334,
+              "bootPages": 36,
+              "finalPages": 187,
+              "bootRss": 259309568,
+              "finalRss": 273137664,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2541960,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 81.11904200000004,
+              "bootPages": 27,
+              "finalPages": 253,
+              "bootRss": 267599872,
+              "finalRss": 424804352,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  354926500,
+                  43868583,
+                  28899792,
+                  10355042,
+                  134715625
+                ],
+                [
+                  243322833,
+                  30149958,
+                  27718834,
+                  5667125,
+                  101367458
+                ],
+                [
+                  247603834,
+                  21806000,
+                  28981625,
+                  6185500,
+                  106814916
+                ]
+              ],
+              "operationDetails": [
+                [
+                  18899958,
+                  9835500,
+                  566708,
+                  134148917
+                ],
+                [
+                  16239125,
+                  11325125,
+                  161250,
+                  101206208
+                ],
+                [
+                  18257125,
+                  10577334,
+                  212708,
+                  106602208
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17194376,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 183.52633400000013,
+              "bootPages": 32,
+              "finalPages": 280,
+              "bootRss": 383795200,
+              "finalRss": 347815936,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  3578905709,
+                  53490875,
+                  132927750,
+                  11033041,
+                  1834012209
+                ],
+                [
+                  3728324459,
+                  100754708,
+                  142176875,
+                  11165625,
+                  1921438292
+                ],
+                [
+                  3629167000,
+                  55045000,
+                  130788750,
+                  10873541,
+                  1901145500
+                ]
+              ],
+              "operationDetails": [
+                [
+                  116925625,
+                  7849125,
+                  4421542,
+                  1829590667
+                ],
+                [
+                  120996500,
+                  12282042,
+                  4048083,
+                  1917390209
+                ],
+                [
+                  115872000,
+                  8023459,
+                  3229667,
+                  1897915833
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13709202,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 3629.167,
+              "random stat": 55.045,
+              "write and sync": 132.92775,
+              "verified read": 11.033041,
+              "delete": 1901.1455
+            },
+            "v3": {
+              "create": 247.603834,
+              "random stat": 30.149958,
+              "write and sync": 28.899792,
+              "verified read": 6.1855,
+              "delete": 106.814916
+            }
+          },
+          "ratios": {
+            "create": 0.0682260788770536,
+            "random stat": 0.5477329094377328,
+            "write and sync": 0.21740977335432218,
+            "verified read": 0.5606341896128184,
+            "delete": 0.05618450350065263
+          },
+          "load": {
+            "before": "13:54:14  up 5 days 17:14,  3 users,  load average: 6.61, 8.89, 9.32",
+            "after": "13:54:37  up 5 days 17:14,  3 users,  load average: 6.45, 8.71, 9.24"
+          }
+        }
+      },
+      "chromium": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 582.875,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 487.07499998807907,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 333.00999999046326,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  584485000,
+                  58080000,
+                  26270000,
+                  9320000,
+                  138840000
+                ],
+                [
+                  517080001,
+                  58144999,
+                  20235000,
+                  8560000,
+                  240645000
+                ],
+                [
+                  326720000,
+                  57480000,
+                  18465000,
+                  7980000,
+                  112985000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  23000000,
+                  2330000,
+                  620000,
+                  138220000
+                ],
+                [
+                  17430000,
+                  2000000,
+                  510000,
+                  240135000
+                ],
+                [
+                  15970000,
+                  1635000,
+                  385000,
+                  112600000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 439.19499999284744,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 206.18000000715256,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  109105000,
+                  31365000,
+                  11410000,
+                  6285000,
+                  35160000
+                ],
+                [
+                  90370000,
+                  29520001,
+                  8579999,
+                  5510000,
+                  31435000
+                ],
+                [
+                  97800000,
+                  31195001,
+                  8000000,
+                  5404999,
+                  29010000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  9370000,
+                  1890000,
+                  350000,
+                  34810000
+                ],
+                [
+                  7045000,
+                  1385000,
+                  215000,
+                  31220000
+                ],
+                [
+                  6585000,
+                  1240001,
+                  225000,
+                  28785000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17228168,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 517.080001,
+              "random stat": 58.08,
+              "write and sync": 20.235,
+              "verified read": 8.56,
+              "delete": 138.84
+            },
+            "v3": {
+              "create": 97.8,
+              "random stat": 31.195001,
+              "write and sync": 8.579999,
+              "verified read": 5.51,
+              "delete": 31.435
+            }
+          },
+          "ratios": {
+            "create": 0.18913901100576502,
+            "random stat": 0.537104011707989,
+            "write and sync": 0.424017741536941,
+            "verified read": 0.6436915887850466,
+            "delete": 0.2264116969173149
+          },
+          "load": {
+            "before": "13:54:37  up 5 days 17:14,  3 users,  load average: 6.45, 8.71, 9.24",
+            "after": "13:54:52  up 5 days 17:15,  3 users,  load average: 7.81, 8.90, 9.30"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 700.5049999952316,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 442.6050000190735,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 613.9549999833107,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 249.9800000190735,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  156350000,
+                  52700000,
+                  13250000,
+                  9070000,
+                  36165000
+                ],
+                [
+                  86535000,
+                  48515001,
+                  11129999,
+                  6150000,
+                  32055000
+                ],
+                [
+                  166889999,
+                  36275000,
+                  14695000,
+                  5590000,
+                  35555000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  11305000,
+                  1789999,
+                  500000,
+                  35665000
+                ],
+                [
+                  9480000,
+                  1500000,
+                  215001,
+                  31839999
+                ],
+                [
+                  12180000,
+                  2340000,
+                  210000,
+                  35345000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17244552,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 340.40499997138977,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  520095000,
+                  50530000,
+                  24070000,
+                  11390000,
+                  205695000
+                ],
+                [
+                  570815000,
+                  50065000,
+                  22485000,
+                  8285000,
+                  209980000
+                ],
+                [
+                  560795000,
+                  59315000,
+                  25890000,
+                  9040000,
+                  219370000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  19455000,
+                  3665000,
+                  670000,
+                  205025000
+                ],
+                [
+                  19500000,
+                  1965000,
+                  490001,
+                  209489999
+                ],
+                [
+                  23200001,
+                  1729999,
+                  545001,
+                  218824999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 560.795,
+              "random stat": 50.53,
+              "write and sync": 24.07,
+              "verified read": 9.04,
+              "delete": 209.98
+            },
+            "v3": {
+              "create": 156.35,
+              "random stat": 48.515001,
+              "write and sync": 13.25,
+              "verified read": 6.15,
+              "delete": 35.555
+            }
+          },
+          "ratios": {
+            "create": 0.2788006312467123,
+            "random stat": 0.9601227191767266,
+            "write and sync": 0.550477773161612,
+            "verified read": 0.6803097345132745,
+            "delete": 0.16932565006191067
+          },
+          "load": {
+            "before": "13:54:52  up 5 days 17:15,  3 users,  load average: 7.81, 8.90, 9.30",
+            "after": "13:55:12  up 5 days 17:15,  3 users,  load average: 7.87, 8.85, 9.27"
+          }
+        }
+      },
+      "firefox": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 563,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 388.78,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 411.8000000000002,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  165900000,
+                  68300000,
+                  26740000,
+                  21240000,
+                  95279999
+                ],
+                [
+                  236980000,
+                  83840000,
+                  21480000,
+                  21380000,
+                  103880000
+                ],
+                [
+                  357180000,
+                  61859999,
+                  33400000,
+                  19940000,
+                  81200000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  22980000,
+                  2580000,
+                  440000,
+                  94839999
+                ],
+                [
+                  18640001,
+                  2020000,
+                  419999,
+                  103460001
+                ],
+                [
+                  31319999,
+                  1520000,
+                  340001,
+                  80859999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 571.6400000000003,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 275.9200000000001,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  130680000,
+                  39660000,
+                  13420000,
+                  6300000,
+                  47620000
+                ],
+                [
+                  147580000,
+                  39400000,
+                  11840000,
+                  15500000,
+                  65180000
+                ],
+                [
+                  192320000,
+                  48700000,
+                  13220000,
+                  7520000,
+                  48460000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  12220000,
+                  820000,
+                  360000,
+                  47260000
+                ],
+                [
+                  11040001,
+                  600000,
+                  480000,
+                  64700000
+                ],
+                [
+                  12400001,
+                  660000,
+                  320000,
+                  48140000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17274248,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 236.98,
+              "random stat": 68.3,
+              "write and sync": 26.74,
+              "verified read": 21.24,
+              "delete": 95.279999
+            },
+            "v3": {
+              "create": 147.58,
+              "random stat": 39.66,
+              "write and sync": 13.22,
+              "verified read": 7.52,
+              "delete": 48.46
+            }
+          },
+          "ratios": {
+            "create": 0.6227529749345937,
+            "random stat": 0.5806734992679355,
+            "write and sync": 0.49439042632759916,
+            "verified read": 0.3540489642184558,
+            "delete": 0.5086062186041794
+          },
+          "load": {
+            "before": "13:55:12  up 5 days 17:15,  3 users,  load average: 7.87, 8.85, 9.27",
+            "after": "13:55:36  up 5 days 17:15,  3 users,  load average: 8.10, 8.84, 9.26"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 683.72,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 510.5200000000002,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 689.3200000000002,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 344.44000000000005,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  304660000,
+                  71540000,
+                  29460000,
+                  18579999,
+                  79020000
+                ],
+                [
+                  146460000,
+                  44280000,
+                  18159999,
+                  14060001,
+                  52780000
+                ],
+                [
+                  263260000,
+                  60460000,
+                  25060000,
+                  13220000,
+                  42239999
+                ]
+              ],
+              "operationDetails": [
+                [
+                  27200000,
+                  2020000,
+                  1580000,
+                  77440000
+                ],
+                [
+                  16419999,
+                  1520000,
+                  760000,
+                  52020000
+                ],
+                [
+                  23480000,
+                  1140001,
+                  579999,
+                  41660000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17244552,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 655.4799999999996,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  613920000,
+                  99780000,
+                  40240000,
+                  50280000,
+                  202700000
+                ],
+                [
+                  581680000,
+                  117259999,
+                  16200001,
+                  15900000,
+                  72580000
+                ],
+                [
+                  212319999,
+                  67460000,
+                  44360001,
+                  14840000,
+                  86620000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  35479999,
+                  3080001,
+                  500000,
+                  202200000
+                ],
+                [
+                  13779999,
+                  1860001,
+                  480000,
+                  72100000
+                ],
+                [
+                  41860001,
+                  1460000,
+                  439999,
+                  86180001
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 581.68,
+              "random stat": 99.78,
+              "write and sync": 40.24,
+              "verified read": 15.9,
+              "delete": 86.62
+            },
+            "v3": {
+              "create": 263.26,
+              "random stat": 60.46,
+              "write and sync": 25.06,
+              "verified read": 14.060001,
+              "delete": 52.78
+            }
+          },
+          "ratios": {
+            "create": 0.4525856140833448,
+            "random stat": 0.6059330527159752,
+            "write and sync": 0.6227634194831013,
+            "verified read": 0.8842767924528302,
+            "delete": 0.6093280997460171
+          },
+          "load": {
+            "before": "13:55:36  up 5 days 17:15,  3 users,  load average: 8.10, 8.84, 9.26",
+            "after": "13:56:00  up 5 days 17:16,  3 users,  load average: 9.35, 9.08, 9.33"
+          }
+        }
+      },
+      "webkit": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 527.54,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 429.6600000000001,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 404.6199999999999,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  127920000,
+                  82320000,
+                  18720000,
+                  12100000,
+                  65260000
+                ],
+                [
+                  106500001,
+                  63639999,
+                  15860001,
+                  10159999,
+                  43360001
+                ],
+                [
+                  114820001,
+                  62080000,
+                  18559999,
+                  10820001,
+                  45500000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  16240000,
+                  1840000,
+                  340000,
+                  64920000
+                ],
+                [
+                  13579999,
+                  1660001,
+                  180000,
+                  43180001
+                ],
+                [
+                  16200000,
+                  1939999,
+                  260000,
+                  45240000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 531.4399999999996,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 302.03999999999996,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  93040000,
+                  39300000,
+                  6960000,
+                  6060000,
+                  29260000
+                ],
+                [
+                  69000000,
+                  29900000,
+                  5820000,
+                  4860000,
+                  20900000
+                ],
+                [
+                  70000000,
+                  33279999,
+                  6640000,
+                  5020000,
+                  20880000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  6020000,
+                  720000,
+                  360000,
+                  28900000
+                ],
+                [
+                  5300000,
+                  380000,
+                  180000,
+                  20720000
+                ],
+                [
+                  6040000,
+                  419999,
+                  180001,
+                  20699999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 114.820001,
+              "random stat": 63.639999,
+              "write and sync": 18.559999,
+              "verified read": 10.820001,
+              "delete": 45.5
+            },
+            "v3": {
+              "create": 70.0,
+              "random stat": 33.279999,
+              "write and sync": 6.64,
+              "verified read": 5.02,
+              "delete": 20.9
+            }
+          },
+          "ratios": {
+            "create": 0.6096498814696927,
+            "random stat": 0.5229415387011555,
+            "write and sync": 0.35775863996544394,
+            "verified read": 0.46395559482850324,
+            "delete": 0.4593406593406593
+          },
+          "load": {
+            "before": "13:53:17  up 5 days 17:13,  3 users,  load average: 7.47, 9.46, 9.53",
+            "after": "13:53:35  up 5 days 17:13,  3 users,  load average: 7.47, 9.33, 9.48"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 662.3599999999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 415.3799999999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 504.8600000000001,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 257.6399999999999,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  101560000,
+                  36180000,
+                  6360000,
+                  5920000,
+                  31440000
+                ],
+                [
+                  63760000,
+                  27260000,
+                  5060000,
+                  4940000,
+                  21340000
+                ],
+                [
+                  73160000,
+                  31600000,
+                  6300000,
+                  5000000,
+                  21839999
+                ]
+              ],
+              "operationDetails": [
+                [
+                  5780000,
+                  420000,
+                  380000,
+                  31060000
+                ],
+                [
+                  4520000,
+                  400000,
+                  180000,
+                  21160000
+                ],
+                [
+                  5660000,
+                  480000,
+                  160000,
+                  21679999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 396.3599999999997,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  107020000,
+                  61060000,
+                  20100000,
+                  10080000,
+                  30220000
+                ],
+                [
+                  95179999,
+                  57480001,
+                  15919999,
+                  9700000,
+                  29500000
+                ],
+                [
+                  78080000,
+                  53160000,
+                  17560000,
+                  10180000,
+                  34860000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  17620000,
+                  1820000,
+                  360000,
+                  29860000
+                ],
+                [
+                  13839999,
+                  1740000,
+                  200001,
+                  29299999
+                ],
+                [
+                  14060001,
+                  3080000,
+                  340000,
+                  34520000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 95.179999,
+              "random stat": 57.480001,
+              "write and sync": 17.56,
+              "verified read": 10.08,
+              "delete": 30.22
+            },
+            "v3": {
+              "create": 73.16,
+              "random stat": 31.6,
+              "write and sync": 6.3,
+              "verified read": 5.0,
+              "delete": 21.839999
+            }
+          },
+          "ratios": {
+            "create": 0.7686488838899862,
+            "random stat": 0.5497564274572647,
+            "write and sync": 0.3587699316628702,
+            "verified read": 0.49603174603174605,
+            "delete": 0.7227001654533421
+          },
+          "load": {
+            "before": "13:53:35  up 5 days 17:13,  3 users,  load average: 7.47, 9.33, 9.48",
+            "after": "13:53:52  up 5 days 17:14,  3 users,  load average: 7.55, 9.27, 9.46"
+          }
+        }
+      }
+    },
+    "qualification-round-2": {
+      "node": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 233.12658299999998,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 187875328,
+              "finalRss": 239878144,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 212.98012499999993,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 240959488,
+              "finalRss": 271613952,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 213.27112499999998,
+              "bootPages": 32,
+              "finalPages": 280,
+              "bootRss": 257769472,
+              "finalRss": 367132672,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  4136662708,
+                  94650000,
+                  134526042,
+                  16611292,
+                  1745073541
+                ],
+                [
+                  3683155250,
+                  52072416,
+                  130640334,
+                  7438333,
+                  1638024083
+                ],
+                [
+                  3604904500,
+                  49328667,
+                  132544875,
+                  7488125,
+                  1694371833
+                ]
+              ],
+              "operationDetails": [
+                [
+                  118082958,
+                  8100250,
+                  5775791,
+                  1739297750
+                ],
+                [
+                  115834041,
+                  7003834,
+                  3604583,
+                  1634419500
+                ],
+                [
+                  116191417,
+                  7866250,
+                  3295333,
+                  1691076500
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13709202,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 351.296792000001,
+              "bootPages": 36,
+              "finalPages": 187,
+              "bootRss": 343916544,
+              "finalRss": 354680832,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2541960,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 75.1888340000005,
+              "bootPages": 27,
+              "finalPages": 253,
+              "bootRss": 346849280,
+              "finalRss": 413859840,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  248239333,
+                  29030167,
+                  23713708,
+                  5927208,
+                  111303625
+                ],
+                [
+                  221667458,
+                  25259875,
+                  24478208,
+                  5965459,
+                  102211833
+                ],
+                [
+                  220847000,
+                  22602209,
+                  22117208,
+                  5255542,
+                  94240375
+                ]
+              ],
+              "operationDetails": [
+                [
+                  16258541,
+                  7316917,
+                  464792,
+                  110838833
+                ],
+                [
+                  15663583,
+                  8677083,
+                  312500,
+                  101899333
+                ],
+                [
+                  14439916,
+                  7508542,
+                  159333,
+                  94081042
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17192328,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 3683.15525,
+              "random stat": 52.072416,
+              "write and sync": 132.544875,
+              "verified read": 7.488125,
+              "delete": 1694.371833
+            },
+            "v3": {
+              "create": 221.667458,
+              "random stat": 25.259875,
+              "write and sync": 23.713708,
+              "verified read": 5.927208,
+              "delete": 102.211833
+            }
+          },
+          "ratios": {
+            "create": 0.060184120123635845,
+            "random stat": 0.4850912813417377,
+            "write and sync": 0.17891078776150343,
+            "verified read": 0.7915476838327352,
+            "delete": 0.06032432256562424
+          },
+          "load": {
+            "before": "13:57:49  up 5 days 17:18,  3 users,  load average: 9.31, 9.08, 9.29",
+            "after": "13:58:13  up 5 days 17:18,  3 users,  load average: 8.35, 8.88, 9.21"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 270.459709,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 187252736,
+              "finalRss": 236929024,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 238.6948329999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 241876992,
+              "finalRss": 267108352,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 449.2769169999999,
+              "bootPages": 36,
+              "finalPages": 187,
+              "bootRss": 254590976,
+              "finalRss": 267419648,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2541960,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 81.02083300000004,
+              "bootPages": 27,
+              "finalPages": 253,
+              "bootRss": 268828672,
+              "finalRss": 455311360,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  266082000,
+                  48606375,
+                  31307541,
+                  6373125,
+                  107616375
+                ],
+                [
+                  227503250,
+                  23329417,
+                  26581583,
+                  5877625,
+                  96920125
+                ],
+                [
+                  214822959,
+                  23319541,
+                  24403917,
+                  5601083,
+                  99236792
+                ]
+              ],
+              "operationDetails": [
+                [
+                  19886667,
+                  11277041,
+                  485167,
+                  107131208
+                ],
+                [
+                  16549792,
+                  9907833,
+                  179750,
+                  96740375
+                ],
+                [
+                  14901042,
+                  9364750,
+                  168084,
+                  99068708
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17192328,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 204.91079199999967,
+              "bootPages": 32,
+              "finalPages": 280,
+              "bootRss": 410058752,
+              "finalRss": 341721088,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  3979588667,
+                  112436333,
+                  160730125,
+                  22281334,
+                  1771351791
+                ],
+                [
+                  3779070042,
+                  55154583,
+                  137947625,
+                  13992333,
+                  1990793000
+                ],
+                [
+                  3711614000,
+                  55131209,
+                  132410125,
+                  8112125,
+                  2003110083
+                ]
+              ],
+              "operationDetails": [
+                [
+                  143124875,
+                  10008333,
+                  4579500,
+                  1766772291
+                ],
+                [
+                  119199666,
+                  8053542,
+                  3861959,
+                  1986931041
+                ],
+                [
+                  115831000,
+                  8095750,
+                  4004500,
+                  1999105583
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13709202,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 3779.070042,
+              "random stat": 55.154583,
+              "write and sync": 137.947625,
+              "verified read": 13.992333,
+              "delete": 1990.793
+            },
+            "v3": {
+              "create": 227.50325,
+              "random stat": 23.329417,
+              "write and sync": 26.581583,
+              "verified read": 5.877625,
+              "delete": 99.236792
+            }
+          },
+          "ratios": {
+            "create": 0.060200855626268916,
+            "random stat": 0.4229823838936467,
+            "write and sync": 0.19269329935908647,
+            "verified read": 0.42006040022060653,
+            "delete": 0.04984787067264151
+          },
+          "load": {
+            "before": "13:57:24  up 5 days 17:17,  3 users,  load average: 9.10, 9.04, 9.29",
+            "after": "13:57:49  up 5 days 17:18,  3 users,  load average: 9.31, 9.08, 9.29"
+          }
+        }
+      },
+      "chromium": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 747.6599999666214,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 369.77499997615814,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 351.9749999642372,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  649960001,
+                  51289999,
+                  25350001,
+                  8660000,
+                  115125000
+                ],
+                [
+                  226975001,
+                  53305000,
+                  17284999,
+                  8105001,
+                  111964999
+                ],
+                [
+                  896610001,
+                  53834999,
+                  21675000,
+                  8215001,
+                  484919999
+                ]
+              ],
+              "operationDetails": [
+                [
+                  22010000,
+                  2475001,
+                  554999,
+                  114570001
+                ],
+                [
+                  15045000,
+                  1560000,
+                  305000,
+                  111659999
+                ],
+                [
+                  18770000,
+                  1795000,
+                  465000,
+                  484454999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 440.9749999642372,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 217.8550000190735,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  110950000,
+                  28399999,
+                  10095001,
+                  5779999,
+                  32770001
+                ],
+                [
+                  79015001,
+                  27855000,
+                  9090000,
+                  5484999,
+                  29205001
+                ],
+                [
+                  84015001,
+                  26650000,
+                  12255000,
+                  5610000,
+                  26700000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  7315000,
+                  2645001,
+                  315000,
+                  32455001
+                ],
+                [
+                  6565000,
+                  2375000,
+                  195001,
+                  29010000
+                ],
+                [
+                  10620000,
+                  1470000,
+                  250000,
+                  26450000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 649.960001,
+              "random stat": 53.305,
+              "write and sync": 21.675,
+              "verified read": 8.215001,
+              "delete": 115.125
+            },
+            "v3": {
+              "create": 84.015001,
+              "random stat": 27.855,
+              "write and sync": 10.095001,
+              "verified read": 5.61,
+              "delete": 29.205001
+            }
+          },
+          "ratios": {
+            "create": 0.1292618020658782,
+            "random stat": 0.5225588593940531,
+            "write and sync": 0.46574399077277967,
+            "verified read": 0.6828970562511191,
+            "delete": 0.2536807904451683
+          },
+          "load": {
+            "before": "13:57:05  up 5 days 17:17,  3 users,  load average: 8.70, 8.96, 9.27",
+            "after": "13:57:24  up 5 days 17:17,  3 users,  load average: 9.10, 9.04, 9.29"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 561.3950000405312,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 342.83999997377396,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 412.18000000715256,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 228.76499998569489,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  98010001,
+                  30200000,
+                  8360000,
+                  5959999,
+                  37935000
+                ],
+                [
+                  86430000,
+                  25845001,
+                  9010000,
+                  5735000,
+                  28109999
+                ],
+                [
+                  77360000,
+                  25905000,
+                  7805000,
+                  5265000,
+                  29195001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  6775001,
+                  1435000,
+                  335000,
+                  37600000
+                ],
+                [
+                  6415001,
+                  2455000,
+                  200000,
+                  27909999
+                ],
+                [
+                  6525000,
+                  1110000,
+                  195001,
+                  29000000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 377.70500004291534,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  430495000,
+                  58165000,
+                  24580000,
+                  12965001,
+                  115219999
+                ],
+                [
+                  668320000,
+                  46324999,
+                  22490000,
+                  7655000,
+                  419505000
+                ],
+                [
+                  674155000,
+                  44890000,
+                  21335000,
+                  8170001,
+                  215854999
+                ]
+              ],
+              "operationDetails": [
+                [
+                  21130000,
+                  2570000,
+                  769999,
+                  114450000
+                ],
+                [
+                  18940000,
+                  2660000,
+                  440000,
+                  419065000
+                ],
+                [
+                  18395000,
+                  1730000,
+                  399999,
+                  215455000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 668.32,
+              "random stat": 46.324999,
+              "write and sync": 22.49,
+              "verified read": 8.170001,
+              "delete": 215.854999
+            },
+            "v3": {
+              "create": 86.43,
+              "random stat": 25.905,
+              "write and sync": 8.36,
+              "verified read": 5.735,
+              "delete": 29.195001
+            }
+          },
+          "ratios": {
+            "create": 0.12932427579602584,
+            "random stat": 0.559201307268242,
+            "write and sync": 0.3717207647843486,
+            "verified read": 0.7019582984139171,
+            "delete": 0.13525283702139324
+          },
+          "load": {
+            "before": "13:56:45  up 5 days 17:16,  3 users,  load average: 9.26, 9.08, 9.32",
+            "after": "13:57:05  up 5 days 17:17,  3 users,  load average: 8.70, 8.96, 9.27"
+          }
+        }
+      },
+      "firefox": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 738.26,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 543.78,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 536.5,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  371400000,
+                  93920000,
+                  32780000,
+                  32400000,
+                  75739999
+                ],
+                [
+                  264080001,
+                  88219999,
+                  41660001,
+                  42220000,
+                  102139999
+                ],
+                [
+                  376160000,
+                  56239999,
+                  33220001,
+                  24199999,
+                  199800001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  29419999,
+                  2420001,
+                  640000,
+                  75099999
+                ],
+                [
+                  35899999,
+                  3700001,
+                  539999,
+                  101600000
+                ],
+                [
+                  30059999,
+                  2380001,
+                  580000,
+                  199220001
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 550.2999999999993,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 267.90000000000146,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  114480000,
+                  39340000,
+                  9780000,
+                  5940000,
+                  38280000
+                ],
+                [
+                  99100000,
+                  41840000,
+                  8140000,
+                  5620000,
+                  25660000
+                ],
+                [
+                  101440000,
+                  26580000,
+                  7900000,
+                  5659999,
+                  23820000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  9060000,
+                  560000,
+                  320000,
+                  37960000
+                ],
+                [
+                  7120000,
+                  840000,
+                  300000,
+                  25360000
+                ],
+                [
+                  7060000,
+                  680000,
+                  300000,
+                  23520000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 371.4,
+              "random stat": 88.219999,
+              "write and sync": 33.220001,
+              "verified read": 32.4,
+              "delete": 102.139999
+            },
+            "v3": {
+              "create": 101.44,
+              "random stat": 39.34,
+              "write and sync": 8.14,
+              "verified read": 5.659999,
+              "delete": 25.66
+            }
+          },
+          "ratios": {
+            "create": 0.2731287022078622,
+            "random stat": 0.44593063303027247,
+            "write and sync": 0.24503310520670965,
+            "verified read": 0.17469132716049385,
+            "delete": 0.2512238129158392
+          },
+          "load": {
+            "before": "13:56:21  up 5 days 17:16,  3 users,  load average: 9.13, 9.04, 9.31",
+            "after": "13:56:45  up 5 days 17:16,  3 users,  load average: 9.26, 9.08, 9.32"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 937.1400000000001,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 671.3599999999997,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 590.1999999999998,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 300.22000000000025,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  124680000,
+                  43540000,
+                  11920000,
+                  7160000,
+                  40440000
+                ],
+                [
+                  110840000,
+                  35460000,
+                  8260000,
+                  5660000,
+                  33819999
+                ],
+                [
+                  116440000,
+                  46820000,
+                  15139999,
+                  12360001,
+                  64040000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  10480000,
+                  1280000,
+                  320000,
+                  40120000
+                ],
+                [
+                  7380000,
+                  700000,
+                  260000,
+                  33559999
+                ],
+                [
+                  13520000,
+                  1379999,
+                  899999,
+                  63140001
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17259912,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 503.52000000000044,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  184960000,
+                  48540000,
+                  15259999,
+                  14780000,
+                  57940001
+                ],
+                [
+                  129060000,
+                  44700000,
+                  14720000,
+                  12599999,
+                  50380001
+                ],
+                [
+                  153860001,
+                  46899999,
+                  32660001,
+                  15220000,
+                  58740000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  13220000,
+                  1559999,
+                  320000,
+                  57620001
+                ],
+                [
+                  12740000,
+                  1500000,
+                  240001,
+                  50140000
+                ],
+                [
+                  30520000,
+                  1640001,
+                  320000,
+                  58420000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 153.860001,
+              "random stat": 46.899999,
+              "write and sync": 15.259999,
+              "verified read": 14.78,
+              "delete": 57.940001
+            },
+            "v3": {
+              "create": 116.44,
+              "random stat": 43.54,
+              "write and sync": 11.92,
+              "verified read": 7.16,
+              "delete": 40.44
+            }
+          },
+          "ratios": {
+            "create": 0.7567918838113097,
+            "random stat": 0.9283582287496424,
+            "write and sync": 0.7811271809388716,
+            "verified read": 0.4844384303112314,
+            "delete": 0.6979633983782637
+          },
+          "load": {
+            "before": "13:56:00  up 5 days 17:16,  3 users,  load average: 9.35, 9.08, 9.33",
+            "after": "13:56:21  up 5 days 17:16,  3 users,  load average: 9.13, 9.04, 9.31"
+          }
+        }
+      },
+      "webkit": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 622.7199999999998,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 419.02,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 384.4399999999996,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  133200000,
+                  73980000,
+                  17300000,
+                  11400000,
+                  54720000
+                ],
+                [
+                  102899999,
+                  61740000,
+                  16160001,
+                  9399999,
+                  28680000
+                ],
+                [
+                  86260001,
+                  46740000,
+                  16339999,
+                  9640001,
+                  28520000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  14800000,
+                  1960000,
+                  340000,
+                  54380000
+                ],
+                [
+                  13879999,
+                  1660001,
+                  220000,
+                  28460000
+                ],
+                [
+                  14140000,
+                  1699999,
+                  240000,
+                  28280000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 527.5199999999995,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 217.83999999999924,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  102980000,
+                  35480000,
+                  7220000,
+                  5420000,
+                  32420000
+                ],
+                [
+                  69820000,
+                  30400000,
+                  6340000,
+                  4440000,
+                  22960000
+                ],
+                [
+                  92880000,
+                  33460000,
+                  6620000,
+                  5020000,
+                  23180000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  6540000,
+                  520000,
+                  260000,
+                  32160000
+                ],
+                [
+                  5660000,
+                  500000,
+                  140000,
+                  22820000
+                ],
+                [
+                  6020000,
+                  420000,
+                  180000,
+                  23000000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 102.899999,
+              "random stat": 61.74,
+              "write and sync": 16.339999,
+              "verified read": 9.640001,
+              "delete": 28.68
+            },
+            "v3": {
+              "create": 92.88,
+              "random stat": 33.46,
+              "write and sync": 6.62,
+              "verified read": 5.02,
+              "delete": 23.18
+            }
+          },
+          "ratios": {
+            "create": 0.9026239154773947,
+            "random stat": 0.5419501133786848,
+            "write and sync": 0.40514078366834666,
+            "verified read": 0.5207468339474238,
+            "delete": 0.808228730822873
+          },
+          "load": {
+            "before": "13:58:31  up 5 days 17:18,  3 users,  load average: 8.02, 8.77, 9.17",
+            "after": "13:58:45  up 5 days 17:18,  3 users,  load average: 7.81, 8.68, 9.13"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 593.8199999999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 463.31999999999994,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 629.1800000000001,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 282.46000000000004,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  98740000,
+                  37920000,
+                  6800000,
+                  5640000,
+                  28260000
+                ],
+                [
+                  80900000,
+                  30460000,
+                  5820000,
+                  5020000,
+                  23640000
+                ],
+                [
+                  51160000,
+                  26920000,
+                  7359999,
+                  4740000,
+                  15440001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  6140000,
+                  500000,
+                  300000,
+                  27960000
+                ],
+                [
+                  5260000,
+                  420000,
+                  180000,
+                  23460000
+                ],
+                [
+                  6820000,
+                  420000,
+                  160001,
+                  15280000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 426.8599999999997,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  138940000,
+                  72080000,
+                  22540000,
+                  10920000,
+                  35740000
+                ],
+                [
+                  107899999,
+                  61060000,
+                  23180000,
+                  12620001,
+                  36320000
+                ],
+                [
+                  155040000,
+                  76240000,
+                  20340000,
+                  10720000,
+                  39039999
+                ]
+              ],
+              "operationDetails": [
+                [
+                  17120000,
+                  4960000,
+                  360000,
+                  35380000
+                ],
+                [
+                  15900001,
+                  3119999,
+                  560000,
+                  35760000
+                ],
+                [
+                  17680000,
+                  1900000,
+                  160000,
+                  38879999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 138.94,
+              "random stat": 72.08,
+              "write and sync": 22.54,
+              "verified read": 10.92,
+              "delete": 36.32
+            },
+            "v3": {
+              "create": 80.9,
+              "random stat": 30.46,
+              "write and sync": 6.8,
+              "verified read": 5.02,
+              "delete": 23.64
+            }
+          },
+          "ratios": {
+            "create": 0.5822657262127537,
+            "random stat": 0.4225860155382908,
+            "write and sync": 0.30168589174800353,
+            "verified read": 0.4597069597069597,
+            "delete": 0.6508810572687225
+          },
+          "load": {
+            "before": "13:58:13  up 5 days 17:18,  3 users,  load average: 8.35, 8.88, 9.21",
+            "after": "13:58:30  up 5 days 17:18,  3 users,  load average: 8.02, 8.77, 9.17"
+          }
+        }
+      }
+    }
+  },
+  "inputs.sha256": [
+    [
+      "5b34933882de6f5cd513fb89cac9d02b6b65cd679551dd1c1e14a4ea82be35da",
+      ".scratch/kifs-mounted-interface/qualification-package/kandelo-kernel.wasm"
+    ],
+    [
+      "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+      "local-binaries/partial/shell-partial.vfs.zst"
+    ],
+    [
+      "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+      ".scratch/kifs-canonical-storage/guest/kifs-capacity.wasm"
+    ]
+  ],
+  "bundles.sha256": [
+    [
+      "a42f18c927942359382d776459fe86af774eed3f3912f6ef03ff6ff1cc39bfbc",
+      "local-binaries/source-only-v1/kandelo_image_module_positioned32.wasm"
+    ],
+    [
+      "b077f8d56ea1701b0da5b48847a0bac184e37920534c6d3fe1d79e4ff9f48dad",
+      "host/dist/index.js"
+    ],
+    [
+      "048372495171e8d11be002c29544f7e740ef64302e9361fbe3fb9147362a84d9",
+      "host/dist/node-kernel-worker-entry.js"
+    ],
+    [
+      "8c86d31902a008251ed18830ce7cfa2cc6d3fe8b342c074de2c4e7fd02513fbb",
+      "host/dist/worker-main.js"
+    ]
+  ],
+  "tests.sha256": [
+    [
+      "be3e6ce8a93323866ed5e896ab5aa17ee85b86cfcaae581fb5139e386e7b00a8",
+      "host/test/fixtures/kifs-saved-shell-workload.ts"
+    ],
+    [
+      "4b1b3cb3a32296bb62dba6dac0ba7a00e364d50f59aa3a7ebf297c2bc6452773",
+      "host/test/kifs-v3-guest.test.ts"
+    ],
+    [
+      "4df1f4b43461f5463ca335712cba76e02097383f37d33a9d1c92ebca78b6b5f8",
+      "apps/browser-demos/test/kifs-v3-guest.spec.ts"
+    ],
+    [
+      "875613e2338e49183497cffca46012e40f2c6238395388f9fc5bbafc1ce6712e",
+      "apps/browser-demos/playwright.config.ts"
+    ],
+    [
+      "41e0344e283f6a49fc2dca4fde4721370d78d88a0d913700ba89edc6ea4abbd6",
+      "apps/browser-demos/vite.config.ts"
+    ],
+    [
+      "d2a0e279e88ab4a45b5cc3edfdcb775c316a62ca131112fe683b0d5671f89456",
+      "apps/browser-demos/lib/init/dev-lazy-asset-route.ts"
+    ],
+    [
+      "bf7791b39646a48747582f6f3f820a3199691d8dbf8ee9f6b09471c1d1000340",
+      "host/src/kernel-worker.ts"
+    ],
+    [
+      "22304a014afdb99abfda9bed007e40e00ba4c7efc49974dda5afe16d3ac47213",
+      "host/src/stat-lease.ts"
+    ],
+    [
+      "dc1e1d75d3fe422e2db342ab2daf50a0e621b0e9facb8235988e374fe28f78ce",
+      "host/src/browser-kernel-worker-entry.ts"
+    ],
+    [
+      "0ef0076d635f775fa1fbcf3490fd0812d9458e531a3fe0d31e8b6d8bd83ab0fb",
+      "host/src/worker-main.ts"
+    ]
+  ],
+  "worstRatios": {
+    "node": {
+      "create": 0.0682260788770536,
+      "random stat": 0.5477329094377328,
+      "write and sync": 0.21740977335432218,
+      "verified read": 0.7915476838327352,
+      "delete": 0.06032432256562424
+    },
+    "chromium": {
+      "create": 0.2788006312467123,
+      "random stat": 0.9601227191767266,
+      "write and sync": 0.550477773161612,
+      "verified read": 0.7019582984139171,
+      "delete": 0.2536807904451683
+    },
+    "firefox": {
+      "create": 0.7567918838113097,
+      "random stat": 0.9283582287496424,
+      "write and sync": 0.7811271809388716,
+      "verified read": 0.8842767924528302,
+      "delete": 0.6979633983782637
+    },
+    "webkit": {
+      "create": 0.9026239154773947,
+      "random stat": 0.5497564274572647,
+      "write and sync": 0.40514078366834666,
+      "verified read": 0.5207468339474238,
+      "delete": 0.808228730822873
+    }
+  },
+  "parityMisses": [],
+  "stretchMisses": [
+    {
+      "run": "qualification-round-1",
+      "host": "chromium",
+      "order": "reverse",
+      "operation": "random stat",
+      "ratio": 0.9601227191767266,
+      "legacyMs": 50.53,
+      "v3Ms": 48.515001
+    },
+    {
+      "run": "qualification-round-1",
+      "host": "firefox",
+      "order": "reverse",
+      "operation": "verified read",
+      "ratio": 0.8842767924528302,
+      "legacyMs": 15.9,
+      "v3Ms": 14.060001
+    },
+    {
+      "run": "qualification-round-1",
+      "host": "webkit",
+      "order": "reverse",
+      "operation": "create",
+      "ratio": 0.7686488838899862,
+      "legacyMs": 95.179999,
+      "v3Ms": 73.16
+    },
+    {
+      "run": "qualification-round-2",
+      "host": "node",
+      "order": "forward",
+      "operation": "verified read",
+      "ratio": 0.7915476838327352,
+      "legacyMs": 7.488125,
+      "v3Ms": 5.927208
+    },
+    {
+      "run": "qualification-round-2",
+      "host": "firefox",
+      "order": "reverse",
+      "operation": "create",
+      "ratio": 0.7567918838113097,
+      "legacyMs": 153.860001,
+      "v3Ms": 116.44
+    },
+    {
+      "run": "qualification-round-2",
+      "host": "firefox",
+      "order": "reverse",
+      "operation": "random stat",
+      "ratio": 0.9283582287496424,
+      "legacyMs": 46.899999,
+      "v3Ms": 43.54
+    },
+    {
+      "run": "qualification-round-2",
+      "host": "firefox",
+      "order": "reverse",
+      "operation": "write and sync",
+      "ratio": 0.7811271809388716,
+      "legacyMs": 15.259999,
+      "v3Ms": 11.92
+    },
+    {
+      "run": "qualification-round-2",
+      "host": "webkit",
+      "order": "forward",
+      "operation": "create",
+      "ratio": 0.9026239154773947,
+      "legacyMs": 102.899999,
+      "v3Ms": 92.88
+    },
+    {
+      "run": "qualification-round-2",
+      "host": "webkit",
+      "order": "forward",
+      "operation": "delete",
+      "ratio": 0.808228730822873,
+      "legacyMs": 28.68,
+      "v3Ms": 23.18
+    }
+  ],
+  "capacity": {
+    "node": [
+      "KIFS shell capacity {\n  round: 'create',\n  source: '13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464',\n  initialBytes: 2536448,\n  output: 'capacity entries=12000 inode=308 blocks=262144 free=248909 block_bytes=4096',\n  bootMs: 76.22579100000007,\n  bootPages: 27,\n  workloadMs: 6110.495542000001,\n  finalPages: 163,\n  transportMemory: { used: 3072, peak: 3072, limit: 16777216 },\n  fileBytes: 63560704\n}",
+      "KIFS shell snapshot {\n  bytes: 54444032,\n  imageSha256: '86c8fd21470cc95a7e291f4b2faf457d5cfaf67f7b6bdb6ef12a8d7b0f1bd65f',\n  compactMs: 896.6461250000002,\n  pages: 27\n}",
+      "KIFS shell capacity {\n  round: 'restart',\n  source: '13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464',\n  initialBytes: 2536448,\n  output: 'restart-passed',\n  bootMs: 80.76258299999972,\n  bootPages: 27,\n  workloadMs: 114.17066700000032,\n  finalPages: 159,\n  transportMemory: { used: 3072, peak: 3072, limit: 16777216 },\n  fileBytes: 63576064\n}",
+      "KIFS shell capacity {\n  round: 'snapshot',\n  source: '13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464',\n  initialBytes: 2536448,\n  output: 'restart-passed',\n  bootMs: 90.18604200000118,\n  bootPages: 27,\n  workloadMs: 115.3779169999998,\n  finalPages: 159,\n  transportMemory: { used: 3072, peak: 3072, limit: 16777216 },\n  fileBytes: 54444032\n}"
+    ],
+    "chromium": {
+      "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+      "startingBytes": 2536448,
+      "rounds": [
+        {
+          "round": "create",
+          "output": "capacity entries=12000 inode=308 blocks=262144 free=248909 block_bytes=4096\n",
+          "bootMs": 186.02499997615814,
+          "bootPages": 27,
+          "workloadMs": 2097.014999985695,
+          "finalPages": 163,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        },
+        {
+          "round": "restart",
+          "output": "restart-passed\n",
+          "bootMs": 230.26499998569489,
+          "bootPages": 27,
+          "workloadMs": 107.30500000715256,
+          "finalPages": 159,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        },
+        {
+          "round": "snapshot",
+          "output": "restart-passed\n",
+          "bootMs": 255.53500002622604,
+          "bootPages": 27,
+          "workloadMs": 100.63499999046326,
+          "finalPages": 159,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        }
+      ],
+      "checkpoint": {
+        "bytes": 54444032,
+        "imageSha256": "829b99d51eafcad56ce8145d8ca8bafb1e4e0f0f4151d8e1f92bb18a66ba23dc",
+        "compactMs": 1096.5150000452995,
+        "pages": 27
+      },
+      "fileBytes": 63161344
+    },
+    "firefox": {
+      "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+      "startingBytes": 2536448,
+      "rounds": [
+        {
+          "round": "create",
+          "output": "capacity entries=12000 inode=308 blocks=262144 free=248909 block_bytes=4096\n",
+          "bootMs": 339.55999999999995,
+          "bootPages": 27,
+          "workloadMs": 5971.68,
+          "finalPages": 163,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        },
+        {
+          "round": "restart",
+          "output": "restart-passed\n",
+          "bootMs": 668.8400000000001,
+          "bootPages": 27,
+          "workloadMs": 170.09999999999854,
+          "finalPages": 159,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        },
+        {
+          "round": "snapshot",
+          "output": "restart-passed\n",
+          "bootMs": 477.89999999999964,
+          "bootPages": 27,
+          "workloadMs": 274.21999999999935,
+          "finalPages": 159,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        }
+      ],
+      "checkpoint": {
+        "bytes": 54444032,
+        "imageSha256": "963a81693136eb5bb087ccc602515e9775f36b9198d470b028b91d782752bfe3",
+        "compactMs": 4143.459999999999,
+        "pages": 27
+      },
+      "fileBytes": 63451136
+    },
+    "webkit": {
+      "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+      "startingBytes": 2536448,
+      "rounds": [
+        {
+          "round": "create",
+          "output": "capacity entries=12000 inode=308 blocks=262144 free=248909 block_bytes=4096\n",
+          "bootMs": 367.64,
+          "bootPages": 27,
+          "workloadMs": 2245.36,
+          "finalPages": 163,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        },
+        {
+          "round": "restart",
+          "output": "restart-passed\n",
+          "bootMs": 244.82000000000016,
+          "bootPages": 27,
+          "workloadMs": 122.48000000000002,
+          "finalPages": 159,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        },
+        {
+          "round": "snapshot",
+          "output": "restart-passed\n",
+          "bootMs": 255.23999999999978,
+          "bootPages": 27,
+          "workloadMs": 119.89999999999964,
+          "finalPages": 159,
+          "transportMemory": {
+            "used": 3072,
+            "peak": 3072,
+            "limit": 16777216
+          }
+        }
+      ],
+      "checkpoint": {
+        "bytes": 54444032,
+        "imageSha256": "5f120d6ae5171e1f17ed1d5165c24691ccef2491d2f13f254110d3b7c12712de",
+        "compactMs": 818.8800000000001,
+        "pages": 27
+      },
+      "fileBytes": 63255552
+    }
+  },
+  "precedingKernel": {
+    "sha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+    "hostInputs": "same as qualification matrices",
+    "runs": {
+      "node": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 351.8556249999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 183222272,
+              "finalRss": 225394688,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 372.1311250000001,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 199966720,
+              "finalRss": 206241792,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 322.96054200000026,
+              "bootPages": 32,
+              "finalPages": 280,
+              "bootRss": 217677824,
+              "finalRss": 370475008,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  3773809250,
+                  88405875,
+                  143634542,
+                  35090708,
+                  1970634834
+                ],
+                [
+                  3540136833,
+                  55124708,
+                  136562750,
+                  9606917,
+                  1673334042
+                ],
+                [
+                  3561661709,
+                  53630333,
+                  131532125,
+                  9372500,
+                  1632611208
+                ]
+              ],
+              "operationDetails": [
+                [
+                  124871292,
+                  10354708,
+                  3344125,
+                  1967290709
+                ],
+                [
+                  116879583,
+                  11799250,
+                  4469458,
+                  1668864584
+                ],
+                [
+                  117194125,
+                  7926375,
+                  2602625,
+                  1630008583
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13709202,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 281.9073329999992,
+              "bootPages": 36,
+              "finalPages": 187,
+              "bootRss": 344752128,
+              "finalRss": 355926016,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2541960,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 70.6810000000005,
+              "bootPages": 27,
+              "finalPages": 253,
+              "bootRss": 343752704,
+              "finalRss": 410927104,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  236803334,
+                  26497000,
+                  28341375,
+                  6816125,
+                  101216166
+                ],
+                [
+                  210811167,
+                  21613458,
+                  26102125,
+                  5060709,
+                  91031208
+                ],
+                [
+                  210854500,
+                  22302125,
+                  24842583,
+                  5398917,
+                  95639167
+                ]
+              ],
+              "operationDetails": [
+                [
+                  17729416,
+                  10479459,
+                  429208,
+                  100786958
+                ],
+                [
+                  15272625,
+                  10716208,
+                  190791,
+                  90840417
+                ],
+                [
+                  14073459,
+                  10641166,
+                  161292,
+                  95477875
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17193352,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 3561.661709,
+              "random stat": 55.124708,
+              "write and sync": 136.56275,
+              "verified read": 9.606917,
+              "delete": 1673.334042
+            },
+            "v3": {
+              "create": 210.8545,
+              "random stat": 22.302125,
+              "write and sync": 26.102125,
+              "verified read": 5.398917,
+              "delete": 95.639167
+            }
+          },
+          "ratios": {
+            "create": 0.05920115868028386,
+            "random stat": 0.40457583920444534,
+            "write and sync": 0.1911364921986413,
+            "verified read": 0.5619822675682532,
+            "delete": 0.05715485647186756
+          },
+          "load": {
+            "before": "14:01:44  up 5 days 17:21,  3 users,  load average: 11.62, 10.09, 9.64",
+            "after": "14:02:09  up 5 days 17:22,  3 users,  load average: 10.20, 9.89, 9.58"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 262.65108299999997,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 188694528,
+              "finalRss": 234930176,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 211.6423339999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "bootRss": 237600768,
+              "finalRss": 264028160,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 5815,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 376.9436249999999,
+              "bootPages": 36,
+              "finalPages": 187,
+              "bootRss": 250052608,
+              "finalRss": 273022976,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2541960,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 89.19512499999996,
+              "bootPages": 27,
+              "finalPages": 253,
+              "bootRss": 268337152,
+              "finalRss": 438255616,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  263703500,
+                  30850750,
+                  28128583,
+                  7841959,
+                  112246125
+                ],
+                [
+                  247106084,
+                  28056041,
+                  26428334,
+                  6111041,
+                  113971292
+                ],
+                [
+                  243700375,
+                  31681792,
+                  29924625,
+                  6457291,
+                  110777084
+                ]
+              ],
+              "operationDetails": [
+                [
+                  16665417,
+                  11331083,
+                  487625,
+                  111758500
+                ],
+                [
+                  16038291,
+                  10245834,
+                  394667,
+                  113576625
+                ],
+                [
+                  18514041,
+                  11193459,
+                  167792,
+                  110609292
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17192328,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 211.01437500000065,
+              "bootPages": 32,
+              "finalPages": 280,
+              "bootRss": 393691136,
+              "finalRss": 322142208,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  3869755000,
+                  78111875,
+                  137024125,
+                  12660584,
+                  2035001416
+                ],
+                [
+                  4118384042,
+                  83728291,
+                  140914542,
+                  9350542,
+                  1895773375
+                ],
+                [
+                  4017378042,
+                  62037291,
+                  135375500,
+                  25079375,
+                  1771842500
+                ]
+              ],
+              "operationDetails": [
+                [
+                  121122875,
+                  8171750,
+                  4114708,
+                  2030886708
+                ],
+                [
+                  120867791,
+                  12818042,
+                  5668416,
+                  1890104959
+                ],
+                [
+                  118822583,
+                  9002000,
+                  3808167,
+                  1768034333
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13709202,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 4017.378042,
+              "random stat": 78.111875,
+              "write and sync": 137.024125,
+              "verified read": 12.660584,
+              "delete": 1895.773375
+            },
+            "v3": {
+              "create": 247.106084,
+              "random stat": 30.85075,
+              "write and sync": 28.128583,
+              "verified read": 6.457291,
+              "delete": 112.246125
+            }
+          },
+          "ratios": {
+            "create": 0.061509293229715926,
+            "random stat": 0.39495595260003685,
+            "write and sync": 0.20528197498068315,
+            "verified read": 0.5100310538597588,
+            "delete": 0.059208619806679165
+          },
+          "load": {
+            "before": "14:01:19  up 5 days 17:21,  3 users,  load average: 10.70, 9.79, 9.52",
+            "after": "14:01:44  up 5 days 17:21,  3 users,  load average: 11.62, 10.09, 9.64"
+          }
+        }
+      },
+      "chromium": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 1178.4850000143051,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 781.125,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 469.4800000190735,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  666480001,
+                  129854999,
+                  41040000,
+                  32050001,
+                  411159999
+                ],
+                [
+                  577790001,
+                  81209999,
+                  132075000,
+                  9490000,
+                  125895001
+                ],
+                [
+                  338175000,
+                  55230001,
+                  20289999,
+                  12695000,
+                  382570001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  33019999,
+                  6375000,
+                  15344999,
+                  395815000
+                ],
+                [
+                  41250000,
+                  2859999,
+                  520001,
+                  125375000
+                ],
+                [
+                  17645001,
+                  1799999,
+                  405001,
+                  382165000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 684.1899999976158,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 253.83999997377396,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  101305000,
+                  32300000,
+                  9940000,
+                  6010000,
+                  35580000
+                ],
+                [
+                  89755000,
+                  28470000,
+                  8195000,
+                  5650000,
+                  30180000
+                ],
+                [
+                  151180000,
+                  24845000,
+                  11645000,
+                  5770000,
+                  32195000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  7090000,
+                  2705000,
+                  295000,
+                  35285000
+                ],
+                [
+                  6710000,
+                  1320000,
+                  165000,
+                  30015000
+                ],
+                [
+                  6395000,
+                  5095000,
+                  205000,
+                  31990000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 577.790001,
+              "random stat": 81.209999,
+              "write and sync": 41.04,
+              "verified read": 12.695,
+              "delete": 382.570001
+            },
+            "v3": {
+              "create": 101.305,
+              "random stat": 28.47,
+              "write and sync": 9.94,
+              "verified read": 5.77,
+              "delete": 32.195
+            }
+          },
+          "ratios": {
+            "create": 0.17533186767626324,
+            "random stat": 0.3505725938994286,
+            "write and sync": 0.2422027290448343,
+            "verified read": 0.4545096494682946,
+            "delete": 0.08415453359083427
+          },
+          "load": {
+            "before": "13:59:24  up 5 days 17:19,  3 users,  load average: 8.99, 8.85, 9.17",
+            "after": "13:59:50  up 5 days 17:20,  3 users,  load average: 11.62, 9.50, 9.39"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 975.4599999785423,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 488.19999998807907,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 641.6100000143051,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 223.3149999976158,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  110625000,
+                  30520000,
+                  18445000,
+                  6100000,
+                  35930000
+                ],
+                [
+                  86790000,
+                  29680001,
+                  8599999,
+                  5600000,
+                  29885000
+                ],
+                [
+                  84090000,
+                  31305000,
+                  9000000,
+                  5895000,
+                  36405000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  10610000,
+                  7685000,
+                  320000,
+                  35610000
+                ],
+                [
+                  6805000,
+                  1645000,
+                  215000,
+                  29670000
+                ],
+                [
+                  7100000,
+                  1720000,
+                  200000,
+                  36205000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17259912,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 524.7599999904633,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  681945000,
+                  59570000,
+                  24055000,
+                  12484999,
+                  133070001
+                ],
+                [
+                  282880000,
+                  58029999,
+                  23140001,
+                  9369999,
+                  143460001
+                ],
+                [
+                  560695000,
+                  49115000,
+                  23010000,
+                  16594999,
+                  165840001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  20250000,
+                  2855000,
+                  640001,
+                  132430000
+                ],
+                [
+                  20585001,
+                  1800000,
+                  425000,
+                  143035001
+                ],
+                [
+                  20425000,
+                  1805000,
+                  465001,
+                  165375000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 560.695,
+              "random stat": 58.029999,
+              "write and sync": 23.140001,
+              "verified read": 12.484999,
+              "delete": 143.460001
+            },
+            "v3": {
+              "create": 86.79,
+              "random stat": 30.52,
+              "write and sync": 9.0,
+              "verified read": 5.895,
+              "delete": 35.93
+            }
+          },
+          "ratios": {
+            "create": 0.15479003736434246,
+            "random stat": 0.5259348703418038,
+            "write and sync": 0.38893688898284834,
+            "verified read": 0.47216663773861733,
+            "delete": 0.25045308622296747
+          },
+          "load": {
+            "before": "13:59:01  up 5 days 17:19,  3 users,  load average: 7.92, 8.66, 9.11",
+            "after": "13:59:24  up 5 days 17:19,  3 users,  load average: 8.99, 8.85, 9.17"
+          }
+        }
+      },
+      "firefox": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 814.58,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 1020.6800000000001,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 775.48,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  452240000,
+                  53780000,
+                  15340000,
+                  15340000,
+                  70260000
+                ],
+                [
+                  141620001,
+                  52920000,
+                  14980000,
+                  13440000,
+                  57700000
+                ],
+                [
+                  137840000,
+                  44020000,
+                  29180000,
+                  12720000,
+                  58439999
+                ]
+              ],
+              "operationDetails": [
+                [
+                  13260000,
+                  1500000,
+                  419999,
+                  69840001
+                ],
+                [
+                  12940000,
+                  1440000,
+                  379999,
+                  57320001
+                ],
+                [
+                  27040000,
+                  1420001,
+                  280000,
+                  58159999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 605.4400000000005,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 349.9200000000001,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  255480000,
+                  50000000,
+                  14600000,
+                  9720000,
+                  86500000
+                ],
+                [
+                  259280000,
+                  43520000,
+                  15220000,
+                  14960000,
+                  50300000
+                ],
+                [
+                  204379999,
+                  38480000,
+                  19880001,
+                  11319999,
+                  60140001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  12980000,
+                  1400000,
+                  620000,
+                  85880000
+                ],
+                [
+                  13399999,
+                  1640001,
+                  379999,
+                  49920001
+                ],
+                [
+                  18520000,
+                  1140001,
+                  1100001,
+                  59040000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17271176,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 141.620001,
+              "random stat": 52.92,
+              "write and sync": 15.34,
+              "verified read": 13.44,
+              "delete": 58.439999
+            },
+            "v3": {
+              "create": 255.48,
+              "random stat": 43.52,
+              "write and sync": 15.22,
+              "verified read": 11.319999,
+              "delete": 60.140001
+            }
+          },
+          "ratios": {
+            "create": 1.803982475610913,
+            "random stat": 0.8223733938019653,
+            "write and sync": 0.9921773142112126,
+            "verified read": 0.8422618303571429,
+            "delete": 1.0290896993341838
+          },
+          "load": {
+            "before": "14:00:56  up 5 days 17:21,  3 users,  load average: 10.59, 9.69, 9.48",
+            "after": "14:01:19  up 5 days 17:21,  3 users,  load average: 10.70, 9.79, 9.52"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 708.56,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 585.1399999999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 652.7999999999997,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 411.8000000000002,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  240200000,
+                  48459999,
+                  13020000,
+                  6020001,
+                  38639999
+                ],
+                [
+                  441639999,
+                  54440001,
+                  18280000,
+                  17000000,
+                  51720000
+                ],
+                [
+                  232239999,
+                  65540000,
+                  12720001,
+                  18619999,
+                  72860001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  11960001,
+                  879999,
+                  300000,
+                  38339999
+                ],
+                [
+                  16379999,
+                  1700001,
+                  860000,
+                  50860000
+                ],
+                [
+                  11300000,
+                  1140000,
+                  840001,
+                  72020000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17273224,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 605.3200000000006,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  348280000,
+                  89060000,
+                  19120000,
+                  21500000,
+                  98639999
+                ],
+                [
+                  377539999,
+                  93180000,
+                  21800001,
+                  22540000,
+                  110219999
+                ],
+                [
+                  208320000,
+                  97399999,
+                  53320001,
+                  17560000,
+                  122599999
+                ]
+              ],
+              "operationDetails": [
+                [
+                  16700001,
+                  1660000,
+                  480000,
+                  98159999
+                ],
+                [
+                  18819999,
+                  2220001,
+                  400000,
+                  109819999
+                ],
+                [
+                  50600000,
+                  1600000,
+                  340000,
+                  122259999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 348.28,
+              "random stat": 93.18,
+              "write and sync": 21.800001,
+              "verified read": 21.5,
+              "delete": 110.219999
+            },
+            "v3": {
+              "create": 240.2,
+              "random stat": 54.440001,
+              "write and sync": 13.02,
+              "verified read": 17.0,
+              "delete": 51.72
+            }
+          },
+          "ratios": {
+            "create": 0.6896749741587229,
+            "random stat": 0.5842455569864777,
+            "write and sync": 0.5972476790253357,
+            "verified read": 0.7906976744186046,
+            "delete": 0.46924333577611443
+          },
+          "load": {
+            "before": "14:00:34  up 5 days 17:20,  3 users,  load average: 11.32, 9.76, 9.50",
+            "after": "14:00:56  up 5 days 17:21,  3 users,  load average: 10.59, 9.69, 9.48"
+          }
+        }
+      },
+      "webkit": {
+        "forward": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 1160.9,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 799.5999999999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 623.2400000000002,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  196520001,
+                  127120000,
+                  32380000,
+                  17860000,
+                  53060000
+                ],
+                [
+                  194940001,
+                  90519999,
+                  18860001,
+                  10399999,
+                  81620001
+                ],
+                [
+                  201380000,
+                  90120000,
+                  23679999,
+                  17560000,
+                  103340000
+                ]
+              ],
+              "operationDetails": [
+                [
+                  24399999,
+                  7420001,
+                  479999,
+                  52580001
+                ],
+                [
+                  15359999,
+                  3100001,
+                  180001,
+                  81440000
+                ],
+                [
+                  20900001,
+                  2179999,
+                  260001,
+                  103079999
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 581.2799999999988,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 244.6999999999989,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  105360000,
+                  39840000,
+                  6860000,
+                  5440000,
+                  35280000
+                ],
+                [
+                  74260000,
+                  31260000,
+                  5960000,
+                  5220000,
+                  16500000
+                ],
+                [
+                  86460000,
+                  45060000,
+                  8839999,
+                  6540000,
+                  26120001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  6040000,
+                  620000,
+                  280000,
+                  35000000
+                ],
+                [
+                  5360000,
+                  460000,
+                  180000,
+                  16320000
+                ],
+                [
+                  8199999,
+                  460000,
+                  220000,
+                  25900001
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 196.520001,
+              "random stat": 90.519999,
+              "write and sync": 23.679999,
+              "verified read": 17.56,
+              "delete": 81.620001
+            },
+            "v3": {
+              "create": 86.46,
+              "random stat": 39.84,
+              "write and sync": 6.86,
+              "verified read": 5.44,
+              "delete": 26.120001
+            }
+          },
+          "ratios": {
+            "create": 0.4399552186039323,
+            "random stat": 0.4401237344246988,
+            "write and sync": 0.289695958179728,
+            "verified read": 0.3097949886104784,
+            "delete": 0.320019611369522
+          },
+          "load": {
+            "before": "14:00:10  up 5 days 17:20,  3 users,  load average: 12.02, 9.75, 9.49",
+            "after": "14:00:33  up 5 days 17:20,  3 users,  load average: 11.32, 9.76, 9.50"
+          }
+        },
+        "reverse": {
+          "source": "13a511d3a14aa6cbe4d0e7c3458101ac269e38654701715e3dd52386ef2a1464",
+          "kernelSha256": "6aa1acdae637a7260b29ee7bdd021303c89123ab0000fe622d190b74da3af254",
+          "guestSha256": "c198a49752dcc5c8ea2b56a504da6858c0de164670a54ed2e1adf75ae25656ce",
+          "rounds": [
+            {
+              "phase": "seed",
+              "bootMs": 725.52,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "seed-control",
+              "bootMs": 561.1599999999999,
+              "bootPages": 32,
+              "finalPages": 188,
+              "transport": {
+                "used": 168620,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 10672,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "upgrade",
+              "bootMs": 742.0999999999999,
+              "bootPages": 36,
+              "finalPages": 187,
+              "transport": {
+                "used": 86032,
+                "peak": 168620,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [],
+              "operationDetails": [],
+              "profile": [],
+              "physicalBytes": 2568584,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "v3",
+              "bootMs": 260.34000000000015,
+              "bootPages": 27,
+              "finalPages": 253,
+              "transport": {
+                "used": 22700,
+                "peak": 27030,
+                "limit": 16777216
+              },
+              "geometry": [
+                "262144",
+                "0"
+              ],
+              "samples": [
+                [
+                  108720000,
+                  36780000,
+                  7520000,
+                  5660000,
+                  31020000
+                ],
+                [
+                  77480000,
+                  33760000,
+                  6820000,
+                  5200000,
+                  25840000
+                ],
+                [
+                  86039999,
+                  35700001,
+                  6879999,
+                  5240000,
+                  25300001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  6620000,
+                  720000,
+                  340000,
+                  30680000
+                ],
+                [
+                  5980000,
+                  660000,
+                  160000,
+                  25680000
+                ],
+                [
+                  6119999,
+                  560000,
+                  200000,
+                  25100001
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 17257864,
+              "diskSample": "after-shutdown"
+            },
+            {
+              "phase": "legacy",
+              "bootMs": 508.3799999999992,
+              "bootPages": 32,
+              "finalPages": 280,
+              "transport": {
+                "used": 170840,
+                "peak": 175170,
+                "limit": 16777216
+              },
+              "geometry": [
+                "131072",
+                "65536"
+              ],
+              "samples": [
+                [
+                  215100000,
+                  97639999,
+                  28900001,
+                  22680000,
+                  65460000
+                ],
+                [
+                  188440001,
+                  81099999,
+                  19620001,
+                  10480000,
+                  42800000
+                ],
+                [
+                  162960000,
+                  72419999,
+                  22420001,
+                  12439999,
+                  52800001
+                ]
+              ],
+              "operationDetails": [
+                [
+                  25440000,
+                  2800000,
+                  419999,
+                  65040001
+                ],
+                [
+                  17140000,
+                  2100000,
+                  220000,
+                  42580000
+                ],
+                [
+                  19980000,
+                  1800000,
+                  280001,
+                  52520000
+                ]
+              ],
+              "permissionsVerified": true,
+              "profile": [],
+              "physicalBytes": 13718916,
+              "diskSample": "after-shutdown"
+            }
+          ],
+          "mediansMs": {
+            "legacy": {
+              "create": 188.440001,
+              "random stat": 81.099999,
+              "write and sync": 22.420001,
+              "verified read": 12.439999,
+              "delete": 52.800001
+            },
+            "v3": {
+              "create": 86.039999,
+              "random stat": 35.700001,
+              "write and sync": 6.879999,
+              "verified read": 5.24,
+              "delete": 25.84
+            }
+          },
+          "ratios": {
+            "create": 0.456590949604166,
+            "random stat": 0.44019730505791993,
+            "write and sync": 0.30686880879264905,
+            "verified read": 0.42122189881204974,
+            "delete": 0.48939393012511495
+          },
+          "load": {
+            "before": "13:59:50  up 5 days 17:20,  3 users,  load average: 11.62, 9.50, 9.39",
+            "after": "14:00:10  up 5 days 17:20,  3 users,  load average: 12.02, 9.75, 9.49"
+          }
+        }
+      }
+    }
+  },
+  "bothOrdersAndRoundsSlowerThanPrecedingKernel": [],
+  "validation": {
+    "workspaceRust": {
+      "passed": 4716,
+      "ignored": 2
+    },
+    "rootfsRust": 303,
+    "hostScratchAndStatLease": 15,
+    "nodePackagedGuestAndInterruptedUpgrade": 9,
+    "browserPackagedGuestAndInterruptedUpgrade": {
+      "chromium": 3,
+      "firefox": 3,
+      "webkit": 3
+    },
+    "abiSnapshotAndProgramBaseline": true,
+    "browserAppTypecheck": true,
+    "hostBoundary": {
+      "flagged": [
+        "env.host_fetch_deferred"
+      ],
+      "reason": "The widened import carries the declared resource size and needs an ownership review."
+    },
+    "browserAppMountedVersion": {
+      "kernelSha256": "56073154acc0880b5eab9943b7b3cdbe36bdd72a774f94e76e63a781ef7cd750",
+      "browsers": {
+        "chromium": {
+          "passed": 1,
+          "elapsed": "24.6s"
+        },
+        "firefox": {
+          "passed": 1,
+          "elapsed": "39.4s"
+        },
+        "webkit": {
+          "passed": 1,
+          "elapsed": "29.3s"
+        }
+      }
+    }
+  },
+  "rollout": {
+    "appConversion": "no app upgrade path",
+    "activatedFormatPreserved": true,
+    "mountedFormatDisplayed": true
+  },
+  "appSource": {
+    "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts": "4067a4d74d317bda7ab05753a568d5ebebf15acd3def367bf378727b34d5b3de",
+    "apps/browser-demos/test/partial-image.spec.ts": "ceb100373e7e7898a7462f761950f295f5a3727896d5f58aff4d6aa6fc89d595"
+  }
+}

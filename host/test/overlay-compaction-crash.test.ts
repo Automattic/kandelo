@@ -12,6 +12,7 @@ import { activationCodec, sealCodec, encodeOverlayActivation, decodeOverlayActiv
 import type { HostFileOffset } from "../src/types";
 import { writeOverlayGenerationSealSync } from "./fixtures/native-overlay-activation";
 import {
+  bootOverlayPersistence,
   compactOverlayGeneration,
   enableBestOverlayGeneration,
   LiveOverlayCompactor,
@@ -220,6 +221,50 @@ async function nativeRootfs(image: Uint8Array): Promise<CentralizedKernelWorker>
   return worker;
 }
 
+it("keeps the source writable after a failed pre-activation trial and reuses staging", async () => {
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(resolveBinary("kandelo_image_module32.wasm"))));
+  const image = await filesystem.saveImage();
+  filesystem.reset();
+  const disk = new CrashDisk("flush-only");
+  const files = disk.files();
+  const encoder = new TextEncoder();
+  const worker = await nativeRootfs(image);
+  const { active, handoff } = await bootOverlayPersistence(worker, files, true, false, () => {});
+  worker.rootfsWriteFile("/saved", encoder.encode("legacy source"), 0o640);
+  worker.syncRootfsPersistence();
+
+  const trialError = new Error("invalid staged namespace");
+  await expect(compactOverlayGeneration(active, files, {
+    ...handoff,
+    verify: () => {
+      expect(disk.durable.get("g0.seal")?.length).toBeGreaterThan(0);
+      throw trialError;
+    },
+    activate: () => { throw new Error("failed trial must prevent activation"); },
+  }, 0)).rejects.toBe(trialError);
+  expect(disk.durable.get("g0.seal")).toHaveLength(0);
+  worker.rootfsWriteFile("/saved", encoder.encode("acknowledged after the failed trial"), 0o640);
+  worker.syncRootfsPersistence();
+  active.journal.close();
+
+  const resumed = await nativeRootfs(image);
+  const source = await bootOverlayPersistence(resumed, files, true, true, () => {});
+  expect(source.active.slot).toBe("legacy");
+  const trial = { completed: false };
+  const published = await compactOverlayGeneration(source.active, files, {
+    ...source.handoff,
+    verify: () => { trial.completed = true; },
+    activate: () => {
+      expect(trial.completed).toBe(true);
+      source.handoff.activate();
+    },
+  }, 0);
+  expect(published.slot).toBe("g0");
+  expect(new TextDecoder().decode(resumed.rootfsReadFile("/saved"))).toBe("acknowledged after the failed trial");
+  published.index?.close();
+  published.journal.close();
+});
+
 describe("acknowledged native writes during generation retirement", () => {
   it.each((["flush-only", "write-through"] as const).flatMap(persistence =>
     (["unsealed", "sealed"] as const).flatMap(retirement =>
@@ -355,6 +400,37 @@ describe("acknowledged native writes during generation retirement", () => {
 });
 
 describe("compaction durable-snapshot crash cuts", () => {
+  it.each(["legacy", "sealed"] as const)("legacy selector on %s refuses an activated volume it cannot read", async layout => {
+    const { disk, selected, current } = fixture("flush-only", layout);
+    const source = decodeOverlayActivation(disk.durable.get("legacy.activation0")!);
+    const seal = activationCodec.kifsGenerationSeal(source, new Uint8Array(32).fill(91));
+    const successor = activationCodec.kifsGenerationNext(source, seal);
+    const next = encodeOverlayActivation(successor);
+    const volume = `${successor.slot}.volume`;
+    disk.seed(volume, new Uint8Array());
+    const image = KandeloImageFs.createPositioned(readFileSync(resolveBinary("kandelo_image_module_positioned32.wasm")));
+    try {
+      image.writeFile("/source", Uint8Array.of(23));
+      image.stageKifsV3To(new CrashStorage(disk, volume), 262_144, successor.sealDigest);
+    } finally { image.reset(); }
+    disk.seed(`${successor.slot}.volume-seal`, seal);
+    const open = (recovered: CrashDisk, mounted: string[]) =>
+      enableBestOverlayGeneration(recovered.files(), journal => { mounted.push((journal as CrashStorage).key); }, true);
+    const before: string[] = [];
+    const previous = await open(disk.recover(), before);
+    expect(before).toEqual([`${selected.slot}.journal`]);
+    previous.journal.close();
+    previous.index?.close();
+    for (const replicas of [[0], [1], [0, 1]]) {
+      const recovered = disk.recover();
+      for (const replica of replicas) recovered.seed(`legacy.activation${replica}`, next);
+      const mounted: string[] = [];
+      await expect(open(recovered, mounted)).rejects.toMatchObject({ recovery: "no-valid-overlay-generation" });
+      expect(mounted).toEqual([]);
+      expect(recovered.durable.get(`${selected.slot}.journal`)).toEqual(current);
+    }
+  });
+
   it.each([
     ["flush-only", "legacy"], ["flush-only", "sealed"],
     ["write-through", "legacy"], ["write-through", "sealed"],

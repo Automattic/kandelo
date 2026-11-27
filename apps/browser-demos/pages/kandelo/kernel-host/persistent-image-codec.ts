@@ -285,7 +285,7 @@ export async function inspectPersistentImageFile(
   physicalLength: number,
   identitySha256: string,
   policy: PersistentImageIntegrityPolicy,
-  options: ImageCodecOptions = {},
+  options: ImageCodecOptions & { journalName?: string } = {},
 ): Promise<{ payloadLength: number; physicalLength: number }> {
   if (!Number.isSafeInteger(physicalLength) || physicalLength <= 0 || !/^[0-9a-f]{64}$/.test(identitySha256)
     || (policy !== "crc32c" && policy !== "sha256")) throw new Error("Persistent image binding is invalid");
@@ -295,7 +295,7 @@ export async function inspectPersistentImageFile(
   const snapshot = await file.getFile();
   if (snapshot.size !== physicalLength) throw Object.assign(new Error("Persistent image physical length changed"), { errno: ERRNO.EIO });
   const prefix = new Uint8Array(await snapshot.slice(0, 4096).arrayBuffer());
-  const pending = runCodec({ type: "inspect", prefix, moduleBytes, physicalLength, identitySha256, policy }, undefined, options);
+  const pending = runCodec({ type: "inspect", prefix, moduleBytes, physicalLength, identitySha256, policy, journalName: options.journalName }, undefined, options);
   moduleBytes = EMPTY_CODEC_BYTES;
   const result = await pending;
   if (result.type !== "inspected") throw new Error("Persistent image inspector returned no geometry");

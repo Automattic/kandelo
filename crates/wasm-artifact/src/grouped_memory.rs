@@ -6,11 +6,11 @@ use crate::{
 };
 use alloc::{borrow::Cow, format, string::String, vec::Vec};
 use serde::Deserialize;
-use wasm_posix_program_abi::program_extensions::{klog_v1, memory_group_v3 as G, memory_group_growth_v1 as growth, stack_v1};
+use wasm_posix_program_abi::program_extensions::{klog_v1, memory_group_v3 as G, memory_group_growth_v1 as growth, stack_v1, stat_cache_v1};
 use wasmparser::{Parser, Payload, TypeRef};
 
 const LIMIT: usize = 4096;
-const SUPPORTED: &[&str] = &[stack_v1::MODULE, klog_v1::MODULE, G::MODULE, growth::MODULE];
+const SUPPORTED: &[&str] = &[stack_v1::MODULE, klog_v1::MODULE, stat_cache_v1::MODULE, G::MODULE, growth::MODULE];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupedMemoryLayout {

@@ -67,7 +67,7 @@ describe("checked-base normal reopen physical read bound", () => {
       setEnvironmentData("kandelo-persistent-io-probe", { counts, path: fixture.path, guard: { start: 0, end: 0 } });
       host = new NodeKernelHost({ rootfsImageFile: fixture.path,
         rootfsPersistentImageBinding: { ...fixture.binding, dataCachePages: 2, indexCachePages: 2 },
-        experimentalResizablePersistencePath: join(directory, "journal"), kernelMaxPages: 1024, maxPages: 1024 });
+        kifsUpgradeProfile: "legacy", experimentalResizablePersistencePath: join(directory, "journal"), kernelMaxPages: 1024, maxPages: 1024 });
       await host.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength) as ArrayBuffer);
       values.fill(0n);
       const offset = 5 * 1024 * 1024 + 37;
@@ -103,7 +103,7 @@ describe("checked-base normal reopen physical read bound", () => {
         setEnvironmentData("kandelo-persistent-io-probe", { counts, path: fixture.path, guard });
         const boot = async (existing: boolean) => {
           const host = new NodeKernelHost({ rootfsImageFile: fixture.path, rootfsPersistentImageBinding: fixture.binding,
-            experimentalResizablePersistencePath: join(stage, "journal"), requireExistingRootfsPersistence: existing,
+            kifsUpgradeProfile: "legacy", experimentalResizablePersistencePath: join(stage, "journal"), requireExistingRootfsPersistence: existing,
             kernelMaxPages: 1024, maxPages: 1024 });
           try { await host.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength) as ArrayBuffer); }
           catch (error) { await host.destroy(); throw error; }

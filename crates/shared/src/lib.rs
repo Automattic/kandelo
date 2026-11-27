@@ -2,6 +2,7 @@
 
 pub mod channel_record;
 pub mod channel_scalar;
+pub mod stat_cache_wire;
 pub mod dri_sync;
 pub mod dri_owned;
 pub mod host_abi;
@@ -1151,6 +1152,8 @@ pub mod flags {
     pub const O_TRUNC: u32 = 0o1000;
     pub const O_APPEND: u32 = 0o2000;
     pub const O_NONBLOCK: u32 = 0o4000;
+    /// musl's O_SYNC and O_RSYNC also include this data-sync bit.
+    pub const O_DSYNC: u32 = 0o10000;
     pub const O_ASYNC: u32 = 0o20000;
     pub const O_DIRECTORY: u32 = 0o200000;
     pub const O_NOFOLLOW: u32 = 0o400000;
@@ -2404,7 +2407,8 @@ pub mod abi {
     /// 39: direct shared-group page-table scanning.
     /// 40: integrate kernel-owned epoll waits with those group contracts.
     /// 41: carry the engine-observed indirect-call trap in a signal exit.
-    pub const HOST_ADAPTER_VERSION: u32 = 41;
+    /// 42: publish a kernel-owned transfer bound for the deferred byte import.
+    pub const HOST_ADAPTER_VERSION: u32 = 42;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -2511,6 +2515,10 @@ pub mod abi {
         }
     }
 
+    /// A positive record completion at this offset plus the signal number
+    /// reports process termination. Lower values describe caught delivery.
+    pub const RECORD_COMPLETION_EXIT: i32 = 256;
+
     /// Sorted single source for generated host checks and artifact admission.
     /// Keep scheduled records after promotion so the reviewed deadline remains
     /// visible. Optional interfaces without a deadline never auto-promote.
@@ -2588,6 +2596,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_group_root_control"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
+        HostAdapterKernelExport::optional("kernel_handle_channel_record_complete"),
         HostAdapterKernelExport::required("kernel_handle_guest_io"),
         HostAdapterKernelExport::required("kernel_has_sa_nocldstop"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
@@ -2605,6 +2614,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_ipc_shmdt_for_process"),
         HostAdapterKernelExport::required("kernel_ipc_shmdt_for_task"),
         HostAdapterKernelExport::required("kernel_is_fd_nonblock"),
+        HostAdapterKernelExport::optional("kernel_rootfs_stat_lease"),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
         HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),
         HostAdapterKernelExport::required("kernel_mark_process_signaled"),
@@ -2653,6 +2663,16 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_reserve_host_region"),
         HostAdapterKernelExport::optional("kernel_reserve_host_region_at"),
         HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
+        HostAdapterKernelExport::optional("kernel_rootfs_activate_kifs_handoff"),
+        HostAdapterKernelExport::optional("kernel_rootfs_cancel_kifs_handoff"),
+        HostAdapterKernelExport::optional("kernel_rootfs_compact_kifs_v3"),
+        HostAdapterKernelExport::required("kernel_rootfs_deferred_transfer_size_address"),
+        HostAdapterKernelExport::optional("kernel_rootfs_format_version"),
+        HostAdapterKernelExport::optional("kernel_rootfs_kifs_compaction_needed"),
+        HostAdapterKernelExport::optional("kernel_rootfs_mount_kifs_v3"),
+        HostAdapterKernelExport::optional("kernel_rootfs_prepare_kifs_handoff"),
+        HostAdapterKernelExport::optional("kernel_rootfs_stage_saved_kifs_v3"),
+        HostAdapterKernelExport::optional("kernel_rootfs_supports_stat_lease"),
         HostAdapterKernelExport::optional("kernel_rootfs_rename_file"),
         HostAdapterKernelExport::required("kernel_rootfs_take_compaction_request"),
         HostAdapterKernelExport::required("kernel_set_current_tid"),

@@ -6,7 +6,7 @@
 //! will depend on it directly.
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
 #![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
-#![feature(allocator_api)]
+#![feature(allocator_api, optimize_attribute, portable_simd)]
 
 extern crate alloc;
 extern crate wasm_posix_shared;
@@ -42,6 +42,7 @@ pub mod retirement_control;
 pub mod executable_backing;
 pub mod fd;
 pub mod fifo;
+mod filesystem_tree;
 pub mod fork;
 pub mod framebuffer;
 pub mod fs_changes;
@@ -60,6 +61,7 @@ pub mod kandelo_image_fs;
 pub mod kernel_file_mapping;
 pub mod private_mapping;
 pub mod kandelo_image_write;
+pub mod kifs_v3;
 pub mod klogctl;
 pub mod kmsg;
 pub mod kmsg_device;
@@ -83,6 +85,7 @@ mod overlay_generation_policy;
 mod storage_digest;
 pub mod persistent_overlay;
 pub mod persistent_image;
+pub mod positioned_storage;
 pub mod persistent_overlay_index;
 pub mod path;
 pub mod complete_copy;

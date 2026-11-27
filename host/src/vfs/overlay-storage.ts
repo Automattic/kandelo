@@ -180,7 +180,7 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
   static async removeFile(
     name: string,
     slot: "legacy" | `g${number}`,
-    suffix: "journal" | "seal" | "index" | "activation0" | "activation1",
+    suffix: import("./overlay-generation-selection").OverlayGenerationFile,
   ): Promise<void> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)
       || (slot === "legacy" ? !["journal", "activation0", "activation1"].includes(suffix)
@@ -204,7 +204,7 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
   static async openFile(
     name: string,
     slot: "legacy" | `g${number}`,
-    suffix: "journal" | "seal" | "index" | "activation0" | "activation1",
+    suffix: import("./overlay-generation-selection").OverlayGenerationFile,
     create: boolean,
     closeLedger?: StorageCloseLedger,
   ): Promise<OpfsOverlayStorageFile | null> {

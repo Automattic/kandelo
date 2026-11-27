@@ -48,7 +48,11 @@ use wasm_posix_shared::WasmStat;
 use wasm_posix_shared::WasmStatfs;
 use wasm_posix_shared::mode::{S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 
+mod kifs_import;
+mod kifs_mount;
+mod legacy_mount;
 mod metadata_export;
+mod mounted;
 mod namespace_activation;
 mod recovery_slots;
 
@@ -400,6 +404,7 @@ enum InodeReservationFailure {
 }
 
 struct RootfsState {
+    kifs: Option<kifs_mount::MountedKifs>,
     inodes: Vec<Option<Inode>>,
     free_inodes: Vec<u32>,
     arena_metadata: MetadataReservation<'static>,
@@ -438,6 +443,7 @@ struct RootfsState {
     /// own tree, so the image has no runtime growth room and meets no declared
     /// capacity.
     image_capacity_bytes: Option<u64>,
+    export_inode_capacity: Option<u32>,
     /// Image metadata for the next export, as opaque bytes. The kernel neither
     /// writes nor reads what is in here — `version`, `kernelAbi`, `createdBy`
     /// are the builder's statements about its own artifact — but the section
@@ -517,6 +523,7 @@ impl ArchiveEntry {
 impl RootfsState {
     fn new() -> Self {
         RootfsState {
+            kifs: None,
             inodes: Vec::new(),
             free_inodes: Vec::new(),
             arena_metadata: ROOTFS_METADATA.empty(),
@@ -537,6 +544,7 @@ impl RootfsState {
             export_timestamp_ms: None,
             image: None,
             image_capacity_bytes: None,
+            export_inode_capacity: None,
             image_metadata: None,
             persistent_allocated_blocks: None,
             verified_reads: crate::verified_read_cache::VerifiedReadCache::new(),
@@ -640,6 +648,10 @@ impl RootfsState {
         }
     }
 
+    fn release_unreferenced_inode(&mut self, index: u32) -> Result<(), Errno> {
+        mounted::release_inode(self, index)
+    }
+
     fn invalidate_verified_uri(&mut self, uri: &[u8]) {
         for inode in self.inodes.iter().flatten() {
             let matches = match &inode.kind {
@@ -683,27 +695,6 @@ impl RootfsState {
         self.inodes
             .get_mut(idx as usize)
             .and_then(|slot| slot.as_mut())
-    }
-
-    /// Root ("/") inode index, created on first touch with default 0755 root:root
-    /// metadata. The loader's `/` entry refines that metadata via
-    /// [`insert_base_dir`].
-    fn mount_root(&mut self) -> Result<u32, Errno> {
-        if let Some(root) = self.root {
-            return Ok(root);
-        }
-        let ino = 1;
-        let root = self.insert_inode(Inode::new(
-            InodeKind::Dir(DirectoryEntries::new()),
-            0o755,
-            0,
-            0,
-            2,
-            ino,
-        ))?;
-        self.bump_next_ino(ino);
-        self.root = Some(root);
-        Ok(root)
     }
 
     /// Walk `components` from the root, returning the target inode index. Every
@@ -1035,7 +1026,7 @@ impl CanonicalDirentOrder {
     fn new() -> Self { Self { parent: None, name: [0; 255], length: 0 } }
 
     fn accept(&mut self, parent: u64, name: &[u8]) -> Result<(), Errno> {
-        crate::persistent_overlay::validate_dirent_name(parent, name).map_err(|_| Errno::EIO)?;
+        crate::path::validate_dirent_name(parent, name).map_err(|_| Errno::EIO)?;
         if self.parent.is_some_and(|previous| parent < previous
                 || (parent == previous && name <= &self.name[..self.length]))
         {
@@ -1062,11 +1053,9 @@ fn reserve_replay_vec<T>(count: usize, scratch: &mut MetadataReservation<'_>) ->
 impl PreparedNamespaceReplay {
     fn load(state: &RootfsState, journal: &mut PersistentJournal, created: &[(u64, Inode)], unlinked_parent_floor: Option<u64>) -> Result<Self, Errno> {
         Self::load_from_dirents(state, created, unlinked_parent_floor, |visit| {
-            journal.for_each_metadata(|key, value| {
-                if let OverlayKey::Dirent { parent, name } = key {
-                    visit(*parent, name, value)?;
-                }
-                Ok(())
+            journal.for_each_dirent(0, None, |key, value| {
+                let OverlayKey::Dirent { parent, name } = key else { return Err(Errno::EIO) };
+                visit(*parent, name, value)
             })
         })
     }
@@ -1693,61 +1682,56 @@ fn enable_persistence_internal(
     drop(cursor);
     let mut base_updates = reserve_replay_vec(base_update_count, &mut recovery_scratch)?;
     let mut referenced = reserve_replay_vec(referenced_count, &mut recovery_scratch)?;
-    let mut cursor = journal.metadata_cursor(4096)?;
-    while let Some((key, value)) = journal.next_metadata(&mut cursor)? {
-        if matches!(key, OverlayKey::Dirent { .. }) {
-            if let Some(value) = value {
-                let target = u64::from_le_bytes(value.try_into().map_err(|_| Errno::EIO)?);
-                if target >= minimum_created_ino { referenced.push(target); }
-            }
+    journal.for_each_dirent(0, None, |_, value| {
+        if let Some(value) = value {
+            let target = u64::from_le_bytes(value.try_into().map_err(|_| Errno::EIO)?);
+            if target >= minimum_created_ino { referenced.push(target); }
         }
-    }
-    drop(cursor);
+        Ok(())
+    })?;
     referenced.sort_unstable();
     referenced.dedup();
     let mut created = reserve_replay_vec(referenced.len(), &mut recovery_scratch)?;
     let mut maximum_created_ino = None;
-    let mut cursor = journal.metadata_cursor(4096)?;
-    while let Some((key, value)) = journal.next_metadata(&mut cursor)? {
-        if let OverlayKey::Inode(ino) = key {
-            if !resizable || *ino == u64::MAX {
+    journal.for_each_inode(|ino, value| {
+        if !resizable || ino == u64::MAX {
+            return Err(Errno::EIO);
+        }
+        let bytes = value.ok_or(Errno::EIO)?;
+        if ino < minimum_created_ino {
+            if bytes.len() != PERSISTENT_REGULAR_RECORD_BYTES || bytes[1] != 4 {
                 return Err(Errno::EIO);
             }
-            let bytes = value.ok_or(Errno::EIO)?;
-            if *ino < minimum_created_ino {
-                if bytes.len() != PERSISTENT_REGULAR_RECORD_BYTES || bytes[1] != 4 {
+            let metadata = decode_inode_record(bytes)?;
+            if metadata.mode & !0o7777 != 0 {
+                return Err(Errno::EIO);
+            }
+            let position = base_indices
+                .binary_search_by_key(&ino, |entry| entry.0)
+                .map_err(|_| Errno::EIO)?;
+            let index = base_indices[position].1;
+            let valid = ROOTFS.with(|state| {
+                let inode = state.get(index).ok_or(Errno::EIO)?;
+                if matches!(inode.kind, InodeKind::Regular(_) | InodeKind::PersistentRegular)
+                    || (matches!(inode.kind, InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. })
+                        && metadata.mode & 0o6000 != 0)
+                {
                     return Err(Errno::EIO);
                 }
-                let metadata = decode_inode_record(bytes)?;
-                if metadata.mode & !0o7777 != 0 {
-                    return Err(Errno::EIO);
-                }
-                let position = base_indices
-                    .binary_search_by_key(ino, |entry| entry.0)
-                    .map_err(|_| Errno::EIO)?;
-                let index = base_indices[position].1;
-                let valid = ROOTFS.with(|state| {
-                    let inode = state.get(index).ok_or(Errno::EIO)?;
-                    if matches!(inode.kind, InodeKind::Regular(_) | InodeKind::PersistentRegular)
-                        || (matches!(inode.kind, InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. })
-                            && metadata.mode & 0o6000 != 0)
-                    {
-                        return Err(Errno::EIO);
-                    }
-                    Ok::<_, Errno>(())
-                });
-                valid?;
-                base_updates.push((*ino, (index, metadata)));
-            } else {
-                validate_persistent_inode_record(bytes)?;
-                maximum_created_ino = Some(maximum_created_ino.map_or(*ino, |maximum: u64| maximum.max(*ino)));
-                if referenced.binary_search(ino).is_ok() {
-                    created.push((*ino, decode_persistent_inode(*ino, bytes)?));
-                }
+                Ok::<_, Errno>(())
+            });
+            valid?;
+            base_updates.push((ino, (index, metadata)));
+        } else {
+            validate_persistent_inode_record(bytes)?;
+            maximum_created_ino = Some(maximum_created_ino.map_or(ino, |maximum: u64| maximum.max(ino)));
+            if referenced.binary_search(&ino).is_ok() {
+                created.push((ino, decode_persistent_inode(ino, bytes)?));
             }
         }
-    }
-    drop((cursor, referenced));
+        Ok(())
+    })?;
+    drop(referenced);
     namespace_replay |= !created.is_empty();
     let mut eligible_sizes = ROOTFS.with(|state| {
         let count = base_indices.len().checked_add(created.len()).ok_or(Errno::ENOMEM)?;
@@ -1795,16 +1779,13 @@ fn enable_persistence_internal(
     let base_dirents = if resizable {
         ROOTFS.with(|state| {
             let mut base_dirents = crate::retained_dirents::RetainedDirents::new();
-            journal.for_each_metadata(|key, _| {
-                if let OverlayKey::Dirent { parent, name } = key {
-                    if *parent < minimum_created_ino {
-                        let position = base_indices.binary_search_by_key(parent, |entry| entry.0).map_err(|_| Errno::EIO)?;
-                        let Some(InodeKind::Dir(entries)) = state.get(base_indices[position].1).map(|inode| &inode.kind) else {
-                            return Err(Errno::EIO);
-                        };
-                        if entries.contains_key(name) { base_dirents.try_insert(key)?; }
-                    }
-                }
+            journal.for_each_dirent(0, Some(minimum_created_ino), |key, _| {
+                let OverlayKey::Dirent { parent, name } = key else { return Err(Errno::EIO) };
+                let position = base_indices.binary_search_by_key(parent, |entry| entry.0).map_err(|_| Errno::EIO)?;
+                let Some(InodeKind::Dir(entries)) = state.get(base_indices[position].1).map(|inode| &inode.kind) else {
+                    return Err(Errno::EIO);
+                };
+                if entries.contains_key(name) { base_dirents.try_insert(key)?; }
                 Ok(())
             })?;
             Ok::<_, Errno>(base_dirents)
@@ -1967,58 +1948,7 @@ pub fn record_root_image_loaded<H: crate::process::HostIO + ?Sized>(host: &mut H
 }
 
 pub fn sync_persistence() -> Result<(), Errno> {
-    if !resizable_persistence_enabled() {
-        return match PERSISTENT_ROOTFS.lock().as_mut() {
-            Some(mount) => mount.journal.sync(),
-            None => Ok(()),
-        };
-    }
-    let mut cursor = 0;
-    loop {
-        let count = ROOTFS.with(|state| state.dirty_persistent_timestamps.range(cursor..).take(64).count());
-        if count == 0 { break; }
-        let (next, mutations, generations) = ROOTFS.with(|state| {
-            let mut mutations = crate::persistent_overlay::MutationBatch::new_writeback(count)?;
-            let mut generations = crate::io_buffer::IoBuffer::allocate(count, true, |values| {
-                values.try_reserve_exact(count).map_err(|_| Errno::ENOMEM)
-            })?;
-            let mut next = cursor;
-            for &index in state.dirty_persistent_timestamps.range(cursor..) {
-                next = index.checked_add(1).ok_or(Errno::EIO)?;
-                let inode = state.get(index).ok_or(Errno::EIO)?;
-                if inode.content_gen == inode.synced_content_gen {
-                    return Err(Errno::EIO);
-                }
-                let kind = match inode.kind {
-                    InodeKind::PersistentRegular => 1,
-                    InodeKind::BaseRegular { source: BaseSource::Image, .. } => 4,
-                    _ => return Err(Errno::EIO),
-                };
-                mutations.push_with(PERSISTENT_REGULAR_RECORD_BYTES, || Ok(Mutation::Put {
-                    key: OverlayKey::Inode(inode.ino),
-                    value: encode_inode_record(kind, &[], PersistentInodeMetadata::from_inode(inode))?,
-                }))?;
-                generations.push((index, inode.content_gen));
-                if mutations.len() == 64 {
-                    break;
-                }
-            }
-            Ok::<_, Errno>((next, mutations, generations))
-        })?;
-        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit_writeback_metadata(mutations.as_slice())?;
-        ROOTFS.with(|state| {
-            for (index, generation) in generations {
-                if let Some(inode) = state.get_mut(index) {
-                    if inode.content_gen == generation {
-                        inode.synced_content_gen = generation;
-                        state.dirty_persistent_timestamps.remove(&index);
-                    }
-                }
-            }
-        });
-        cursor = next;
-    }
-    PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.sync()
+    mounted::sync()
 }
 
 fn reserve_persistent_timestamp_slot(index: u32) -> Result<(), Errno> {
@@ -2141,6 +2071,9 @@ pub fn cancel_persistence_compaction() {
 }
 
 fn reject_fixed_persistence_mutation() -> Result<(), Errno> {
+    if mounted::has_positioned_namespace() {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if fixed_persistence_enabled() {
         Err(Errno::EROFS)
     } else {
@@ -2206,6 +2139,7 @@ static FOREIGN_MOUNTS: ForeignMounts = ForeignMounts::new();
 /// point the overlay refuses to claim but cannot be walked to is not a mount —
 /// it is an `ENOENT` the guest sees instead of the mounted filesystem.
 pub fn set_foreign_prefixes(buf: &[u8]) -> usize {
+    revoke_stat_routes();
     let mut prefixes: Vec<Vec<u8>> = Vec::new();
     for part in buf.split(|&b| b == 0) {
         if part.first() != Some(&b'/') {
@@ -2299,6 +2233,7 @@ static HOST_ROOT_HANDLE: AtomicI64 = AtomicI64::new(NO_HOST_ROOT);
 /// Replaces any previously registered set. Returns the number of anchors
 /// registered.
 pub fn set_foreign_mount_roots(buf: &[u8]) -> usize {
+    revoke_stat_routes();
     HOST_ROOT_HANDLE.store(NO_HOST_ROOT, Ordering::SeqCst);
     let mut roots: Vec<(Vec<u8>, i64)> = Vec::new();
     let mut host_root = false;
@@ -2499,8 +2434,17 @@ fn split_components(path: &[u8]) -> Vec<&[u8]> {
 /// loaded, so a kernel with no image never claims `/`.
 static ROOTFS_ENABLED: AtomicBool = AtomicBool::new(false);
 
+// Updated at mount/reset so stat requests can check support without borrowing
+// the namespace. A backend supplies the generations used by its certificates.
+static STAT_CERTIFICATION_SUPPORTED: AtomicBool = AtomicBool::new(false);
+
+pub fn supports_stat_certification() -> bool {
+    STAT_CERTIFICATION_SUPPORTED.load(Ordering::Acquire)
+}
+
 /// Enable or disable in-kernel rootfs authority. Returns the previous value.
 pub fn set_enabled(enabled: bool) -> bool {
+    revoke_stat_routes();
     ROOTFS_ENABLED.swap(enabled, Ordering::SeqCst)
 }
 
@@ -2610,6 +2554,9 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 /// Clear the whole overlay (drops every inode and open stream). Used before
 /// repopulating from a fresh image or manifest and by tests for isolation.
 pub fn reset() {
+    STAT_CERTIFICATION_SUPPORTED.store(false, Ordering::Release);
+    crate::syscalls::reset_stat_results();
+    revoke_stat_routes();
     PERSISTENCE_RECOVERY_PRISTINE.store(false, Ordering::SeqCst);
     #[cfg(test)]
     FAIL_PERSISTENCE_FIFO_RESTORE.store(false, Ordering::SeqCst);
@@ -3831,6 +3778,82 @@ fn mark_image_walk_inode(
 /// far below anything that could hang a boot.
 const MAX_IMAGE_DIRS: usize = 1_000_000;
 
+/// Prepare a KIFS v3 candidate from a quiescent rootfs under its computer lease.
+pub fn stage_kifs_v3<S: crate::positioned_storage::PositionedStorage>(
+    target: S,
+    capacity_blocks: u64,
+    identity: [u8; 32],
+    byte_source: impl FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+) -> Result<crate::kifs_v3::KifsNamespace<S>, Errno> {
+    kifs_import::stage(target, capacity_blocks, identity, byte_source)
+}
+
+/// Stage the replayed resizable mount under its exclusive boot lease. Custom
+/// volumes retain their logical capacity. Development volumes gain the default floor.
+pub fn stage_saved_kifs_v3(
+    target: impl crate::positioned_storage::PositionedStorage,
+    development_volume: bool,
+    identity: [u8; 32],
+    byte_source: impl FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+) -> Result<(), Errno> {
+    if !resizable_persistence_enabled() {
+        return Err(Errno::ENOTSUP);
+    }
+    let existing = loaded_image_capacity_bytes().ok_or(Errno::EIO)?
+        .div_ceil(crate::kifs_v3::BLOCK_BYTES as u64);
+    let capacity = if development_volume {
+        existing.max(crate::kifs_v3::DEFAULT_VOLUME_BLOCKS)
+    } else {
+        existing
+    };
+    stage_kifs_v3(target, capacity, identity, byte_source)?;
+    Ok(())
+}
+
+/// Copy and verify the reachable records while holding the mounted root stable.
+pub fn compact_kifs_v3(target: impl crate::positioned_storage::PositionedStorage) -> Result<(), Errno> {
+    ROOTFS.with(|state| state.kifs.as_mut().ok_or(Errno::ENODEV)?.namespace.compact_into(target))
+}
+
+pub fn kifs_compaction_needed() -> Result<bool, Errno> {
+    ROOTFS.with(|state| state.kifs.as_ref().ok_or(Errno::ENODEV)?.namespace.needs_compaction())
+}
+
+pub fn prepare_kifs_handoff(
+    target: Box<dyn crate::positioned_storage::PositionedStorage + Send>, identity: [u8; 32],
+) -> Result<(), Errno> {
+    ROOTFS.with(|state| state.kifs.as_mut().ok_or(Errno::ENODEV)?.namespace.prepare_handoff(target, identity))
+}
+
+pub fn activate_kifs_handoff(active: Box<dyn crate::positioned_storage::PositionedStorage + Send>) -> Result<(), Errno> {
+    revoke_stat_routes();
+    ROOTFS.with(|state| state.kifs.as_mut().ok_or(Errno::ENODEV)?.namespace.activate_handoff(active))
+}
+
+pub fn cancel_kifs_handoff() -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        state.kifs.as_mut().ok_or(Errno::ENODEV)?.namespace.cancel_handoff();
+        Ok(())
+    })
+}
+
+/// Mount an explicitly selected standalone KIFS volume through the guest VFS.
+pub fn mount_kifs_v3(
+    storage: Box<dyn crate::positioned_storage::PositionedStorage + Send>,
+    identity: [u8; 32],
+) -> Result<(), Errno> {
+    let mounted = kifs_mount::MountedKifs::open(storage, identity)?;
+    reset();
+    ROOTFS.with(|state| {
+        state.kifs = Some(mounted);
+        STAT_CERTIFICATION_SUPPORTED.store(
+            state.mounted_filesystem().supports_stat_certification(),
+            Ordering::Release,
+        );
+    });
+    Ok(())
+}
+
 /// Replace the base layer by parsing the `/` VFS image itself, pulling its bytes
 /// from the host through [`ByteReq::Image`].
 ///
@@ -4439,29 +4462,13 @@ fn set_base_times_from_ms(path: &[u8], mtime_ms: u64) {
 /// lstat a canonical rootfs path. The final component is not followed (the
 /// caller resolved symlinks per the syscall's FOLLOW policy already).
 pub fn lstat(path: &[u8]) -> Result<WasmStat, Errno> {
-    let comps = split_components(path);
-    ROOTFS.with(|state| {
-        let root = state.mount_root()?;
-        let idx = state.walk(root, &comps)?;
-        Ok(state.get(idx).ok_or(Errno::ENOENT)?.stat())
-    })
+    ROOTFS.with(|state| state.mounted_filesystem().lstat(path))
 }
 
 /// readlink a rootfs symlink.
 pub fn readlink(path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
     let comps = split_components(path);
-    ROOTFS.with(|state| {
-        let root = state.mount_root()?;
-        let idx = state.walk(root, &comps)?;
-        match &state.get(idx).ok_or(Errno::ENOENT)?.kind {
-            InodeKind::Symlink(target) => {
-                let n = target.len().min(buf.len());
-                buf[..n].copy_from_slice(&target[..n]);
-                Ok(n)
-            }
-            _ => Err(Errno::EINVAL),
-        }
-    })
+    ROOTFS.with(|state| state.mounted_filesystem().readlink(&comps, buf))
 }
 
 /// Whether a canonical rootfs path names an existing directory.
@@ -4480,7 +4487,14 @@ pub fn is_dir(path: &[u8]) -> bool {
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     let path_entry = if flags & (O_CREAT | O_TRUNC) != 0 { crate::vfs_events::Entry::capture(path, lstat) } else { None };
     let result = open_mutation(path, flags, mode, uid, gid)?;
-    if let Some(entry) = path_entry { entry.committed(flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY); }
+    if let Some(entry) = path_entry {
+        let changed = flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY;
+        let identity = file_handle_to_inode(result).ok().and_then(|index| ROOTFS.with(|state| {
+            state.get(index).map(|inode| rootfs_file_id(inode.ino))
+        }));
+        if let Some(identity) = identity { entry.committed_as(Some(identity), changed); }
+        else { entry.committed(changed); }
+    }
     Ok(result)
 }
 
@@ -4497,167 +4511,11 @@ fn open_mutation(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Resu
 }
 
 fn open_unmarked(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
-    if resizable_persistence_enabled() && flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
-        let handle = open(path, flags & !O_TRUNC, mode, uid, gid)?;
-        if let Err(error) = truncate_handle(handle, 0, |_, _| Err(Errno::EIO)) {
-            release_handle(handle);
-            return Err(error);
-        }
-        return Ok(handle);
+    let handle = mounted::open(path, flags, mode, uid, gid)?;
+    if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
+        crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, 0);
     }
-    let comps = split_components(path);
-    if resizable_persistence_enabled() && flags & O_CREAT != 0 {
-        let creation = ROOTFS.with(|state| {
-            let (parent, last, target) = state.resolve(&comps)?;
-            if target.is_some() {
-                return Ok::<_, Errno>(None);
-            }
-            if flags & O_DIRECTORY != 0 {
-                return Err(Errno::ENOTDIR);
-            }
-            let name = last.ok_or(Errno::ENOENT)?.to_vec();
-            let parent_ino = state.get(parent).ok_or(Errno::EIO)?.ino;
-            state.require_image_inode_slot()?;
-            let ino = state.next_ino;
-            if ino == u64::MAX {
-                return Err(Errno::ENOSPC);
-            }
-            let mut inode = Inode::new(
-                InodeKind::PersistentRegular,
-                mode & 0o1777,
-                uid,
-                gid,
-                1,
-                ino,
-            );
-            inode.persistent_size = Some(0);
-            Ok(Some((parent, name, parent_ino, inode)))
-        })?;
-        if let Some((parent, name, parent_ino, inode)) = creation {
-            let mutations = [
-                Mutation::Put {
-                    key: OverlayKey::Inode(inode.ino),
-                    value: encode_persistent_inode(&inode)?,
-                },
-                Mutation::Put {
-                    key: OverlayKey::Dirent {
-                        parent: parent_ino,
-                        name: name.clone(),
-                    },
-                    value: inode.ino.to_le_bytes().to_vec(),
-                },
-            ];
-            let mut allocated = commit_persistent_namespace(&mutations, &[(parent, NamespaceTimestamp::Modified)])?;
-            return ROOTFS.with(|state| {
-                state.bump_next_ino(inode.ino);
-                let index = state.insert_prepared_inode(inode);
-                allocated.insert_into(state, parent, &name, index)?;
-                state.get_mut(index).ok_or(Errno::EIO)?.open_count = 1;
-                state.persistent_allocated_blocks = Some(allocated.allocated);
-                Ok(inode_to_file_handle(index))
-            });
-        }
-    }
-    let fixed_persistence = fixed_persistence_enabled();
-    ROOTFS.with(|state| {
-        let (parent, last, target) = state.resolve(&comps)?;
-        let inode_idx = match target {
-            Some(existing) => {
-                if fixed_persistence && flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
-                    return Err(Errno::EROFS);
-                }
-                if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
-                    return Err(Errno::EEXIST);
-                }
-                let inode = state.get(existing).ok_or(Errno::ENOENT)?;
-                if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY && inode.group_read_leases != 0 {
-                    return Err(Errno::EOPNOTSUPP);
-                }
-                if matches!(inode.kind, InodeKind::Symlink(_)) {
-                    // The caller resolves symlinks before open; a symlink reaching
-                    // here means O_NOFOLLOW on the final component.
-                    return Err(Errno::ELOOP);
-                }
-                if matches!(inode.kind, InodeKind::Special(_)) {
-                    // A socket/FIFO node cannot be opened as a regular file; the
-                    // fifo path is handled before rootfs::open is reached.
-                    return Err(Errno::ENXIO);
-                }
-                if inode.is_dir() {
-                    return Err(Errno::EISDIR);
-                }
-                if flags & O_DIRECTORY != 0 {
-                    return Err(Errno::ENOTDIR);
-                }
-                if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
-                    // A lazy-archive member truncates like anything else, and
-                    // discarding its `(archive_id, source_path, size)` is the
-                    // POINT rather than a loss: `O_TRUNC` means "this file is
-                    // now empty", and what its bytes used to be backed by stops
-                    // mattering the moment they stop existing.
-                    //
-                    // This used to be a deliberate `ENOSYS` guarding against
-                    // "an empty writable file instead of the real content" --
-                    // which is a description of truncation. It cost the derived
-                    // image builders: replacing `/usr/bin/node` with eager
-                    // bytes is a whole-file replace, and it failed `ENOSYS`.
-                    //
-                    // The case that genuinely needs the old bytes is a PARTIAL
-                    // write, which does not set `O_TRUNC` and still reaches the
-                    // materialization path that cannot serve them.
-                    if let Some(node) = state.get_mut(existing) {
-                        let shrank = match &node.kind {
-                            InodeKind::Regular(d) => !d.is_empty(),
-                            InodeKind::BaseRegular { size, .. } => *size > 0,
-                            InodeKind::LazyMember { size, .. } => *size > 0,
-                            _ => false,
-                        };
-                        node.kind = InodeKind::Regular(Vec::new());
-                        if shrank {
-                            node.clear_setid_on_modify();
-                        }
-                        node.touch_modified();
-                    }
-                }
-                existing
-            }
-            None => {
-                if fixed_persistence {
-                    return Err(Errno::EROFS);
-                }
-                if flags & O_CREAT == 0 {
-                    return Err(Errno::ENOENT);
-                }
-                if flags & O_DIRECTORY != 0 {
-                    return Err(Errno::ENOTDIR);
-                }
-                let last = last.ok_or(Errno::ENOENT)?;
-                let ino = state.alloc_ino();
-                let new_idx = state.insert_inode(Inode::new(
-                    InodeKind::Regular(Vec::new()),
-                    mode & 0o7777,
-                    uid,
-                    gid,
-                    1,
-                    ino,
-                ))?;
-                state.link_unpublished_inode(parent, last, new_idx)?;
-                new_idx
-            }
-        };
-        // A directory opened without opendir is rejected so callers never treat a
-        // dir handle as a file.
-        if state.get(inode_idx).ok_or(Errno::ENOENT)?.is_dir() {
-            return Err(Errno::EISDIR);
-        }
-        state.get_mut(inode_idx).ok_or(Errno::ENOENT)?.open_count += 1;
-        Ok(inode_to_file_handle(inode_idx))
-    }).map(|handle| {
-        if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
-            crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, 0);
-        }
-        handle
-    })
+    Ok(handle)
 }
 
 /// One raw-byte transport request dispatched through a single `byte_source`
@@ -4678,7 +4536,7 @@ pub enum ByteReq {
     ///
     /// The URI is the image's own words, carried through unread. Whoever
     /// fetches decides whether it may be fetched.
-    Deferred { uri: Vec<u8>, offset: u64 },
+    Deferred { uri: Vec<u8>, offset: u64, size: u64 },
     /// Forget transport bytes rejected by native length or digest validation.
     /// This does not start a fetch; only a later explicit read may fetch again.
     DiscardDeferred { uri: Vec<u8> },
@@ -4706,6 +4564,7 @@ pub enum ByteReq {
 fn fetch_at<F>(
     byte_source: &mut F,
     uri: &[u8],
+    size: u64,
     offset: u64,
     buf: &mut [u8],
 ) -> Result<usize, Errno>
@@ -4719,14 +4578,22 @@ where
         ByteReq::Deferred {
             uri: uri.to_vec(),
             offset,
+            size,
         },
         buf,
     )
 }
 
+impl RootfsState {
+    fn archive_read_plan(&mut self, id: u32) -> Result<VerifiedFileRead, Errno> {
+        let (size, digest, uri) = self.mounted_filesystem().archive(id)?;
+        Ok(VerifiedFileRead { key: u64::from(id), size, digest,
+            source: VerifiedSource::Deferred(uri), archive_source: true })
+    }
+}
+
 struct ArchiveByteSource<'a, F> {
-    archive: u32,
-    size: u64,
+    plan: VerifiedFileRead,
     byte_source: core::cell::RefCell<&'a mut F>,
 }
 
@@ -4734,24 +4601,15 @@ impl<F> crate::kandelo_image_fs::BlockSource for ArchiveByteSource<'_, F>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
-    fn len(&self) -> u64 { self.size }
+    fn len(&self) -> u64 { self.plan.size }
 
     fn read_exact_at(&self, offset: u64, target: &mut [u8]) -> Result<(), Errno> {
-        let mut plan = ROOTFS.with(|state| {
-            let archive = state.archives.get(&self.archive).ok_or(Errno::ENOENT)?;
-            Ok(VerifiedFileRead {
-                key: self.archive as u64,
-                size: archive.size,
-                digest: archive.digest,
-                source: VerifiedSource::Deferred(archive.uri.to_vec()),
-                archive_source: true,
-            })
-        })?;
+        let plan = &self.plan;
         if offset.checked_add(target.len() as u64).is_none_or(|end| end > plan.size) {
             return Err(Errno::EINVAL);
         }
         let mut byte_source = self.byte_source.try_borrow_mut().map_err(|_| Errno::EIO)?;
-        let count = read_verified_plan(&mut plan, offset, target, &mut **byte_source)?;
+        let count = read_verified_plan(plan, offset, target, &mut **byte_source)?;
         if count != target.len() { return Err(Errno::EIO); }
         Ok(())
     }
@@ -4799,15 +4657,16 @@ fn read_streamed_archive_member<F>(
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
-    let (size, cached) = ROOTFS.with(|state| {
-        let size = state.archives.get(&archive).ok_or(Errno::ENOENT)?.size;
+    let (plan, cached) = ROOTFS.with(|state| {
+        let plan = state.archive_read_plan(archive)?;
         let capacity = 2usize.saturating_sub(state.archive_readers.len());
         state.archive_readers.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)?;
         let cached = state.archive_readers.iter().position(|(id, reader)| *id == archive && reader.entry.name == path)
             .map(|index| state.archive_readers.remove(index).1);
-        Ok((size, cached))
+        Ok((plan, cached))
     })?;
-    let source = ArchiveByteSource { archive, size, byte_source: core::cell::RefCell::new(byte_source) };
+    let size = plan.size;
+    let source = ArchiveByteSource { plan, byte_source: core::cell::RefCell::new(byte_source) };
     let mut reader = match cached {
         Some(reader) => reader,
         None => {
@@ -4875,7 +4734,7 @@ where
         grow_file_bytes(&mut data, usize::try_from(size).map_err(|_| Errno::ENOMEM)?, Errno::ENOMEM)?;
         let mut filled = 0usize;
         while filled < data.len() {
-            let n = fetch_at(byte_source, &uri, filled as u64, &mut data[filled..])?;
+            let n = fetch_at(byte_source, &uri, size, filled as u64, &mut data[filled..])?;
             if n == 0 {
                 break; // short read: trust the manifest size but never spin
             }
@@ -5002,7 +4861,7 @@ where
             grow_file_bytes(&mut data, usize::try_from(size).map_err(|_| Errno::ENOMEM)?, Errno::ENOMEM)?;
             let mut filled = 0usize;
             while filled < data.len() {
-                let n = fetch_at(byte_source, &uri, filled as u64, &mut data[filled..])?;
+                let n = fetch_at(byte_source, &uri, size, filled as u64, &mut data[filled..])?;
                 if n == 0 {
                     break; // short read: trust the manifest size but never spin
                 }
@@ -5269,7 +5128,7 @@ where
     Ok(result)
 }
 
-fn write_mutation<F>(handle: i64, offset: i64, buf: &[u8], mut byte_source: F) -> Result<usize, Errno>
+fn write_mutation<F>(handle: i64, offset: i64, buf: &[u8], byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
@@ -5278,68 +5137,7 @@ where
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
-    let buf = var_log_clamp_write(idx, offset as u64, buf)?;
-    if fixed_persistence_enabled() {
-        if declares_digest(idx) {
-            return Err(Errno::EROFS);
-        }
-        let resizable = resizable_persistence_enabled();
-        let (ino, image_ino, base_size) = ROOTFS.with(|state| {
-            let inode = state.get(idx).ok_or(Errno::EBADF)?;
-            match inode.kind {
-                InodeKind::BaseRegular {
-                    blob_id,
-                    size,
-                    source: BaseSource::Image,
-                } if inode.mode & 0o6000 == 0 => Ok((inode.ino, Some(image_ino(blob_id)?), size)),
-                InodeKind::PersistentRegular if resizable => Ok((inode.ino, None, 0)),
-                _ => Err(Errno::EROFS),
-            }
-        })?;
-        let buf = if resizable && !buf.is_empty() {
-            let remaining = crate::kandelo_image_write::MAX_FILE_BYTES
-                .checked_sub(offset as u64)
-                .filter(|remaining| *remaining != 0)
-                .ok_or(Errno::EFBIG)?;
-            &buf[..core::cmp::min(buf.len() as u64, remaining) as usize]
-        } else {
-            buf
-        };
-        let end = (offset as u64)
-            .checked_add(buf.len() as u64)
-            .ok_or(Errno::EFBIG)?;
-        if resizable && end > i64::MAX as u64 {
-            return Err(Errno::EFBIG);
-        }
-        if !resizable && end > base_size {
-            return Err(Errno::EFBIG);
-        }
-        if resizable && !buf.is_empty() {
-            reserve_persistent_timestamp_slot(idx)?;
-        }
-        return write_persistent_file(idx, ino, image_ino, base_size, resizable,
-            offset as u64, buf, &mut byte_source);
-    }
-    let start = usize::try_from(offset).map_err(|_| Errno::EFBIG)?;
-    let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
-    ensure_materialized(idx, &mut byte_source)?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        {
-            let InodeKind::Regular(data) = &mut inode.kind else {
-                return Err(Errno::EISDIR);
-            };
-            if end > data.len() {
-                grow_file_bytes(data, end, Errno::ENOSPC)?;
-            }
-            data[start..end].copy_from_slice(buf);
-        }
-        if !buf.is_empty() {
-            inode.clear_setid_on_modify();
-        }
-        inode.touch_modified();
-        Ok(buf.len())
-    })
+    mounted::write(idx, offset, buf, byte_source)
 }
 
 /// Grow a regular file's bytes to `new_len`, zero-filling, or report `err`
@@ -5676,140 +5474,13 @@ where
     Ok(())
 }
 
-fn truncate_handle_inner<F>(handle: i64, length: i64, mut byte_source: F) -> Result<(), Errno>
+fn truncate_handle_inner<F>(handle: i64, length: i64, byte_source: F) -> Result<(), Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     let idx = file_handle_to_inode(handle)?;
     reject_group_read_lease_write(idx)?;
-    if let Ok(new_size) = u64::try_from(length) {
-        // Growing a file under `/var/log` spends the same cap a write does,
-        // but a truncate has no short form: all of it fits or none of it.
-        ROOTFS.with(|state| {
-            if !state.var_log_governs(idx) {
-                return Ok(());
-            }
-            let old_size = state.var_log_file_size(idx)?;
-            match state.var_log_admit(idx, old_size, new_size, old_size)? {
-                admitted if admitted < new_size => Err(Errno::ENOSPC),
-                _ => Ok(()),
-            }
-        })?;
-    }
-    if fixed_persistence_enabled() {
-        if !resizable_persistence_enabled() || declares_digest(idx) {
-            return Err(Errno::EROFS);
-        }
-        let new_size = u64::try_from(length).map_err(|_| Errno::EINVAL)?;
-        if new_size > crate::kandelo_image_write::MAX_FILE_BYTES {
-            return Err(Errno::EFBIG);
-        }
-        let (ino, image_ino, base_size, old_size, base_tail_allocated) = ROOTFS.with(|state| {
-            let inode = state.get(idx).ok_or(Errno::EBADF)?;
-            match inode.kind {
-                InodeKind::BaseRegular {
-                    blob_id,
-                    size,
-                    source: BaseSource::Image,
-                } if inode.mode & 0o6000 == 0 => Ok((
-                    inode.ino,
-                    Some(image_ino(blob_id)?),
-                    size,
-                    inode.persistent_size.unwrap_or(size),
-                    inode.base_dense,
-                )),
-                InodeKind::PersistentRegular => Ok((
-                    inode.ino,
-                    None,
-                    0,
-                    inode.persistent_size.unwrap_or(0),
-                    false,
-                )),
-                _ => Err(Errno::EROFS),
-            }
-        })?;
-        let base_tail_allocated = if let Some(image_ino) = image_ino.filter(|_| {
-            !base_tail_allocated && new_size < old_size && new_size < base_size && new_size % 4096 != 0
-        }) {
-            let geometry = ROOTFS.with(|state| state.image).ok_or(Errno::EIO)?;
-            let block = new_size / 4096;
-            with_image_file_allocations(geometry, image_ino, block..block + 1, &mut byte_source,
-                |next_base| Ok(next_base()?.is_some()))?
-        } else {
-            base_tail_allocated
-        };
-        let allocated_blocks = if new_size >= old_size {
-            ROOTFS.with(|state| state.get(idx).map(|inode| inode.allocated_blocks)).ok_or(Errno::EBADF)?
-        } else {
-            let mut active = PERSISTENT_ROOTFS.lock();
-            let journal = &mut active.as_mut().ok_or(Errno::EIO)?.journal;
-            ROOTFS.with(|state| composed_inode_block_count(journal,
-                state.get(idx).ok_or(Errno::EBADF)?, state.image, base_size, new_size, &mut byte_source))?
-        };
-        reserve_persistent_timestamp_slot(idx)?;
-        PERSISTENT_ROOTFS
-            .lock()
-            .as_mut()
-            .ok_or(Errno::EIO)?
-            .journal
-            .truncate_file_at_with_base_tail(ino, base_size, new_size, base_tail_allocated, |at, dst| {
-                match image_ino {
-                    Some(image_ino) => read_image_bytes(image_ino, at, dst, &mut byte_source),
-                    None => Err(Errno::EIO),
-                }
-            })?;
-        ROOTFS.with(|state| {
-            state.persistent_allocated_blocks = None;
-            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-            inode.persistent_size = Some(new_size);
-            inode.allocated_blocks = allocated_blocks;
-            if new_size != old_size {
-                inode.clear_setid_on_modify();
-            }
-            inode.touch_modified();
-            state.dirty_persistent_timestamps.insert(idx);
-            Ok(())
-        })?;
-        return Ok(());
-    }
-    let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
-    if new_len == 0 {
-        return ROOTFS.with(|state| {
-            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-            let shrank = match &inode.kind {
-                InodeKind::Regular(d) => !d.is_empty(),
-                InodeKind::BaseRegular { size, .. } => *size > 0,
-                InodeKind::LazyMember { size, .. } => *size > 0,
-                // Dir/Symlink/Special fall through to EISDIR.
-                _ => return Err(Errno::EISDIR),
-            };
-            inode.kind = InodeKind::Regular(Vec::new());
-            if shrank {
-                inode.clear_setid_on_modify();
-            }
-            inode.touch_modified();
-            Ok(())
-        });
-    }
-    ensure_materialized(idx, &mut byte_source)?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        let changed = match &mut inode.kind {
-            InodeKind::Regular(data) => {
-                let old_len = data.len();
-                // EFBIG, not ENOSPC: it is the error POSIX gives ftruncate()
-                // for a length the file cannot take.
-                grow_file_bytes(data, new_len, Errno::EFBIG)?;
-                old_len != new_len
-            }
-            _ => return Err(Errno::EISDIR),
-        };
-        if changed {
-            inode.clear_setid_on_modify();
-        }
-        inode.touch_modified();
-        Ok(())
-    })
+    mounted::truncate(idx, length, byte_source)
 }
 
 enum VerifiedSource {
@@ -5830,6 +5501,10 @@ impl RootfsState {
     fn read_cache(&mut self, plan: &VerifiedFileRead) -> &mut crate::verified_read_cache::VerifiedReadCache {
         if plan.archive_source { &mut self.archive_verified_reads } else { &mut self.verified_reads }
     }
+}
+
+fn positioned_reads_enabled() -> bool {
+    fixed_persistence_enabled() || mounted::has_positioned_namespace()
 }
 
 fn verified_file_read(index: u32) -> Result<Option<VerifiedFileRead>, Errno> {
@@ -5857,7 +5532,7 @@ fn verified_file_read(index: u32) -> Result<Option<VerifiedFileRead>, Errno> {
     })
 }
 
-fn prepare_verified_source<F>(plan: &mut VerifiedFileRead, byte_source: &mut F) -> Result<(), Errno>
+fn prepare_verified_source<F>(plan: &VerifiedFileRead, byte_source: &mut F) -> Result<(), Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
@@ -5885,7 +5560,7 @@ where
                 read_image_bytes(*inode, position, destination, &mut *byte_source)?
             }
             VerifiedSource::Deferred(uri) => {
-                fetch_at(&mut *byte_source, uri, position, destination)?
+                fetch_at(&mut *byte_source, uri, plan.size, position, destination)?
             }
             VerifiedSource::Archive(archive, path) => {
                 read_streamed_archive_member(*archive, path, plan.size, position, destination, byte_source)?
@@ -5904,10 +5579,25 @@ where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     ROOTFS.with(|state| state.read_cache(plan).invalidate(plan.key));
+    let archive_id = match &plan.source {
+        VerifiedSource::Archive(id, _) => Some(*id),
+        _ if plan.archive_source => Some(plan.key as u32),
+        _ => None,
+    };
+    if let Some(id) = archive_id {
+        ROOTFS.with(|state| {
+            state.archive_verified_reads.invalidate(id as u64);
+            state.archive_readers.retain(|(cached, _)| *cached != id);
+            state.archive_directories.retain(|(cached, _)| *cached != id);
+        });
+    }
     let uri = match &plan.source {
         VerifiedSource::Deferred(uri) => Some(uri.clone()),
-        VerifiedSource::Archive(archive_id, _) => ROOTFS.with(|state| {
-            state.archives.get(archive_id).map(|archive| archive.uri.to_vec())
+        VerifiedSource::Archive(id, _) => ROOTFS.with(|state| {
+            match state.archive_read_plan(*id).ok()?.source {
+                VerifiedSource::Deferred(uri) => Some(uri),
+                _ => None,
+            }
         }),
         _ => None,
     };
@@ -6016,14 +5706,14 @@ fn read_verified_file<F>(
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
-    let Some(mut plan) = verified_file_read(index)? else {
+    let Some(plan) = verified_file_read(index)? else {
         return Ok(None);
     };
-    read_verified_plan(&mut plan, offset, target, byte_source).map(Some)
+    read_verified_plan(&plan, offset, target, byte_source).map(Some)
 }
 
 fn read_verified_plan<F>(
-    plan: &mut VerifiedFileRead,
+    plan: &VerifiedFileRead,
     offset: u64,
     target: &mut [u8],
     byte_source: &mut F,
@@ -6126,7 +5816,7 @@ where
                 });
         }
     }
-    if fixed_persistence_enabled() && declares_digest(idx) {
+    if positioned_reads_enabled() && declares_digest(idx) {
         if let Some(count) = read_verified_file(idx, offset as u64, buf, &mut byte_source)? {
             return Ok(count);
         }
@@ -6148,6 +5838,7 @@ where
     }
     let plan = ROOTFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
+        let number = inode.ino;
         match &inode.kind {
             InodeKind::Regular(data) => {
                 let Ok(start) = usize::try_from(offset) else {
@@ -6160,7 +5851,8 @@ where
                 buf[..n].copy_from_slice(&data[start..start + n]);
                 Ok(Plan::Done(n))
             }
-            InodeKind::PersistentRegular => Err(Errno::EIO),
+            InodeKind::PersistentRegular => state.mounted_filesystem()
+                .read_positioned_file(number, offset as u64, buf).map(Plan::Done),
             InodeKind::BaseRegular {
                 blob_id,
                 size,
@@ -6187,7 +5879,7 @@ where
                 return Ok(0);
             }
             let n = core::cmp::min(buf.len() as u64, size - start) as usize;
-            fetch_at(&mut byte_source, &uri, start, &mut buf[..n])
+            fetch_at(&mut byte_source, &uri, size, start, &mut buf[..n])
         }
         Plan::Image(ino, size) => {
             let start = offset as u64;
@@ -6202,7 +5894,7 @@ where
             if start >= size {
                 return Ok(0);
             }
-            if fixed_persistence_enabled() {
+            if positioned_reads_enabled() {
                 let length = buf.len().min((size - start) as usize);
                 return read_streamed_archive_member(archive_id, &source_path, size, start, &mut buf[..length], &mut byte_source);
             }
@@ -6247,14 +5939,14 @@ where
         return Err(Errno::EINVAL);
     }
     if declares_digest(idx) {
-        if fixed_persistence_enabled() {
-            if let Some(mut plan) = verified_file_read(idx)? {
+        if positioned_reads_enabled() {
+            if let Some(plan) = verified_file_read(idx)? {
                 if offset as u64 >= plan.size || len == 0 { return Ok(()); }
                 let chunk = (offset as u64 / crate::verified_read_cache::CHUNK_BYTES as u64) as usize;
                 if ROOTFS.with(|state| state.verified_reads.chunk_digest(plan.key, plan.digest, plan.size, chunk)).is_some() {
                     return Ok(());
                 }
-                prepare_verified_source(&mut plan, &mut byte_source)?;
+                prepare_verified_source(&plan, &mut byte_source)?;
                 if !index_verified_read(&plan, &mut byte_source)? {
                     read_unindexed_verified_window(&plan, offset as u64, &mut [0; 1], &mut byte_source)?;
                 }
@@ -6287,7 +5979,7 @@ where
     match plan {
         Plan::Ready => Ok(()),
         Plan::Lazy(archive_id, source_path, size) => {
-            if fixed_persistence_enabled() {
+            if positioned_reads_enabled() {
                 return read_streamed_archive_member(archive_id, &source_path, size, 0, &mut [], &mut byte_source).map(|_| ());
             }
             ensure_archive_member(archive_id, &source_path, &mut byte_source).map(|_| ())
@@ -6299,7 +5991,7 @@ where
             let mut at = start;
             while at < end {
                 let want = core::cmp::min(scratch.len() as u64, end - at) as usize;
-                let got = fetch_at(&mut byte_source, &uri, at, &mut scratch[..want])?;
+                let got = fetch_at(&mut byte_source, &uri, size, at, &mut scratch[..want])?;
                 if got == 0 {
                     return Err(Errno::EIO);
                 }
@@ -6329,20 +6021,7 @@ fn declares_digest(idx: u32) -> bool {
 /// Current size of an open rootfs file (for `SEEK_END`).
 pub fn size(handle: i64) -> Result<i64, Errno> {
     let idx = file_handle_to_inode(handle)?;
-    ROOTFS.with(|state| {
-        let inode = state.get(idx).ok_or(Errno::EBADF)?;
-        match &inode.kind {
-            InodeKind::BaseRegular { size, .. } => {
-                i64::try_from(inode.persistent_size.unwrap_or(*size)).map_err(|_| Errno::EOVERFLOW)
-            }
-            InodeKind::Regular(data) => Ok(data.len() as i64),
-            InodeKind::PersistentRegular => {
-                i64::try_from(inode.persistent_size.unwrap_or(0)).map_err(|_| Errno::EOVERFLOW)
-            }
-            InodeKind::LazyMember { size, .. } => Ok(*size as i64),
-            _ => Err(Errno::EISDIR),
-        }
-    })
+    ROOTFS.with(|state| state.mounted_filesystem().size(idx))
 }
 
 /// POSIX `SYMLOOP_MAX`: the maximum number of symlink hops the host-facing read
@@ -6367,15 +6046,8 @@ const SYMLOOP_MAX: usize = 40;
 fn resolve_read_symlinks(path: &[u8]) -> Result<Vec<u8>, Errno> {
     let mut comps: Vec<Vec<u8>> = split_components(path).iter().map(|c| c.to_vec()).collect();
     for _ in 0..SYMLOOP_MAX {
-        let link_target = ROOTFS.with(|state| {
-            let root = state.mount_root()?;
-            let refs: Vec<&[u8]> = comps.iter().map(|c| c.as_slice()).collect();
-            let idx = state.walk(root, &refs)?;
-            match &state.get(idx).ok_or(Errno::ENOENT)?.kind {
-                InodeKind::Symlink(target) => Ok::<_, Errno>(Some(target.to_vec())),
-                _ => Ok(None),
-            }
-        })?;
+        let refs: Vec<&[u8]> = comps.iter().map(|component| component.as_slice()).collect();
+        let link_target = ROOTFS.with(|state| state.mounted_filesystem().symlink_target(&refs))?;
         let Some(target) = link_target else {
             // First non-symlink target: rebuild its canonical absolute path.
             let mut out = Vec::new();
@@ -6502,7 +6174,7 @@ where
 /// fstat an open rootfs file handle.
 pub fn fstat(handle: i64) -> Result<WasmStat, Errno> {
     let idx = file_handle_to_inode(handle)?;
-    ROOTFS.with(|state| Ok(state.get(idx).ok_or(Errno::EBADF)?.stat()))
+    ROOTFS.with(|state| state.mounted_filesystem().fstat(idx))
 }
 
 /// Add an owning reference (fork/dup inheriting a rootfs fd). Returns whether the
@@ -6525,17 +6197,22 @@ pub fn add_ref_handle(handle: i64) -> bool {
 /// last reference and the file had already been unlinked (POSIX unlink-while-
 /// open). Returns `true` when this drop released the final open reference.
 pub fn release_handle(handle: i64) -> bool {
+    release_handle_checked(handle).0
+}
+
+/// Regular close reports reclamation errors after dropping the descriptor
+/// and its locks. Process exit and mapping teardown can observe them at sync.
+pub(crate) fn release_handle_checked(handle: i64) -> (bool, Result<(), Errno>) {
     let Ok(idx) = file_handle_to_inode(handle) else {
-        return false;
+        return (false, Ok(()));
     };
     ROOTFS.with(|state| {
         let Some(inode) = state.get_mut(idx) else {
-            return false;
+            return (false, Ok(()));
         };
         inode.open_count = inode.open_count.saturating_sub(1);
         let was_last = inode.open_count == 0;
-        state.maybe_free(idx);
-        was_last
+        (was_last, state.release_unreferenced_inode(idx))
     })
 }
 
@@ -6602,7 +6279,7 @@ pub fn unpin_mapping(handle: i64) -> bool {
             return false;
         }
         inode.map_pins -= 1;
-        state.maybe_free(idx);
+        let _ = state.release_unreferenced_inode(idx);
         true
     })
 }
@@ -6632,19 +6309,50 @@ pub fn handle_is_live(handle: i64) -> bool {
     false
 }
 
+/// A directory OFD holds one inode pin per owning process. Iteration uses
+/// the OFD's own shared cookie, independently of the legacy opendir stream.
+pub(crate) fn open_directory_handle(path: &crate::ofd::OfdPath) -> Result<i64, Errno> {
+    mounted::open_directory_handle(path)
+}
+
+pub(crate) fn directory_handle_path(handle: i64) -> Result<crate::ofd::OfdPath, Errno> {
+    let index = file_handle_to_inode(handle)?;
+    ROOTFS.with(|state| state.mounted_filesystem().directory_handle_path(index))
+}
+
+pub(crate) fn getdents_for_handle(handle: i64, buf: &mut [u8], offset: i64, root_entries: &[(&[u8], u8, u64)]) -> Result<(usize, i64, bool), Errno> {
+    let index = file_handle_to_inode(handle)?;
+    ROOTFS.with(|state| state.mounted_filesystem().getdents_for_handle(index, buf, offset, root_entries))
+}
+
+pub(crate) fn owns_inode_description(handle: i64, directory: bool) -> bool {
+    let Ok(index) = file_handle_to_inode(handle) else { return false };
+    ROOTFS.with(|state| state.get(index).is_some_and(|inode| inode.open_count != 0 && inode.is_dir() == directory))
+}
 
 // Directory descriptions retain the dev/inode observed when opened. Validate
 // that identity even if the pathname was renamed and replaced before binding.
-pub(crate) fn watch_directory(path: &[u8], id: crate::lock::FileId) -> Result<u32, Errno> {
+pub(crate) fn watch_directory(
+    path: &[u8],
+    handle: i64,
+    id: crate::lock::FileId,
+) -> Result<crate::vfs_events::WatchedDirectory, Errno> {
+    use crate::vfs_events::WatchedDirectory;
+    if is_rootfs_file_handle(handle) {
+        let stat = fstat(handle)?;
+        return (stat.st_mode & S_IFMT == S_IFDIR && crate::vfs_events::identity(stat) == id)
+            .then_some(WatchedDirectory::Positioned)
+            .ok_or(Errno::ENOENT);
+    }
     let at_path = walk_to_inode(path).ok();
     ROOTFS.with(|state| {
         let matches = |inode: &Inode| matches!(inode.kind, InodeKind::Dir(_)) &&
             crate::vfs_events::identity(inode.stat()) == id;
         if let Some(index) = at_path.filter(|&i| state.get(i).is_some_and(matches)) {
-            return Ok(index);
+            return Ok(WatchedDirectory::Resident(index));
         }
         state.inodes.iter().position(|slot| slot.as_ref().is_some_and(matches))
-            .map(|index| index as u32).ok_or(Errno::ENOENT)
+            .map(|index| WatchedDirectory::Resident(index as u32)).ok_or(Errno::ENOENT)
     })
 }
 
@@ -6653,32 +6361,23 @@ fn publish_handle_change(handle: i64) {
     let Ok(index) = file_handle_to_inode(handle) else { return; };
     ROOTFS.with(|state| {
         let Some(inode) = state.get(index) else { return; };
-        let target = crate::vfs_events::identity(inode.stat());
-        crate::vfs_events::changed(target, |dir_id, dir_index, names, emit| {
-            let Some(dir) = state.get(dir_index) else { return; };
-            if crate::vfs_events::identity(dir.stat()) != dir_id { return; }
-            if let InodeKind::Dir(entries) = &dir.kind {
-                entries.visit_watched_names(index, names, emit);
-            }
+        let target = rootfs_file_id(inode.ino);
+        let mut mount = state.mounted_filesystem();
+        crate::vfs_events::changed(target, |dir_id, directory, names, emit| {
+            mount.watched_aliases(index, dir_id, directory, names, emit);
         });
     });
+}
+
+fn rootfs_file_id(ino: u64) -> crate::lock::FileId {
+    crate::lock::FileId::Host { dev: ROOTFS_DEV, ino }
 }
 
 /// Open a directory stream over a rootfs directory, returning an encoded handle.
 pub fn opendir(path: &[u8]) -> Result<i64, Errno> {
     let comps = split_components(path);
     ROOTFS.with(|state| {
-        let root = state.mount_root()?;
-        let idx = state.walk(root, &comps)?;
-        match &state.get(idx).ok_or(Errno::ENOENT)?.kind {
-            InodeKind::Dir(map) => {
-                for &child_idx in map.values() {
-                    state.get(child_idx).ok_or(Errno::ENOENT)?;
-                }
-            }
-            _ => return Err(Errno::ENOTDIR),
-        }
-        state.get_mut(idx).ok_or(Errno::ENOENT)?.open_count += 1;
+        let idx = mounted::pin_directory(state, &comps)?;
         let iter = DirIter {
             directory: idx,
             last_name: None,
@@ -6699,44 +6398,7 @@ pub fn opendir(path: &[u8]) -> Result<i64, Errno> {
 /// Read the next entry from a rootfs directory stream. Mirrors `host_readdir`.
 pub fn readdir(handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> {
     let iter_idx = dir_handle_to_iter(handle)?;
-    ROOTFS.with(|state| {
-        let inodes = &state.inodes;
-        let iter = state
-            .dir_iters
-            .get_mut(iter_idx as usize)
-            .and_then(|slot| slot.as_mut())
-            .ok_or(Errno::EBADF)?;
-        if iter.exhausted {
-            return Ok(None);
-        }
-        let directory = inodes
-            .get(iter.directory as usize)
-            .and_then(|slot| slot.as_ref())
-            .ok_or(Errno::EBADF)?;
-        let InodeKind::Dir(entries) = &directory.kind else {
-            return Err(Errno::ENOTDIR);
-        };
-        let next = match iter.last_name.as_deref() {
-            Some(last_name) => entries.next_after(last_name),
-            None => entries.iter().next(),
-        };
-        let Some((name, &child_idx)) = next else {
-            iter.exhausted = true;
-            return Ok(None);
-        };
-        let n = name.len();
-        if n > name_buf.len() {
-            return Err(Errno::EINVAL);
-        }
-        let child = inodes
-            .get(child_idx as usize)
-            .and_then(|slot| slot.as_ref())
-            .ok_or(Errno::ENOENT)?;
-        name_buf[..n].copy_from_slice(name);
-        let result = (child.ino, dirent_type(child) as u32, n);
-        iter.last_name = Some(name.clone());
-        Ok(Some(result))
-    })
+    ROOTFS.with(|state| mounted::read_directory_entry(state, iter_idx, name_buf))
 }
 
 /// getdents64 for a rootfs directory. `extra` entries `(name, d_type, ino)` are
@@ -6750,80 +6412,7 @@ pub fn getdents64(
     extra: &[(&[u8], u8, u64)],
 ) -> Result<(usize, i64, bool), Errno> {
     let comps = split_components(path);
-    ROOTFS.with(|state| {
-        let root = state.mount_root()?;
-        let idx = state.walk(root, &comps)?;
-        let dir = state.get(idx).ok_or(Errno::ENOENT)?;
-        let InodeKind::Dir(map) = &dir.kind else {
-            return Err(Errno::ENOTDIR);
-        };
-        for &child_idx in map.values() {
-            state.get(child_idx).ok_or(Errno::ENOENT)?;
-        }
-        if offset < 0 {
-            return Err(Errno::EINVAL);
-        }
-        let injected = extra.iter().enumerate().filter(|(index, (name, _, _))| {
-            !map.contains_key(*name)
-                && !extra[..*index]
-                    .iter()
-                    .any(|(earlier, _, _)| earlier == name)
-        });
-        let mut written = 0;
-        let mut cookie = offset;
-        while cookie < 2 {
-            let name = if cookie == 0 {
-                b".".as_slice()
-            } else {
-                b"..".as_slice()
-            };
-            let next_cookie = cookie + 1;
-            let bytes =
-                crate::procfs::write_dirent64(buf, written, dir.ino, next_cookie, DT_DIR as u8, name);
-            if bytes == 0 {
-                return if written == 0 {
-                    Err(Errno::EINVAL)
-                } else {
-                    Ok((written, cookie, false))
-                };
-            }
-            written += bytes;
-            cookie = next_cookie;
-        }
-
-        // Reserve fixed prefix cookies for synthetic mount points. They must
-        // not move when real names are inserted/deleted. Keep ordinary small
-        // cookies usable by 32-bit seekdir/telldir, rather than tagging high bits.
-        let real_base = i64::try_from(extra.len()).map_err(|_| Errno::EOVERFLOW)?
-            .checked_add(2).ok_or(Errno::EOVERFLOW)?;
-        for (index, &(name, d_type, ino)) in injected {
-            let position = i64::try_from(index).map_err(|_| Errno::EOVERFLOW)?
-                .checked_add(2).ok_or(Errno::EOVERFLOW)?;
-            if position < cookie { continue; }
-            let next_cookie = position.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-            let bytes = crate::procfs::write_dirent64(buf, written, ino, next_cookie, d_type, name);
-            if bytes == 0 {
-                return if written == 0 { Err(Errno::EINVAL) } else { Ok((written, position, false)) };
-            }
-            written += bytes;
-            cookie = next_cookie;
-        }
-        let mut first = u64::try_from(cookie.saturating_sub(real_base).max(0)).map_err(|_| Errno::EINVAL)?;
-        while let Some((entry_cookie, name, child_idx)) = map.next_from_cookie(first) {
-            let position = i64::try_from(entry_cookie).map_err(|_| Errno::EOVERFLOW)?
-                .checked_add(real_base).ok_or(Errno::EOVERFLOW)?;
-            let next_cookie = position.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-            let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
-            let bytes = crate::procfs::write_dirent64(buf, written, child.ino, next_cookie, dirent_type(child), name);
-            if bytes == 0 {
-                return if written == 0 { Err(Errno::EINVAL) } else { Ok((written, position, false)) };
-            }
-            written += bytes;
-            cookie = next_cookie;
-            first = entry_cookie + 1;
-        }
-        Ok((written, cookie, true))
-    })
+    ROOTFS.with(|state| state.mounted_filesystem().getdents(&comps, buf, offset, extra))
 }
 
 /// Close a rootfs directory stream.
@@ -6838,8 +6427,7 @@ pub fn closedir(handle: i64) -> Result<(), Errno> {
         state.free_dir_iters.push(iter_idx);
         let directory = state.get_mut(iter.directory).ok_or(Errno::EBADF)?;
         directory.open_count = directory.open_count.saturating_sub(1);
-        state.maybe_free(iter.directory);
-        Ok(())
+        state.release_unreferenced_inode(iter.directory)
     })
 }
 
@@ -6856,69 +6444,14 @@ fn mkdir_mutation(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errn
     if comps.is_empty() {
         return Err(Errno::EEXIST); // the root already exists
     }
-    if resizable_persistence_enabled() {
-        let (parent, name, parent_ino, inode) = ROOTFS.with(|state| {
-            let (parent, last, target) = state.resolve(&comps)?;
-            if target.is_some() {
-                return Err(Errno::EEXIST);
-            }
-            state.require_image_inode_slot()?;
-            let ino = state.next_ino;
-            if ino == u64::MAX {
-                return Err(Errno::ENOSPC);
-            }
-            let inode = Inode::new(InodeKind::Dir(DirectoryEntries::new()), mode & 0o7777, uid, gid, 2, ino);
-            Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
-        })?;
-        let mut allocated = commit_persistent_namespace(&[
-            Mutation::Put {
-                key: OverlayKey::Inode(inode.ino),
-                value: encode_persistent_inode(&inode)?,
-            },
-            Mutation::Put {
-                key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
-                value: inode.ino.to_le_bytes().to_vec(),
-            },
-        ], &[(parent, NamespaceTimestamp::Modified)])?;
-        return ROOTFS.with(|state| {
-            state.bump_next_ino(inode.ino);
-            let index = state.insert_prepared_inode(inode);
-            allocated.insert_into(state, parent, &name, index)?;
-            state.recompute_dir_nlink(parent);
-            state.persistent_allocated_blocks = Some(allocated.allocated);
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    ROOTFS.with(|state| {
-        let (parent, last, target) = state.resolve(&comps)?;
-        if target.is_some() {
-            return Err(Errno::EEXIST);
-        }
-        let last = last.ok_or(Errno::ENOENT)?;
-        let ino = state.alloc_ino();
-        let new_idx = state.insert_inode(Inode::new(
-            InodeKind::Dir(DirectoryEntries::new()),
-            mode & 0o7777,
-            uid,
-            gid,
-            2,
-            ino,
-        ))?;
-        state.link_unpublished_inode(parent, last, new_idx)?;
-        // A new subdirectory bumps the parent's link count (its `..`).
-        if let Some(parent_inode) = state.get_mut(parent) {
-            parent_inode.nlink += 1;
-        }
-        Ok(())
-    })
+    mounted::mkdir(&comps, mode, uid, gid)
 }
 
 /// Remove an empty rootfs directory.
 pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
     let path_entry = crate::vfs_events::Entry::capture(path, lstat);
     let result = rmdir_mutation(path)?;
-    if let Some(entry) = path_entry { entry.committed(false); }
+    if let Some(entry) = path_entry { entry.committed_as(None, false); }
     Ok(result)
 }
 
@@ -6927,56 +6460,15 @@ fn rmdir_mutation(path: &[u8]) -> Result<(), Errno> {
     if comps.is_empty() {
         return Err(Errno::EBUSY); // cannot remove the root
     }
-    let mut allocated = if resizable_persistence_enabled() {
-        let (parent, key) = ROOTFS.with(|state| {
-            let (parent, last, target) = state.resolve(&comps)?;
-            let target = target.ok_or(Errno::ENOENT)?;
-            match &state.get(target).ok_or(Errno::ENOENT)?.kind {
-                InodeKind::Dir(entries) if entries.is_empty() => {}
-                InodeKind::Dir(_) => return Err(Errno::ENOTEMPTY),
-                _ => return Err(Errno::ENOTDIR),
-            }
-            Ok::<_, Errno>((parent, OverlayKey::Dirent {
-                parent: state.get(parent).ok_or(Errno::EIO)?.ino,
-                name: last.ok_or(Errno::ENOENT)?.to_vec(),
-            }))
-        })?;
-        Some(commit_persistent_namespace(&[Mutation::Delete { key }], &[(parent, NamespaceTimestamp::Modified)])?)
-    } else {
-        reject_fixed_persistence_mutation()?;
-        None
-    };
-    ROOTFS.with(|state| {
-        let (parent, last, target) = state.resolve(&comps)?;
-        let target = target.ok_or(Errno::ENOENT)?;
-        let last = last.ok_or(Errno::ENOENT)?;
-        match &state.get(target).ok_or(Errno::ENOENT)?.kind {
-            InodeKind::Dir(entries) => {
-                if !entries.is_empty() {
-                    return Err(Errno::ENOTEMPTY);
-                }
-            }
-            _ => return Err(Errno::ENOTDIR),
-        }
-        if let Some(committed) = allocated.as_mut() { committed.remove_from(state, parent, last)?; }
-        else if let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|i| &mut i.kind) { entries.remove(last); }
-        if let Some(parent_inode) = state.get_mut(parent) {
-            parent_inode.nlink = parent_inode.nlink.saturating_sub(1);
-        }
-        if let Some(inode) = state.get_mut(target) {
-            inode.nlink = 0;
-        }
-        state.maybe_free(target);
-        state.persistent_allocated_blocks = allocated.as_ref().map(|committed| committed.allocated);
-        Ok(())
-    })
+    mounted::rmdir(&comps)
 }
 
 /// Unlink a rootfs non-directory name.
 pub fn unlink(path: &[u8]) -> Result<(), Errno> {
     let path_entry = crate::vfs_events::Entry::capture(path, lstat);
     let result = unlink_mutation(path)?;
-    if let Some(entry) = path_entry { entry.committed(false); }
+    if let Some(entry) = path_entry { entry.committed_as(None, false); }
+    crate::fs_changes::publish(2, path);
     Ok(result)
 }
 
@@ -6985,46 +6477,7 @@ fn unlink_mutation(path: &[u8]) -> Result<(), Errno> {
     if comps.is_empty() {
         return Err(Errno::EISDIR);
     }
-    let mut allocated = if resizable_persistence_enabled() {
-        let (parent, target, key) = ROOTFS.with(|state| {
-            let (parent, last, target) = state.resolve(&comps)?;
-            let target = target.ok_or(Errno::ENOENT)?;
-            if state.get(target).ok_or(Errno::ENOENT)?.is_dir() {
-                return Err(Errno::EISDIR);
-            }
-            Ok::<_, Errno>((parent, target, OverlayKey::Dirent {
-                parent: state.get(parent).ok_or(Errno::EIO)?.ino,
-                name: last.ok_or(Errno::ENOENT)?.to_vec(),
-            }))
-        })?;
-        Some(commit_persistent_namespace(
-            &[Mutation::Delete { key }],
-            &[(parent, NamespaceTimestamp::Modified), (target, NamespaceTimestamp::Changed)],
-        )?)
-    } else {
-        reject_fixed_persistence_mutation()?;
-        None
-    };
-    let result = ROOTFS.with(|state| {
-        let (parent, last, target) = state.resolve(&comps)?;
-        let target = target.ok_or(Errno::ENOENT)?;
-        let last = last.ok_or(Errno::ENOENT)?;
-        if state.get(target).ok_or(Errno::ENOENT)?.is_dir() {
-            return Err(Errno::EISDIR);
-        }
-        if let Some(committed) = allocated.as_mut() { committed.remove_from(state, parent, last)?; }
-        else if let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|i| &mut i.kind) { entries.remove(last); }
-        if let Some(inode) = state.get_mut(target) {
-            inode.nlink = inode.nlink.saturating_sub(1);
-        }
-        state.maybe_free(target);
-        state.persistent_allocated_blocks = allocated.as_ref().map(|committed| committed.allocated);
-        Ok(())
-    });
-    if result.is_ok() {
-        crate::fs_changes::publish(2, path);
-    }
-    result
+    mounted::unlink(&comps)
 }
 
 /// Rename `old` to `new` within the rootfs. Both paths must be rootfs paths (the
@@ -7035,167 +6488,19 @@ fn unlink_mutation(path: &[u8]) -> Result<(), Errno> {
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let old_entry = crate::vfs_events::Entry::capture(old, lstat);
     let new_entry = crate::vfs_events::Entry::capture(new, lstat);
-    let result = rename_mutation(old, new)?;
-    if let Some(entry) = old_entry { entry.committed(false); }
-    if let Some(entry) = new_entry { entry.committed(false); }
-    Ok(result)
-}
-
-fn rename_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
-    rename_unmarked(old, new)?;
-    mark_var_log_names(new);
-    Ok(())
-}
-
-fn rename_unmarked(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let old_comps = split_components(old);
     let new_comps = split_components(new);
     if old_comps.is_empty() || new_comps.is_empty() {
         return Err(Errno::EBUSY); // cannot rename the root
     }
-    let into_own_subtree = new_comps.len() > old_comps.len()
-        && new_comps.starts_with(&old_comps);
-    let mut allocated = if resizable_persistence_enabled() {
-        let mutations = ROOTFS.with(|state| {
-            let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
-            let old_target = old_target.ok_or(Errno::ENOENT)?;
-            if into_own_subtree && state.get(old_target).ok_or(Errno::ENOENT)?.is_dir() {
-                return Err(Errno::EINVAL);
-            }
-            let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
-            if new_existing == Some(old_target) {
-                return Ok::<_, Errno>(None);
-            }
-            let old_is_dir = state.get(old_target).ok_or(Errno::ENOENT)?.is_dir();
-            if let Some(existing) = new_existing {
-                let new_inode = state.get(existing).ok_or(Errno::ENOENT)?;
-                if old_is_dir && !new_inode.is_dir() {
-                    return Err(Errno::ENOTDIR);
-                }
-                if !old_is_dir && new_inode.is_dir() {
-                    return Err(Errno::EISDIR);
-                }
-                if let InodeKind::Dir(entries) = &new_inode.kind {
-                    if !entries.is_empty() {
-                        return Err(Errno::ENOTEMPTY);
-                    }
-                }
-            }
-            let inode_number = state.get(old_target).ok_or(Errno::EIO)?.ino;
-            let old_parent_number = state.get(old_parent).ok_or(Errno::EIO)?.ino;
-            let new_parent_number = state.get(new_parent).ok_or(Errno::EIO)?.ino;
-            Ok(Some(([
-                Mutation::Delete {
-                    key: OverlayKey::Dirent {
-                        parent: old_parent_number,
-                        name: old_name.ok_or(Errno::ENOENT)?.to_vec(),
-                    },
-                },
-                Mutation::Put {
-                    key: OverlayKey::Dirent {
-                        parent: new_parent_number,
-                        name: new_name.ok_or(Errno::ENOENT)?.to_vec(),
-                    },
-                    value: inode_number.to_le_bytes().to_vec(),
-                },
-            ], old_parent, new_parent, old_target, new_existing)))
-        })?;
-        if let Some((mutations, old_parent, new_parent, source, replaced)) = mutations {
-            let mut timestamps = vec![
-                (old_parent, NamespaceTimestamp::Modified),
-                (new_parent, NamespaceTimestamp::Modified),
-                (source, NamespaceTimestamp::Changed),
-            ];
-            if let Some(replaced) = replaced {
-                timestamps.push((replaced, NamespaceTimestamp::Changed));
-            }
-            Some(commit_persistent_namespace(
-                &mutations,
-                &timestamps,
-            )?)
-        } else {
-            None
-        }
-    } else {
-        reject_fixed_persistence_mutation()?;
-        None
-    };
-    let result = ROOTFS.with(|state| {
-        let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
-        let old_target = old_target.ok_or(Errno::ENOENT)?;
-        if into_own_subtree && state.get(old_target).ok_or(Errno::ENOENT)?.is_dir() {
-            return Err(Errno::EINVAL);
-        }
-        let old_name = old_name.ok_or(Errno::ENOENT)?.to_vec();
-        let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
-        let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
-
-        // Renaming a name to itself (same inode) is a no-op.
-        if new_existing == Some(old_target) {
-            return Ok(());
-        }
-
-        let old_is_dir = state.get(old_target).ok_or(Errno::ENOENT)?.is_dir();
-
-        if let Some(existing) = new_existing {
-            let new_is_dir = state.get(existing).ok_or(Errno::ENOENT)?.is_dir();
-            if old_is_dir && !new_is_dir {
-                return Err(Errno::ENOTDIR);
-            }
-            if !old_is_dir && new_is_dir {
-                return Err(Errno::EISDIR);
-            }
-            if new_is_dir {
-                let empty = matches!(
-                    &state.get(existing).ok_or(Errno::ENOENT)?.kind,
-                    InodeKind::Dir(entries) if entries.is_empty()
-                );
-                if !empty {
-                    return Err(Errno::ENOTEMPTY);
-                }
-            }
-        }
-        let prepared = match allocated.as_mut() {
-            Some(committed) => committed.take_name(new_parent, &new_name)?,
-            None => PreparedDirectoryName::new(&ROOTFS_METADATA, &new_name)?,
-        };
-        if let Some(existing) = new_existing {
-            let new_is_dir = state.get(existing).ok_or(Errno::EIO)?.is_dir();
-            // Detach and free the replaced destination.
-            if let Some(committed) = allocated.as_mut() { committed.remove_from(state, new_parent, &new_name)?; }
-            else if let Some(InodeKind::Dir(entries)) = state.get_mut(new_parent).map(|i| &mut i.kind) { entries.remove(&new_name); }
-            if let Some(inode) = state.get_mut(existing) {
-                inode.nlink = if new_is_dir {
-                    0
-                } else {
-                    inode.nlink.saturating_sub(1)
-                };
-            }
-            state.maybe_free(existing);
-        }
-
-        // Detach the source name and reattach under the destination name.
-        if let Some(committed) = allocated.as_mut() { committed.remove_from(state, old_parent, &old_name)?; }
-        else if let Some(InodeKind::Dir(entries)) = state.get_mut(old_parent).map(|i| &mut i.kind) { entries.remove(&old_name); }
-        match state.get_mut(new_parent).map(|i| &mut i.kind) {
-            Some(InodeKind::Dir(entries)) => {
-                entries.insert_prepared(prepared, old_target);
-            }
-            _ => return Err(Errno::ENOTDIR),
-        }
-
-        state.recompute_dir_nlink(old_parent);
-        if new_parent != old_parent {
-            state.recompute_dir_nlink(new_parent);
-        }
-        state.persistent_allocated_blocks = allocated.as_ref().map(|committed| committed.allocated);
-        Ok(())
-    });
-    if result.is_ok() {
-        crate::fs_changes::publish(2, old);
-        crate::fs_changes::publish(1, new);
+    if let Some(ino) = mounted::rename(old, new, &old_comps, &new_comps)? {
+        if let Some(entry) = old_entry { entry.committed_as(None, false); }
+        if let Some(entry) = new_entry { entry.committed_as(Some(rootfs_file_id(ino)), false); }
     }
-    result
+    crate::fs_changes::publish(2, old);
+    crate::fs_changes::publish(1, new);
+    mark_var_log_names(new);
+    Ok(())
 }
 
 /// Create a hard link `new` to the existing file `old` within the rootfs. Hard
@@ -7220,77 +6525,7 @@ fn link_unmarked(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     if new_comps.is_empty() {
         return Err(Errno::EEXIST); // cannot link over the root
     }
-    let persistent = resizable_persistence_enabled();
-    let mut allocated = if persistent {
-        let (source, new_parent, mutation) = ROOTFS.with(|state| {
-            let old_idx = {
-                let root = state.mount_root()?;
-                state.walk(root, &old_comps)?
-            };
-            let source = state.get(old_idx).ok_or(Errno::ENOENT)?;
-            if source.is_dir() {
-                return Err(Errno::EPERM);
-            }
-            if source.nlink == u32::MAX {
-                return Err(Errno::EMLINK);
-            }
-            let inode_number = source.ino;
-            let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
-            if new_existing.is_some() {
-                return Err(Errno::EEXIST);
-            }
-            Ok::<_, Errno>((old_idx, new_parent, Mutation::Put {
-                key: OverlayKey::Dirent {
-                    parent: state.get(new_parent).ok_or(Errno::EIO)?.ino,
-                    name: new_name.ok_or(Errno::ENOENT)?.to_vec(),
-                },
-                value: inode_number.to_le_bytes().to_vec(),
-            }))
-        })?;
-        Some(commit_persistent_namespace(
-            &[mutation],
-            &[(new_parent, NamespaceTimestamp::Modified), (source, NamespaceTimestamp::Changed)],
-        )?)
-    } else {
-        reject_fixed_persistence_mutation()?;
-        None
-    };
-    ROOTFS.with(|state| {
-        let old_idx = {
-            let root = state.mount_root()?;
-            state.walk(root, &old_comps)?
-        };
-        let source = state.get(old_idx).ok_or(Errno::ENOENT)?;
-        if source.is_dir() {
-            return Err(Errno::EPERM); // no hard links to directories
-        }
-        if source.nlink == u32::MAX {
-            return Err(Errno::EMLINK);
-        }
-        let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
-        if new_existing.is_some() {
-            return Err(Errno::EEXIST);
-        }
-        let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
-        let prepared = match allocated.as_mut() {
-            Some(committed) => committed.take_name(new_parent, &new_name)?,
-            None => PreparedDirectoryName::new(&ROOTFS_METADATA, &new_name)?,
-        };
-        match state.get_mut(new_parent).map(|i| &mut i.kind) {
-            Some(InodeKind::Dir(entries)) => {
-                entries.insert_prepared(prepared, old_idx);
-            }
-            _ => return Err(Errno::ENOTDIR),
-        }
-        if let Some(inode) = state.get_mut(old_idx) {
-            inode.nlink += 1;
-            if !persistent {
-                inode.touch_changed();
-            }
-        }
-        state.persistent_allocated_blocks = allocated.as_ref().map(|committed| committed.allocated);
-        Ok(())
-    })
+    mounted::link(&old_comps, &new_comps)
 }
 
 fn change_persistent_owner(
@@ -7332,188 +6567,85 @@ fn update_persistent_inode_metadata(
     ROOTFS.with(|state| change.apply(state))
 }
 
-/// chmod a rootfs path (permission bits only).
+enum MetadataTarget<'a> {
+    Path(&'a [u8]),
+    Handle(i64),
+}
+
+fn update_metadata(
+    target: MetadataTarget<'_>,
+    update: impl FnOnce(&mut PersistentInodeMetadata) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    mounted::update_metadata(target, update)
+}
+
+fn set_mode(target: MetadataTarget<'_>, mode: u32) -> Result<(), Errno> {
+    update_metadata(target, |fields| {
+        fields.mode = mode & 0o7777;
+        fields.touch_changed();
+        Ok(())
+    })
+}
+
+fn set_owner(target: MetadataTarget<'_>, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    update_metadata(target, |fields| {
+        change_persistent_owner(fields, uid, gid, clear_setid);
+        Ok(())
+    })
+}
+
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
-    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
-    let result = chmod_mutation(path, mode)?;
-    if let Some(entry) = path_entry { entry.committed(true); }
-    Ok(result)
+    let entry = crate::vfs_events::Entry::capture(path, lstat);
+    set_mode(MetadataTarget::Path(path), mode)?;
+    if let Some(entry) = entry { entry.committed(true); }
+    Ok(())
 }
 
-fn chmod_mutation(path: &[u8], mode: u32) -> Result<(), Errno> {
-    if resizable_persistence_enabled() {
-        return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
-            metadata.mode = mode & 0o7777;
-            metadata.touch_changed();
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    let idx = walk_to_inode(path)?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
-        inode.mode = mode & 0o7777;
-        inode.touch_changed();
-        Ok(())
-    })
-}
-
-/// chown a rootfs path. A field of `u32::MAX` (-1) is left unchanged. When
-/// `clear_setid` is set, set-user-ID (and set-group-ID on a group-executable
-/// file) is cleared, matching the host chown path.
 pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
-    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
-    let result = chown_mutation(path, uid, gid, clear_setid)?;
-    if let Some(entry) = path_entry { entry.committed(true); }
-    Ok(result)
+    let entry = crate::vfs_events::Entry::capture(path, lstat);
+    set_owner(MetadataTarget::Path(path), uid, gid, clear_setid)?;
+    if let Some(entry) = entry { entry.committed(true); }
+    Ok(())
 }
 
-fn chown_mutation(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
-    if resizable_persistence_enabled() {
-        return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
-            change_persistent_owner(metadata, uid, gid, clear_setid);
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    let idx = walk_to_inode(path)?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
-        if uid != u32::MAX {
-            inode.uid = uid;
-        }
-        if gid != u32::MAX {
-            inode.gid = gid;
-        }
-        if clear_setid {
-            const S_ISUID: u32 = 0o4000;
-            const S_ISGID: u32 = 0o2000;
-            const S_IXGRP: u32 = 0o0010;
-            inode.mode &= !S_ISUID;
-            if inode.mode & S_IXGRP != 0 {
-                inode.mode &= !S_ISGID;
-            }
-        }
-        inode.touch_changed();
-        Ok(())
-    })
-}
-
-/// fchmod an open rootfs file handle.
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
-    let result = fchmod_mutation(handle, mode)?;
+    set_mode(MetadataTarget::Handle(handle), mode)?;
     publish_handle_change(handle);
-    Ok(result)
+    Ok(())
 }
 
-fn fchmod_mutation(handle: i64, mode: u32) -> Result<(), Errno> {
-    if resizable_persistence_enabled() {
-        return update_persistent_inode_metadata(file_handle_to_inode(handle)?, |metadata| {
-            metadata.mode = mode & 0o7777;
-            metadata.touch_changed();
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    let idx = file_handle_to_inode(handle)?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        inode.mode = mode & 0o7777;
-        inode.touch_changed();
-        Ok(())
-    })
-}
-
-/// fchown an open rootfs file handle. A field of `u32::MAX` (-1) is unchanged.
 pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
-    let result = fchown_mutation(handle, uid, gid, clear_setid)?;
+    set_owner(MetadataTarget::Handle(handle), uid, gid, clear_setid)?;
     publish_handle_change(handle);
-    Ok(result)
+    Ok(())
 }
 
-fn fchown_mutation(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
-    if resizable_persistence_enabled() {
-        return update_persistent_inode_metadata(file_handle_to_inode(handle)?, |metadata| {
-            change_persistent_owner(metadata, uid, gid, clear_setid);
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    let idx = file_handle_to_inode(handle)?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        if uid != u32::MAX {
-            inode.uid = uid;
+type FileTime = (u64, u32);
+
+fn set_times(target: MetadataTarget<'_>, accessed: FileTime, modified: FileTime, changed: FileTime) -> Result<(), Errno> {
+    update_metadata(target, |fields| {
+        if [accessed, modified, changed].iter().any(|&(_, nanos)| nanos >= 1_000_000_000) {
+            return Err(Errno::EINVAL);
         }
-        if gid != u32::MAX {
-            inode.gid = gid;
-        }
-        if clear_setid {
-            const S_ISUID: u32 = 0o4000;
-            const S_ISGID: u32 = 0o2000;
-            const S_IXGRP: u32 = 0o0010;
-            inode.mode &= !S_ISUID;
-            if inode.mode & S_IXGRP != 0 {
-                inode.mode &= !S_ISGID;
-            }
-        }
-        inode.touch_changed();
+        (fields.atime_sec, fields.atime_nsec) = accessed;
+        (fields.mtime_sec, fields.mtime_nsec) = modified;
+        (fields.ctime_sec, fields.ctime_nsec) = changed;
         Ok(())
     })
 }
 
-/// Set a rootfs inode's timestamps to already-resolved values (the caller has
-/// applied UTIME_NOW/UTIME_OMIT).
-pub fn utimensat(
-    path: &[u8],
-    atime_sec: u64,
-    atime_nsec: u32,
-    mtime_sec: u64,
-    mtime_nsec: u32,
-    ctime_sec: u64,
-    ctime_nsec: u32,
-) -> Result<(), Errno> {
-    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
-    let result = utimensat_mutation(path, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
-    if let Some(entry) = path_entry { entry.committed(true); }
-    Ok(result)
+/// Set already-resolved timestamps (the caller applies UTIME_NOW/UTIME_OMIT).
+pub fn utimensat(path: &[u8], atime_sec: u64, atime_nsec: u32, mtime_sec: u64, mtime_nsec: u32, ctime_sec: u64, ctime_nsec: u32) -> Result<(), Errno> {
+    let entry = crate::vfs_events::Entry::capture(path, lstat);
+    set_times(MetadataTarget::Path(path), (atime_sec, atime_nsec), (mtime_sec, mtime_nsec), (ctime_sec, ctime_nsec))?;
+    if let Some(entry) = entry { entry.committed(true); }
+    Ok(())
 }
 
-fn utimensat_mutation(
-    path: &[u8],
-    atime_sec: u64,
-    atime_nsec: u32,
-    mtime_sec: u64,
-    mtime_nsec: u32,
-    ctime_sec: u64,
-    ctime_nsec: u32,
-) -> Result<(), Errno> {
-    if resizable_persistence_enabled() {
-        return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
-            if atime_nsec >= 1_000_000_000 || mtime_nsec >= 1_000_000_000 || ctime_nsec >= 1_000_000_000 {
-                return Err(Errno::EINVAL);
-            }
-            metadata.atime_sec = atime_sec;
-            metadata.atime_nsec = atime_nsec;
-            metadata.mtime_sec = mtime_sec;
-            metadata.mtime_nsec = mtime_nsec;
-            metadata.ctime_sec = ctime_sec;
-            metadata.ctime_nsec = ctime_nsec;
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    let idx = walk_to_inode(path)?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
-        inode.atime_sec = atime_sec;
-        inode.atime_nsec = atime_nsec;
-        inode.mtime_sec = mtime_sec;
-        inode.mtime_nsec = mtime_nsec;
-        inode.ctime_sec = ctime_sec;
-        inode.ctime_nsec = ctime_nsec;
-        Ok(())
-    })
+pub(crate) fn futimens(handle: i64, accessed: FileTime, modified: FileTime, changed: FileTime) -> Result<(), Errno> {
+    set_times(MetadataTarget::Handle(handle), accessed, modified, changed)?;
+    publish_handle_change(handle);
+    Ok(())
 }
 
 /// Create a symbolic link at a rootfs path pointing at `target`.
@@ -7532,61 +6664,7 @@ fn symlink_mutation(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Resul
     if target.is_empty() {
         return Err(Errno::ENOENT);
     }
-    if resizable_persistence_enabled() {
-        if target.len() > 4096 - PERSISTENT_REGULAR_RECORD_BYTES {
-            return Err(Errno::ENAMETOOLONG);
-        }
-        let creation = ROOTFS.with(|state| {
-            let (parent, last, existing) = state.resolve(&comps)?;
-            if existing.is_some() {
-                return Err(Errno::EEXIST);
-            }
-            state.require_image_inode_slot()?;
-            let ino = state.next_ino;
-            if ino == u64::MAX {
-                return Err(Errno::ENOSPC);
-            }
-            let inode = Inode::new(InodeKind::Symlink(own_metadata(target)?), 0o777, uid, gid, 1, ino);
-            Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
-        })?;
-        let (parent, name, parent_ino, inode) = creation;
-        let mut allocated = commit_persistent_namespace(&[
-            Mutation::Put {
-                key: OverlayKey::Inode(inode.ino),
-                value: encode_persistent_inode(&inode)?,
-            },
-            Mutation::Put {
-                key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
-                value: inode.ino.to_le_bytes().to_vec(),
-            },
-        ], &[(parent, NamespaceTimestamp::Modified)])?;
-        return ROOTFS.with(|state| {
-            state.bump_next_ino(inode.ino);
-            let index = state.insert_prepared_inode(inode);
-            allocated.insert_into(state, parent, &name, index)?;
-            state.persistent_allocated_blocks = Some(allocated.allocated);
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    ROOTFS.with(|state| {
-        let (parent, last, existing) = state.resolve(&comps)?;
-        if existing.is_some() {
-            return Err(Errno::EEXIST);
-        }
-        let last = last.ok_or(Errno::ENOENT)?;
-        let ino = state.alloc_ino();
-        let new_idx = state.insert_inode(Inode::new(
-            InodeKind::Symlink(own_metadata(target)?),
-            0o777,
-            uid,
-            gid,
-            1,
-            ino,
-        ))?;
-        state.link_unpublished_inode(parent, last, new_idx)?;
-        Ok(())
-    })
+    mounted::symlink(target, &comps, uid, gid)
 }
 
 /// Create a metadata-only special node (AF_UNIX socket or FIFO) at a rootfs
@@ -7607,84 +6685,17 @@ pub fn mknod_special(
     if comps.is_empty() {
         return Err(Errno::EEXIST);
     }
-    if resizable_persistence_enabled() {
-        let (parent, name, parent_ino, inode) = ROOTFS.with(|state| {
-            let (parent, last, existing) = state.resolve(&comps)?;
-            if existing.is_some() {
-                return Err(Errno::EEXIST);
-            }
-            state.require_image_inode_slot()?;
-            let ino = state.next_ino;
-            if ino == u64::MAX {
-                return Err(Errno::ENOSPC);
-            }
-            let inode = Inode::new(InodeKind::Special(type_bits), mode & 0o7777, uid, gid, 1, ino);
-            Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
-        })?;
-        let mut allocated = commit_persistent_namespace(&[
-            Mutation::Put {
-                key: OverlayKey::Inode(inode.ino),
-                value: encode_persistent_inode(&inode)?,
-            },
-            Mutation::Put {
-                key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
-                value: inode.ino.to_le_bytes().to_vec(),
-            },
-        ], &[(parent, NamespaceTimestamp::Modified)])?;
-        return ROOTFS.with(|state| {
-            state.bump_next_ino(inode.ino);
-            let index = state.insert_prepared_inode(inode);
-            allocated.insert_into(state, parent, &name, index)?;
-            state.persistent_allocated_blocks = Some(allocated.allocated);
-            Ok(())
-        });
-    }
-    reject_fixed_persistence_mutation()?;
-    ROOTFS.with(|state| {
-        let (parent, last, existing) = state.resolve(&comps)?;
-        if existing.is_some() {
-            return Err(Errno::EEXIST);
-        }
-        let last = last.ok_or(Errno::ENOENT)?;
-        let ino = state.alloc_ino();
-        let new_idx = state.insert_inode(Inode::new(
-            InodeKind::Special(type_bits & S_IFMT),
-            mode & 0o7777,
-            uid,
-            gid,
-            1,
-            ino,
-        ))?;
-        state.link_unpublished_inode(parent, last, new_idx)?;
-        Ok(())
-    })
+    let entry = crate::vfs_events::Entry::capture(path, lstat);
+    mounted::mknod_special(&comps, mode, uid, gid, type_bits)?;
+    if let Some(entry) = entry { entry.committed(false); }
+    Ok(())
 }
 
 pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {
     if !owns_path(path) {
         return Err(Errno::ENOENT);
     }
-    if fixed_persistence_enabled() {
-        return persistent_statfs();
-    }
-    Ok(WasmStatfs {
-        f_type: 0x858458f6, // RAMFS_MAGIC
-        f_bsize: 4096,
-        f_blocks: 262_144,
-        f_bfree: 262_144,
-        f_bavail: 262_144,
-        f_files: 65_536,
-        f_ffree: 65_536,
-        f_fsid: 0,
-        f_namelen: 255,
-        f_frsize: 4096,
-        f_flags: if is_nosuid() {
-            wasm_posix_shared::statfs_flags::ST_NOSUID
-        } else {
-            0
-        },
-        _pad: 0,
-    })
+    mounted::statfs()
 }
 
 pub fn statfs_for_exec(path: &[u8]) -> Result<WasmStatfs, Errno> {
@@ -8332,18 +7343,6 @@ enum ExportNode {
     Special(u32),
 }
 
-/// The `data_start` `KandeloImageWriter::mkfs` will derive from `max_blocks`.
-///
-/// Duplicated here, deliberately and narrowly, because the image's LENGTH has
-/// to be chosen before `mkfs` runs. Sizing it at `max_blocks` would emit a
-/// 480 MiB container for a 249 MiB tree; sizing it too small would make every
-/// image pay hundreds of 256-block growth steps.
-fn planned_data_start(max_blocks: u32) -> u32 {
-    let mut total_inodes = core::cmp::max(32, max_blocks / 4);
-    total_inodes = total_inodes.div_ceil(32) * 32;
-    planned_data_start_with_inodes(max_blocks, total_inodes)
-}
-
 fn planned_data_start_with_inodes(max_blocks: u32, total_inodes: u32) -> u32 {
     let inode_bitmap_blocks = total_inodes.div_ceil(4096 * 8);
     let block_bitmap_blocks = max_blocks.div_ceil(4096 * 8);
@@ -8611,18 +7610,12 @@ fn build_export_image_with_capacity(
     if oversized_file {
         return Err(Errno::EFBIG);
     }
-    // Inodes drive `total_inodes = max_blocks / 4`, so a tree of many tiny
-    // files can need a larger maximum than its bytes do.
-    let inode_requirement = (inode_count + 2).saturating_mul(4);
-    // A requested capacity enters here as a FLOOR rather than replacing the
-    // computation: the tree's own requirement still has to be met, and the loop
-    // below still converges `data_start` against whichever is larger. Replacing
-    // it would let a small request produce an image that cannot hold its own
-    // contents.
-    let requested_blocks = ROOTFS
-        .with(|state| state.image_capacity_bytes)
-        .map(|bytes| bytes.div_ceil(4096))
-        .unwrap_or(0);
+    let required_inodes = u32::try_from(inode_count + RESERVED_IMAGE_INODES)
+        .map_err(|_| Errno::EFBIG)?;
+    let (requested_blocks, requested_inodes) = ROOTFS.with(|state| (
+        state.image_capacity_bytes.map_or(0, |bytes| bytes.div_ceil(4096)),
+        state.export_inode_capacity.or_else(|| state.image.map(|image| image.image.total_inodes)),
+    ));
     let mounted_capacity = if preserve_capacity {
         ROOTFS.with(|state| state.image.map(|image| (
             image.capacity_bytes.div_ceil(4096),
@@ -8631,20 +7624,25 @@ fn build_export_image_with_capacity(
     } else {
         None
     };
-    if mounted_capacity.is_some_and(|(_, inodes)| inode_count + 2 > u64::from(inodes)) {
+    if mounted_capacity.is_some_and(|(_, inodes)| required_inodes > inodes) {
         return Err(Errno::ENOSPC);
     }
-    let builder_capacity = core::cmp::max(
-        core::cmp::max(inode_requirement, 64),
-        requested_blocks,
-    );
+    // Bare trees keep the legacy mkfs defaults until their caller supplies an
+    // entry policy. A loaded image carries its own policy through a byte rebase.
+    let legacy_blocks = if requested_inodes.is_none() { u64::from(required_inodes) * 4 } else { 0 };
+    let builder_capacity = requested_blocks.max(legacy_blocks).max(64);
     let mut max_blocks = u32::try_from(
         mounted_capacity.map_or(builder_capacity, |(blocks, _)| blocks),
     ).map_err(|_| Errno::EIO)?;
-    let mut data_start = match mounted_capacity {
-        Some((_, inodes)) => planned_data_start_with_inodes(max_blocks, inodes),
-        None => planned_data_start(max_blocks),
+    let capacity_for = |max_blocks| match mounted_capacity {
+        Some((_, inodes)) => inodes,
+        None => requested_inodes.map_or_else(
+            || crate::kandelo_image_write::legacy_inode_capacity(max_blocks),
+            |requested| requested.max(required_inodes),
+        ),
     };
+    let mut inode_capacity = capacity_for(max_blocks);
+    let mut data_start = planned_data_start_with_inodes(max_blocks, inode_capacity);
     // One or two rounds converge: a larger maximum needs a larger block bitmap,
     // which pushes `data_start` out, which needs a larger maximum.
     for _ in 0..4 {
@@ -8654,7 +7652,8 @@ fn build_export_image_with_capacity(
             break;
         }
         max_blocks = needed;
-        data_start = planned_data_start(max_blocks);
+        inode_capacity = capacity_for(max_blocks);
+        data_start = planned_data_start_with_inodes(max_blocks, inode_capacity);
     }
     let total_blocks = core::cmp::min(
         max_blocks,
@@ -8680,7 +7679,7 @@ fn build_export_image_with_capacity(
         now_ms: ROOTFS
             .with(|state| state.export_timestamp_ms)
             .unwrap_or(wasm_posix_shared::KANDELO_REFERENCE_EPOCH_MILLIS),
-    }, mounted_capacity.map(|(_, inodes)| inodes))?;
+    }, Some(inode_capacity))?;
     // The kernel writes its deferred files into the body, so an export with
     // none says so explicitly rather than staying silent — silence is what
     // `load_image` refuses, and an image this kernel wrote must be one it can
@@ -9059,6 +8058,16 @@ pub fn set_image_capacity(bytes: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Request an independent inode floor for detached image exports. Zero restores
+/// the loaded image's policy or the default for a tree without a backing image.
+pub fn set_export_inode_capacity(inodes: u32) -> Result<(), Errno> {
+    if inodes != 0 && u64::from(inodes) <= RESERVED_IMAGE_INODES {
+        return Err(Errno::EINVAL);
+    }
+    ROOTFS.with(|state| state.export_inode_capacity = (inodes != 0).then_some(inodes));
+    Ok(())
+}
+
 /// One deferred file, as an enumerator sees it.
 ///
 /// The fields are the file's IDENTITY, which is what a builder checking "this
@@ -9327,6 +8336,10 @@ pub fn copy_image_metadata(output: Option<&mut [u8]>) -> Result<usize, Errno> {
 
 pub fn loaded_image_capacity_bytes() -> Option<u64> {
     ROOTFS.with(|state| state.image.map(|image| image.capacity_bytes))
+}
+
+pub fn mounted_format_version() -> Option<u32> {
+    ROOTFS.with(|state| state.mounted_filesystem().format_version())
 }
 
 /// Set the image-metadata section the next exported container will carry, as
@@ -11761,7 +10774,7 @@ mod tests {
                 // ONE arm for what used to be two, because the host is asked
                 // one question now: bytes for this address. Which kind of
                 // resource it is is the image's business, not the transport's.
-                ByteReq::Deferred { uri, offset } => {
+                ByteReq::Deferred { uri, offset, .. } => {
                     if let Some((_, data)) =
                         blobs.iter().find(|(id, _)| blob_uri(*id) == uri)
                     {
@@ -13027,6 +12040,503 @@ mod tests {
     }
 
     #[test]
+    fn kifs_v3_directory_handles_publish_paths_with_rename_and_reclaim_on_close() {
+        use crate::kifs_v3::{KifsNamespace, DEFAULT_VOLUME_BLOCKS};
+        use crate::ofd::OfdPath;
+        let _guard = TestGuard::acquire();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        KifsNamespace::format(storage.clone(), DEFAULT_VOLUME_BLOCKS, [6; 32], kifs_mount::now_timestamp()).unwrap();
+        mount_kifs_v3(Box::new(storage), [6; 32]).unwrap();
+        assert_eq!(mounted_format_version(), Some(3));
+        let baseline = ROOTFS.with(|state| state.kifs.as_ref().unwrap().namespace.usage());
+        mkdir(b"/outer", 0o755, 0, 0).unwrap();
+        mkdir(b"/outer/held", 0o755, 0, 0).unwrap();
+        let handle = open_directory_handle(&OfdPath::copy_from(b"/outer/held").unwrap()).unwrap();
+        let id = fstat(handle).unwrap().st_ino;
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(rename(b"/outer", b"/moved"), Err(Errno::ENOMEM));
+        }
+        assert_eq!(lstat(b"/outer/held").unwrap().st_ino, id);
+        assert_eq!(directory_handle_path(handle).unwrap().as_slice(), b"/outer/held");
+        rename(b"/outer", b"/moved").unwrap();
+        assert_eq!(directory_handle_path(handle).unwrap().as_slice(), b"/moved/held");
+        assert_eq!(rmdir(b"/moved"), Err(Errno::ENOTEMPTY));
+        rmdir(b"/moved/held").unwrap();
+        assert!(matches!(directory_handle_path(handle), Err(Errno::ENOENT)));
+        assert_eq!(fstat(handle).unwrap().st_nlink, 0);
+        assert_eq!(getdents_for_handle(handle, &mut [0; 64], 0, &[]), Ok((0, 0, true)));
+        assert!(release_handle(handle));
+        rmdir(b"/moved").unwrap();
+        ROOTFS.with(|state| {
+            let kifs = state.kifs.as_mut().unwrap();
+            assert!(kifs.directory_paths.is_empty());
+            assert!(kifs.namespace.inode(id).unwrap().is_none());
+            assert_eq!(kifs.namespace.usage(), baseline);
+        });
+    }
+
+    fn mount_namespace_test_root(standalone: bool) {
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        if standalone {
+            use crate::kifs_v3::{DEFAULT_VOLUME_BLOCKS, KifsNamespace};
+            KifsNamespace::format(storage.clone(), DEFAULT_VOLUME_BLOCKS, [1; 32], kifs_mount::now_timestamp()).unwrap();
+            mount_kifs_v3(Box::new(storage), [1; 32]).unwrap();
+        } else {
+            let image = empty_capacity_image(512 * 1024 * 1024, 65_536);
+            let digest = Sha256::digest(&image).into();
+            let mut source = image_host(&image);
+            load_image(image.len() as u64, &mut source).unwrap();
+            enable_resizable_persistence(Box::new(storage), digest, &mut source).unwrap();
+        }
+        set_enabled(true);
+        assert_eq!(supports_stat_certification(), standalone);
+    }
+
+    #[cfg(feature = "vfs-events")]
+    #[test]
+    fn kifs_directory_watch_tracks_hard_links_and_rename() {
+        use crate::process::{Process, test_host::NoopHost};
+        use crate::syscalls::{sys_close, sys_open, sys_read, sys_write};
+        use wasm_posix_shared::flags::O_NONBLOCK;
+
+        let _guard = TestGuard::acquire();
+        mount_namespace_test_root(true);
+        mkdir(b"/watched", 0o755, 0, 0).unwrap();
+        let mut process = Process::new(12);
+        let mut host = NoopHost;
+        let directory = sys_open(&mut process, &mut host, b"/watched", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let watchers = [(); 2].map(|()| {
+            let fd = sys_open(&mut process, &mut host, b"/dev/kandelo/fs-events", O_RDWR | O_NONBLOCK, 0).unwrap();
+            assert_eq!(sys_write(&mut process, &mut host, fd, &directory.to_le_bytes()), Ok(4));
+            fd
+        });
+        // The subscription keeps the directory identity after its original
+        // descriptor closes, and still finds aliases through a renamed parent.
+        sys_close(&mut process, &mut host, directory).unwrap();
+        let file = sys_open(&mut process, &mut host, b"/source", O_RDWR | O_CREAT, 0o644).unwrap();
+        link(b"/source", b"/watched/alias").unwrap();
+        assert_eq!(sys_write(&mut process, &mut host, file, b"first"), Ok(5));
+        rename(b"/watched", b"/moved").unwrap();
+        link(b"/source", b"/moved/second").unwrap();
+        unlink(b"/moved/alias").unwrap();
+        rename(b"/source", b"/moved/second").unwrap(); // same inode, no event
+        assert_eq!(sys_write(&mut process, &mut host, file, b"after"), Ok(5));
+        for watcher in watchers {
+            let mut buf = [0; 256];
+            for expected in [b"\x01alias".as_slice(), b"\x02alias", b"\x01", b"\x01second", b"\x01alias", b"\x02second"] {
+                let count = sys_read(&mut process, &mut host, watcher, &mut buf).unwrap();
+                assert_eq!(&buf[..count], expected);
+            }
+            assert_eq!(sys_read(&mut process, &mut host, watcher, &mut buf), Err(Errno::EAGAIN));
+            sys_close(&mut process, &mut host, watcher).unwrap();
+        }
+        sys_close(&mut process, &mut host, file).unwrap();
+    }
+
+    #[test]
+    fn kifs_resolved_removal_preserves_parent_search_sticky_ownership_and_open_inode() {
+        check_resolved_removal(true);
+        check_resolved_removal(false);
+    }
+
+    fn check_resolved_removal(standalone: bool) {
+        use crate::process::{Process, test_host::NoopHost};
+        use crate::syscalls::{sys_rmdir, sys_unlink, sys_unlinkat};
+        use wasm_posix_shared::flags::{AT_FDCWD, AT_REMOVEDIR};
+
+        let _guard = TestGuard::acquire();
+        mount_namespace_test_root(standalone);
+        mkdir(b"/parent", 0o711, 0, 0).unwrap();
+        mkdir(b"/parent/sticky", 0o1777, 23, 0).unwrap();
+        mkdir(b"/parent/sticky/empty", 0o700, 24, 0).unwrap();
+        let path = b"/parent/sticky/file";
+        let fd = open(path, O_CREAT | O_RDWR, 0o600, 24, 0).unwrap();
+        let before = fstat(fd).unwrap().st_ino;
+        let mut proc = Process::new(12);
+        let mut host = NoopHost;
+
+        proc.seteuid(25).unwrap();
+        assert_eq!(sys_unlink(&mut proc, &mut host, path), Err(Errno::EPERM));
+        assert_eq!(sys_rmdir(&mut proc, &mut host, b"/parent/sticky/empty"), Err(Errno::EPERM));
+        assert_eq!(lstat(path).unwrap().st_ino, before);
+
+        proc.seteuid(0).unwrap();
+        chmod(b"/parent", 0o700).unwrap();
+        proc.seteuid(24).unwrap();
+        assert_eq!(sys_unlinkat(&mut proc, &mut host, AT_FDCWD, path, 0), Err(Errno::EACCES));
+        proc.seteuid(0).unwrap();
+        chmod(b"/parent", 0o711).unwrap();
+        proc.seteuid(24).unwrap();
+        sys_unlinkat(&mut proc, &mut host, AT_FDCWD, path, 0).unwrap();
+        sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/parent/sticky/empty", AT_REMOVEDIR).unwrap();
+        assert!(matches!(lstat(path), Err(Errno::ENOENT)));
+        assert_eq!(fstat(fd).unwrap().st_ino, before);
+        assert!(release_handle(fd));
+    }
+
+    #[test]
+    fn kifs_resolved_create_preserves_parent_permission_and_exclusivity() {
+        check_resolved_create(true);
+        check_resolved_create(false);
+    }
+
+    #[test]
+    fn mounted_backends_create_and_move_special_nodes() {
+        for standalone in [false, true] {
+            let _guard = TestGuard::acquire();
+            mount_namespace_test_root(standalone);
+            for (kind, path) in [
+                (S_IFIFO, b"/pipe".as_slice()),
+                (S_IFSOCK, b"/socket".as_slice()),
+            ] {
+                mknod_special(path, 0o620, 23, 42, kind).unwrap();
+                let before = lstat(path).unwrap();
+                assert_eq!((before.st_mode, before.st_uid, before.st_gid), (kind | 0o620, 23, 42));
+                hard_link_and_move_special(path, before.st_ino);
+            }
+            sync_persistence().unwrap();
+        }
+    }
+
+    fn hard_link_and_move_special(path: &[u8], inode: u64) {
+        link(path, b"/linked").unwrap();
+        rename(path, b"/moved").unwrap();
+        assert!(matches!(lstat(path), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/moved").unwrap().st_ino, inode);
+        assert_eq!(lstat(b"/linked").unwrap().st_nlink, 2);
+        unlink(b"/moved").unwrap();
+        assert_eq!(lstat(b"/linked").unwrap().st_nlink, 1);
+        unlink(b"/linked").unwrap();
+    }
+
+    fn check_resolved_create(standalone: bool) {
+        use crate::process::{Process, test_host::NoopHost};
+        use crate::syscalls::{sys_close, sys_open, sys_openat};
+        use wasm_posix_shared::flags::AT_FDCWD;
+
+        let _guard = TestGuard::acquire();
+        mount_namespace_test_root(standalone);
+        mkdir(b"/parent", 0o755, 0, 0).unwrap();
+        symlink(b"/parent", b"/alias", 0, 0).unwrap();
+        let mut proc = Process::new(12);
+        proc.seteuid(24).unwrap();
+        let mut host = NoopHost;
+        let flags = O_CREAT | O_EXCL | O_RDWR;
+        let path = b"/parent/file";
+
+        assert_eq!(sys_open(&mut proc, &mut host, path, flags, 0o600), Err(Errno::EACCES));
+        assert_eq!(sys_open(&mut proc, &mut host, b"/alias/file", flags, 0o600), Err(Errno::EACCES));
+        assert!(matches!(lstat(path), Err(Errno::ENOENT)));
+        chmod(b"/parent", 0o777).unwrap();
+        let fd = sys_openat(&mut proc, &mut host, AT_FDCWD, path, flags, 0o600).unwrap();
+        assert_eq!(lstat(path).unwrap().st_uid, 24);
+        assert_eq!(sys_open(&mut proc, &mut host, path, flags, 0o600), Err(Errno::EEXIST));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn kifs_cached_lookups_track_chmod_replacement_and_handoff() {
+        use crate::kifs_v3::{KifsNamespace, DEFAULT_VOLUME_BLOCKS};
+        let _guard = TestGuard::acquire();
+        let storage = || SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let source = storage();
+        KifsNamespace::format(source.clone(), DEFAULT_VOLUME_BLOCKS, [1; 32], kifs_mount::now_timestamp()).unwrap();
+        mount_kifs_v3(Box::new(source), [1; 32]).unwrap();
+        let held = open(b"/same", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        let old = fstat(held).unwrap().st_ino;
+        assert_eq!(lstat(b"/same").unwrap().st_ino, old);
+        chmod(b"/same", 0o640).unwrap();
+        assert_eq!(lstat(b"/same").unwrap().st_mode & 0o777, 0o640);
+        unlink(b"/same").unwrap();
+        assert!(matches!(lstat(b"/same"), Err(Errno::ENOENT)));
+        let replacement = open(b"/same", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        let new = lstat(b"/same").unwrap().st_ino;
+        assert_ne!(old, new);
+        assert_eq!(fstat(held).unwrap().st_ino, old);
+        let target = storage();
+        prepare_kifs_handoff(Box::new(target.clone()), [2; 32]).unwrap();
+        activate_kifs_handoff(Box::new(target)).unwrap();
+        assert_eq!(lstat(b"/same").unwrap().st_ino, new);
+        rename(b"/same", b"/moved").unwrap();
+        assert!(matches!(lstat(b"/same"), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/moved").unwrap().st_ino, new);
+        release_handle(held);
+        release_handle(replacement);
+    }
+
+    #[test]
+    fn kifs_live_handoff_preserves_open_directories_and_unlinked_mapping_pins() {
+        use crate::kifs_v3::{KifsNamespace, DEFAULT_VOLUME_BLOCKS};
+        let _guard = TestGuard::acquire();
+        let storage = || SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let source = storage();
+        KifsNamespace::format(source.clone(), DEFAULT_VOLUME_BLOCKS, [1; 32], kifs_mount::now_timestamp()).unwrap();
+        mount_kifs_v3(Box::new(source.clone()), [1; 32]).unwrap();
+        mkdir(b"/held", 0o755, 0, 0).unwrap();
+        let directory = open_directory_handle(&crate::ofd::OfdPath::copy_from(b"/held").unwrap()).unwrap();
+        let file = open(b"/held/file", O_CREAT | O_RDWR, 0o640, 0, 0).unwrap();
+        write(file, 8192, b"saved", no_bytes()).unwrap();
+        pin_mapping(file).unwrap();
+        let inode = fstat(file).unwrap().st_ino;
+        unlink(b"/held/file").unwrap();
+        let before = statfs(b"/").unwrap();
+        assert_eq!(kifs_compaction_needed(), Ok(false));
+        prepare_kifs_handoff(Box::new(storage()), [2; 32]).unwrap();
+        assert_eq!(mkdir(b"/busy", 0o700, 0, 0), Err(Errno::EBUSY));
+        cancel_kifs_handoff().unwrap();
+        rename(b"/held", b"/renamed").unwrap();
+        let target = storage();
+        prepare_kifs_handoff(Box::new(target.clone()), [3; 32]).unwrap();
+        let old_length = source.0.lock().len();
+        activate_kifs_handoff(Box::new(target.clone())).unwrap();
+        assert_eq!(directory_handle_path(directory).unwrap().as_slice(), b"/renamed");
+        assert_eq!(statfs(b"/").unwrap().f_bfree, before.f_bfree);
+        assert_eq!(fstat(file).unwrap().st_ino, inode);
+        assert_eq!(fstat(file).unwrap().st_nlink, 0);
+        let mut bytes = [0; 6];
+        assert_eq!(read(file, 8191, &mut bytes, no_bytes()), Ok(6));
+        assert_eq!(&bytes, b"\0saved");
+        assert_eq!(write(file, 0, b"changed", no_bytes()), Ok(7));
+        release_handle(file);
+        unpin_mapping(file);
+        release_handle(directory);
+        assert_eq!(source.0.lock().len(), old_length);
+        reset();
+        mount_kifs_v3(Box::new(target), [3; 32]).unwrap();
+        assert!(lstat(b"/renamed").is_ok());
+        ROOTFS.with(|state| assert!(state.kifs.as_mut().unwrap().namespace.inode(inode).unwrap().is_none()));
+    }
+
+    #[test]
+    fn kifs_v3_trial_compares_self_consistent_candidates_with_the_source() {
+        use crate::kifs_v3::{DEFAULT_VOLUME_BLOCKS, Key};
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let file = create(b"/file");
+        write(file, 0, b"good", no_bytes()).unwrap();
+        let ino = fstat(file).unwrap().st_ino;
+        release_handle(file);
+        let scratch = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut volume = stage_kifs_v3(scratch, DEFAULT_VOLUME_BLOCKS, [3; 32], no_bytes())
+            .unwrap().into_volume();
+        // Both modifications produce structurally valid, authenticated trees.
+        // The trial must also prove agreement with the saved computer.
+        let extra = Key::Attribute { inode: ino, kind: 123, chunk: 0 };
+        volume.transaction(|tx| tx.put_metadata(extra, b"unexpected")).unwrap();
+        let storage = volume.into_storage();
+        let reopen = || crate::kifs_v3::KifsVolume::open(storage.clone(), [3; 32]).unwrap();
+        assert!(matches!(kifs_import::trial_mount(reopen(), DEFAULT_VOLUME_BLOCKS, &mut no_bytes()), Err(Errno::EIO)));
+        let mut volume = reopen();
+        volume.transaction(|tx| {
+            tx.remove(extra)?;
+            tx.put_block(ino, 0, &[7; crate::kifs_v3::BLOCK_BYTES])
+        }).unwrap();
+        assert!(matches!(kifs_import::trial_mount(reopen(), DEFAULT_VOLUME_BLOCKS, &mut no_bytes()), Err(Errno::EIO)));
+        let handle = open(b"/file", O_RDONLY, 0, 0, 0).unwrap();
+        let mut bytes = [0; 4];
+        assert_eq!(read(handle, 0, &mut bytes, no_bytes()), Ok(4));
+        assert_eq!(&bytes, b"good");
+        release_handle(handle);
+    }
+
+    #[test]
+    fn kifs_v3_staging_preserves_a_replayed_legacy_namespace_and_sparse_data() {
+        use crate::kifs_v3::{DEFAULT_VOLUME_BLOCKS, ROOT_INODE};
+        let _guard = TestGuard::acquire();
+        let image = empty_capacity_image(512 * 1024 * 1024, 32_768);
+        let digest = Sha256::digest(&image).into();
+        let mut source = image_host(&image);
+        let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        load_image(image.len() as u64, &mut source).unwrap();
+        enable_resizable_persistence(Box::new(journal.clone()), digest, &mut source).unwrap();
+        mkdir(b"/dev-work", 0o750, 31, 42).unwrap();
+        let handle = open(b"/dev-work/project", O_CREAT | O_RDWR, 0o640, 31, 42).unwrap();
+        const OFFSET: i64 = 64 * 1024;
+        assert_eq!(write(handle, OFFSET, b"saved block", &mut source), Ok(11));
+        release_handle(handle);
+        link(b"/dev-work/project", b"/alias").unwrap();
+        symlink(b"/dev-work/project", b"/symbolic", 31, 42).unwrap();
+        sync_persistence().unwrap();
+        let expected = lstat(b"/dev-work/project").unwrap();
+        let legacy = journal.0.lock().clone();
+
+        reset();
+        load_image(image.len() as u64, &mut source).unwrap();
+        enable_resizable_persistence(Box::new(journal.clone()), digest, &mut source).unwrap();
+        let scratch = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut candidate = stage_kifs_v3(scratch, DEFAULT_VOLUME_BLOCKS, [3; 32], &mut source).unwrap();
+        assert_eq!(*journal.0.lock(), legacy);
+        let (dir, _) = candidate.lookup(ROOT_INODE, b"dev-work").unwrap().unwrap();
+        let (id, metadata) = candidate
+            .walk(ROOT_INODE, split_components(b"/dev-work/project"))
+            .unwrap();
+        assert_eq!(id, expected.st_ino);
+        assert_eq!((metadata.mode, metadata.uid, metadata.gid, metadata.links, metadata.size, metadata.data_blocks),
+            (expected.st_mode, 31, 42, 2, OFFSET as u64 + 11, 1));
+        assert_eq!(candidate.lookup(ROOT_INODE, b"alias").unwrap().unwrap().0, id);
+        assert_eq!(candidate.lookup(dir, b"..").unwrap().unwrap().0, ROOT_INODE);
+        assert!(matches!(
+            candidate.walk(ROOT_INODE, split_components(b"/dev-work/missing")),
+            Err(Errno::ENOENT)
+        ));
+        assert!(matches!(
+            candidate.walk(ROOT_INODE, split_components(b"/dev-work/project/child")),
+            Err(Errno::ENOTDIR)
+        ));
+        let mut data = [1; 13];
+        assert_eq!(candidate.read_file(id, OFFSET as u64 - 2, &mut data), Ok(13));
+        assert_eq!(&data, b"\0\0saved block");
+        let (symlink, _) = candidate.lookup(ROOT_INODE, b"symbolic").unwrap().unwrap();
+        let mut target = [0; 64];
+        let length = candidate.read_link(symlink, &mut target).unwrap();
+        assert_eq!(&target[..length], b"/dev-work/project");
+        let volume = candidate.into_volume();
+        assert_eq!(volume.usage().data_blocks, 1);
+        let storage = volume.into_storage();
+
+        assert_eq!(mount_kifs_v3(Box::new(storage.clone()), [4; 32]), Err(Errno::EIO));
+        assert_eq!(*journal.0.lock(), legacy);
+        mount_kifs_v3(Box::new(storage.clone()), [3; 32]).unwrap();
+        assert_eq!(lstat(b"/dev-work/project").unwrap().st_ino, id);
+        assert!(matches!(lstat(b"/dev-work/missing"), Err(Errno::ENOENT)));
+        assert_eq!(readlink(b"/symbolic", &mut target), Ok(length));
+        assert_eq!(&target[..length], b"/dev-work/project");
+        let handle = open(b"/dev-work/project", O_RDONLY, 0, 0, 0).unwrap();
+        let linked_handle = open(b"/alias", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(handle, linked_handle);
+        assert_eq!(fstat(handle).unwrap().st_ino, id);
+        assert_eq!(read(handle, OFFSET - 2, &mut data, no_bytes()), Ok(13));
+        assert_eq!(&data, b"\0\0saved block");
+        assert!(!release_handle(linked_handle));
+        assert!(release_handle(handle));
+        assert!(!handle_is_live(handle));
+
+        let stream = opendir(b"/dev-work").unwrap();
+        assert_eq!(readdir(stream, &mut target), Ok(Some((id, DT_REG, 7))));
+        assert_eq!(&target[..7], b"project");
+        assert_eq!(readdir(stream, &mut target), Ok(None));
+        closedir(stream).unwrap();
+        let (_, cookie, exhausted) = getdents64(b"/dev-work", &mut target[..24], 0, &[]).unwrap();
+        assert_eq!((cookie, exhausted), (1, false));
+        let (_, cookie, exhausted) = getdents64(b"/dev-work", &mut target, cookie, &[]).unwrap();
+        assert_eq!((cookie, exhausted), (3, true));
+
+        let path = b"/dev-work/persisted";
+        let handle = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o640, 31, 42).unwrap();
+        assert_eq!(write(handle, 0, b"new state", no_bytes()), Ok(9));
+        sync_persistence().unwrap();
+        let number = fstat(handle).unwrap().st_ino;
+        fchmod(handle, 0o751).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_mode, S_IFREG | 0o751);
+        assert_eq!(truncate_handle(handle, -1, no_bytes()), Err(Errno::EINVAL));
+        assert!(release_handle(handle));
+        assert_eq!(open(path, O_CREAT | O_EXCL | O_WRONLY, 0o640, 31, 42), Err(Errno::EEXIST));
+        // A mapping retains the last unlinked file after descriptor close.
+        let available = statfs(b"/").unwrap().f_bfree;
+        let detached = open(b"/detached", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        write(detached, 0, b"held", no_bytes()).unwrap();
+        pin_mapping(detached).unwrap();
+        unlink(b"/detached").unwrap();
+        assert!(release_handle(detached));
+        assert_eq!(fstat(detached).unwrap().st_nlink, 0);
+        assert!(statfs(b"/").unwrap().f_bfree < available);
+        assert!(unpin_mapping(detached));
+        assert_eq!(statfs(b"/").unwrap().f_bfree, available);
+
+        // Drop the kernel without closing two unlinked files. Reopening
+        // the volume must return their charges without touching linked data.
+        for name in [b"/abandoned-a", b"/abandoned-b"] {
+            let abandoned = open(name, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+            write(abandoned, 0, b"abandoned", no_bytes()).unwrap();
+            unlink(name).unwrap();
+        }
+        mount_kifs_v3(Box::new(storage), [3; 32]).unwrap();
+        assert_eq!(statfs(b"/").unwrap().f_bfree, available);
+        assert!(matches!(lstat(b"/abandoned-a"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/abandoned-b"), Err(Errno::ENOENT)));
+        let handle = open(path, O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_ino, number);
+        assert_eq!(read(handle, 0, &mut data, no_bytes()), Ok(9));
+        assert_eq!(&data[..9], b"new state");
+        assert!(release_handle(handle));
+    }
+
+    #[test]
+    fn development_image_has_independent_entry_headroom_and_lazy_resident_metadata() {
+        let _guard = TestGuard::acquire();
+        const BYTES: u64 = 512 * 1024 * 1024;
+        const ENTRIES: u32 = 65_536;
+        set_image_capacity(BYTES).unwrap();
+        // Match the old shell's used-inode count with a payload-free tree.
+        for bucket in 0..270 {
+            let dir = alloc::format!("/seed-{bucket}");
+            mkdir(dir.as_bytes(), 0o755, 0, 0).unwrap();
+            for entry in 0..99 {
+                let path = alloc::format!("{dir}/entry-{entry}");
+                let fd = open(path.as_bytes(), O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+                release_handle(fd);
+            }
+        }
+        for entry in 0..15 {
+            let path = alloc::format!("/seed-file-{entry}");
+            let fd = open(path.as_bytes(), O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+            release_handle(fd);
+        }
+        let legacy_image = drain_container_up_to(64 * 1024, 10 * 1024 * 1024, &mut no_bytes());
+        set_export_inode_capacity(ENTRIES).unwrap();
+        let image = drain_container_up_to(64 * 1024, 10 * 1024 * 1024, &mut no_bytes());
+        let legacy_journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let journal = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut observations = Vec::new();
+        for (image, journal) in [(&legacy_image, legacy_journal), (&image, journal.clone())] {
+            reset();
+            let digest = Sha256::digest(image).into();
+            let mut source = image_host(image);
+            load_image(image.len() as u64, &mut source).unwrap();
+            enable_resizable_persistence(Box::new(journal), digest, &mut source).unwrap();
+            observations.push((statfs(b"/").unwrap(), ROOTFS_METADATA.snapshot().live));
+        }
+        let (legacy, legacy_metadata) = observations[0];
+        let (before, before_metadata) = observations[1];
+        assert_eq!(legacy.f_blocks, BYTES / 4096);
+        assert_eq!(before.f_blocks, legacy.f_blocks);
+        assert_eq!((legacy.f_files, before.f_files), (32_768, u64::from(ENTRIES)));
+        assert_eq!((legacy.f_ffree, before.f_ffree), (5_747, 38_515));
+        assert_eq!(before_metadata, legacy_metadata);
+        assert!(image.len() < 10 * 1024 * 1024);
+
+        for bucket in 0..60 {
+            let dir = alloc::format!("/bucket-{bucket}");
+            mkdir(dir.as_bytes(), 0o700, 0, 0).unwrap();
+            for entry in 0..100 {
+                let path = alloc::format!("{dir}/entry-{entry}");
+                let fd = open(path.as_bytes(), O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+                release_handle(fd);
+            }
+        }
+        let filled = statfs(b"/").unwrap();
+        assert_eq!(before.f_ffree - filled.f_ffree, 6_060);
+        assert!(filled.f_bfree * 4096 > 490 * 1024 * 1024);
+        std::println!("resident metadata admission bytes: legacy boot {legacy_metadata}, development boot {before_metadata}, filled {}",
+            ROOTFS_METADATA.snapshot().live);
+        unlink(b"/bucket-0/entry-0").unwrap();
+        assert_eq!(statfs(b"/").unwrap().f_ffree, filled.f_ffree + 1);
+        let fd = open(b"/bucket-0/replacement", O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        release_handle(fd);
+        assert_eq!(statfs(b"/").unwrap().f_ffree, filled.f_ffree);
+        let ino = lstat(b"/bucket-0/replacement").unwrap().st_ino;
+        sync_persistence().unwrap();
+
+        reset();
+        let mut source = image_host(&image);
+        load_image(image.len() as u64, &mut source).unwrap();
+        enable_resizable_persistence(Box::new(journal), Sha256::digest(&image).into(), &mut source).unwrap();
+        assert_eq!(lstat(b"/bucket-0/replacement").unwrap().st_ino, ino);
+        assert_eq!(statfs(b"/").unwrap().f_ffree, filled.f_ffree);
+    }
+
+    #[test]
     fn persistent_image_hardlinks_share_inodes_across_recovery_and_checkpoint() {
         use crate::kandelo_image_write::{Content, KandeloImageConfig, KandeloImageWriter, NoContent};
         let _guard = TestGuard::acquire();
@@ -13343,6 +12853,20 @@ mod tests {
             crate::kandelo_image_fs::unwrap_vfsi(&checkpoint).unwrap(),
         ).unwrap();
         assert_eq!(filesystem.statfs().unwrap().f_bfree, 0);
+        // This legacy checkpoint needs KIFS v2 to represent its 9 GiB hole.
+        // Upgrading the full computer must copy only allocated blocks.
+        assert_eq!(filesystem.geometry().version, crate::kandelo_image_fs::KANDELO_IMAGE_EXTENDED_VERSION);
+        let sparse_inode = lstat(b"/sparse").unwrap().st_ino;
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        stage_saved_kifs_v3(target.clone(), true, [8; 32], &mut source).unwrap();
+        assert!(target.0.lock().len() < 1024 * 1024);
+        mount_kifs_v3(Box::new(target), [8; 32]).unwrap();
+        assert_eq!(lstat(b"/sparse").unwrap().st_ino, sparse_inode);
+        bytes.fill(1);
+        assert_eq!(read_file_at(b"/sparse", high as i64, &mut bytes, no_bytes()), Ok(8));
+        assert_eq!(bytes, [0; 8]);
+        assert_eq!(read_file_at(b"/base", 0, &mut bytes, no_bytes()), Ok(8));
+        assert_eq!(bytes, [b's', 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -14247,8 +13771,10 @@ mod tests {
         let image = empty_capacity_image(CAPACITY, 35);
         let mut source = image_host(&image);
         assert_eq!(loaded_image_capacity_bytes(), None);
+        assert_eq!(mounted_format_version(), None);
         load_image(image.len() as u64, &mut source).unwrap();
         assert_eq!(loaded_image_capacity_bytes(), Some(CAPACITY));
+        assert_eq!(mounted_format_version(), Some(1));
         assert!(export_capacity_bytes(&mut source).unwrap() > CAPACITY);
         set_image_capacity(8 * 1024 * 1024).unwrap();
         assert_eq!(loaded_image_capacity_bytes(), Some(CAPACITY));
@@ -14260,6 +13786,7 @@ mod tests {
         assert_eq!(statfs(b"/").unwrap().f_blocks, CAPACITY / 4096);
         reset();
         assert_eq!(loaded_image_capacity_bytes(), None);
+        assert_eq!(mounted_format_version(), None);
     }
 
     #[test]
@@ -15959,11 +15486,12 @@ mod tests {
         image
     }
 
-    fn tiny_vfs_with_growth_capacity(capacity: u64) -> Vec<u8> {
+    fn tiny_vfs_with_capacity(bytes: u64, inodes: u32) -> Vec<u8> {
         let original = tiny_vfs_described().to_vec();
         let mut source = image_host(&original);
         load_image(original.len() as u64, &mut source).unwrap();
-        set_image_capacity(capacity).unwrap();
+        set_image_capacity(bytes).unwrap();
+        set_export_inode_capacity(inodes).unwrap();
         let image = drain_container(8192, &mut source);
         reset();
         image
@@ -17027,6 +16555,7 @@ mod tests {
         reset();
         let mut exported_bytes = image_host(&exported);
         load_image(exported.len() as u64, &mut exported_bytes).unwrap();
+        assert_eq!(mounted_format_version(), Some(2));
         let handle = open(b"/large", O_RDONLY, 0, 0, 0).unwrap();
         assert_eq!(fstat(handle).unwrap().st_size, offset as u64 + 4);
         let mut bytes = [1u8; 6];
@@ -17944,7 +17473,7 @@ mod tests {
     #[test]
     fn accepted_timestamp_and_data_batches_drain_at_the_ordinary_io_limit() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_growth_capacity(2 * 1024 * 1024);
+        let image = tiny_vfs_with_capacity(2 * 1024 * 1024, 128);
         let digest: [u8; 32] = Sha256::digest(&image).into();
         let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         let mut source = image_host(&image);
@@ -18016,7 +17545,7 @@ mod tests {
     #[test]
     fn resizable_timestamp_writeback_bounds_dirty_inodes() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_growth_capacity(2 * 1024 * 1024);
+        let image = tiny_vfs_with_capacity(2 * 1024 * 1024, 128);
         let base_digest: [u8; 32] = Sha256::digest(&image).into();
         let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         let mut image_bytes = image_host(&image);
@@ -18077,7 +17606,7 @@ mod tests {
     #[test]
     fn failed_timestamp_slot_writeback_preserves_prior_dirty_data() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_growth_capacity(2 * 1024 * 1024);
+        let image = tiny_vfs_with_capacity(2 * 1024 * 1024, 128);
         let base_digest: [u8; 32] = Sha256::digest(&image).into();
         let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         let fail_writes = Arc::new(AtomicBool::new(false));
@@ -19431,6 +18960,13 @@ mod tests {
     where
         F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
     {
+        drain_container_up_to(chunk, 4 * 1024 * 1024, byte_source)
+    }
+
+    fn drain_container_up_to<F>(chunk: usize, limit: usize, byte_source: &mut F) -> Vec<u8>
+    where
+        F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+    {
         let mut out = Vec::new();
         let mut offset = 0i64;
         loop {
@@ -19442,7 +18978,7 @@ mod tests {
             }
             out.extend_from_slice(&buf[..n]);
             offset += n as i64;
-            assert_not_spinning(out.len());
+            assert!(out.len() <= limit, "container export crossed the {limit}-byte test bound");
         }
         out
     }
@@ -20899,4 +20435,33 @@ mod tests {
         assert!(export_image_read(-1, &mut buf, &mut no_bytes()).is_err());
     }
 
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct StatStamp {
+    pub route: u64,
+    pub pathname: u64,
+    pub inode: u64,
+}
+
+static STAT_ROUTE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn revoke_stat_routes() {
+    let _ = STAT_ROUTE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |route| route.checked_add(1));
+}
+
+pub(crate) fn stat_stamp(inode: u64) -> Option<StatStamp> {
+    if !is_enabled() { return None; }
+    let route = STAT_ROUTE.load(Ordering::Acquire);
+    if route == u64::MAX { return None; }
+    ROOTFS.with(|state| state.mounted_filesystem().stat_stamp(route, inode))
+}
+
+pub(crate) fn write_stat_lease_buckets(
+    inode: u64, expected: StatStamp, out: &mut [u8],
+) -> Option<usize> {
+    let route = STAT_ROUTE.load(Ordering::Acquire);
+    if route == u64::MAX || route != expected.route || !is_enabled() { return None; }
+    ROOTFS.with(|state| state.mounted_filesystem().write_stat_lease_buckets(inode, expected, out))
 }

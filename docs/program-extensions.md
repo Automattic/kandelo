@@ -137,6 +137,37 @@ program's libc marshals 600.
 See [optional source-line maps](fork-instrumentation.md#optional-source-line-maps)
 and the [Rust debugging workflow](rust-target.md#source-diagnostics-and-backtraces).
 
+## Stat cache version 1
+
+Module `kandelo.stat-cache.v1` supplies `__kandelo_stat_cache_v1`:
+
+```text
+(path: pointer, output: i32, request: i32) -> i32
+```
+
+The low eight bits of `request` are the ordinary `stat`, `lstat`, or
+`fstatat` syscall number. For `fstatat` the upper 24 bits carry its flags
+and the directory argument is implicitly `AT_FDCWD`. The path is a guest
+C string. A return of 1 writes the ordinary memory32 stat record to
+`output`. A return of 0 leaves the output and guest errno alone. The SDK
+then uses the ordinary syscall, including all error and signal handling.
+Memory64 and native engines without the accelerator supply the 0 result.
+
+The kernel certifies successful results for exact regular-file names on
+KIFS v3. It checks pathname routing, search permissions, the process
+credentials and cwd, and mount and inode generations. The host publishes
+that detached result after request completion and closes the publication
+before subsequent kernel ingress. One bounded publication per computer
+can serve the exact process generation that holds its token. A later
+mount, pathname, credential or inode change invalidates the affected
+results. Fork children sharing an address space, pthreads, and other
+ineligible requests use the syscall path.
+
+The SDK adds this import to memory32 programs that link the syscall glue.
+Those builds require a host that declares this extension. Existing
+ABI-56 programs keep their original admission and syscall behavior.
+The extension does not change the filesystem disk format.
+
 ## Shared-memory execution and private growth
 
 A grouped executable requires the shared memory import

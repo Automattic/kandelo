@@ -3,7 +3,9 @@ import { OpfsOverlayStorageFile } from "../../../../../host/src/vfs/overlay-stor
 import { ERRNO } from "../../../../../host/src/generated/abi";
 import { openOpfsFileReference } from "../../../../../host/src/vfs/opfs-file-reference";
 import { StorageCloseLedger } from "../../../../../host/src/storage-close-ledger";
-import { createStorageHasher } from "../../../../../host/src/vfs/overlay-seal-codec";
+import { createOverlayActivationCodec } from "../../../../../host/src/vfs/overlay-activation-codec";
+import { createOverlaySealCodec, createStorageHasher } from "../../../../../host/src/vfs/overlay-seal-codec";
+import { inspectOpfsJournalBinding } from "../../../../../host/src/vfs/opfs-journal-binding";
 import type { ImageCodecProgress, ImageCodecRequest, ImageCodecResponse } from "./persistent-image-codec-protocol";
 
 const controller = new AbortController();
@@ -62,7 +64,6 @@ async function run(job: Extract<ImageCodecRequest, { type: "write" | "inspect" |
   let closed = false;
   let reply: ImageCodecResponse;
   let filesystem: KandeloImageFs | undefined;
-  let memoryPages: number | undefined;
   try {
     controller.signal.throwIfAborted();
     if (job.type === "control") {
@@ -75,14 +76,19 @@ async function run(job: Extract<ImageCodecRequest, { type: "write" | "inspect" |
       reply = { type: "controlled", result, closed: true };
     } else if (job.type === "inspect") {
       if (!(job.prefix instanceof Uint8Array) || job.prefix.length > 4096) throw new Error("Persistent image header probe is invalid");
-      const inspected = KandeloImageFs.inspectPersistentImageState(job.moduleBytes, job.physicalLength,
+      const inspected = KandeloImageFs.openPersistentImageInspector(job.moduleBytes, job.physicalLength,
         (offset, destination) => {
           const bytes = job.prefix.subarray(offset, offset + destination.length);
           destination.set(bytes);
           return bytes.length;
         }, job.identitySha256, job.policy);
       const payloadLength = inspected.payloadLength;
-      memoryPages = inspected.memoryPages;
+      filesystem = inspected.filesystem;
+      if (job.journalName !== undefined) {
+        const call = (operation: number, bytes: Uint8Array) => inspected.filesystem.overlayActivationCodecCall(operation, bytes);
+        await inspectOpfsJournalBinding(job.journalName, job.identitySha256,
+          createOverlayActivationCodec(call), () => createOverlaySealCodec(call));
+      }
       controller.signal.throwIfAborted();
       reply = { type: "inspected", payloadLength, physicalLength: job.physicalLength, closed: true };
     } else if (job.type === "stage") {
@@ -139,7 +145,7 @@ async function run(job: Extract<ImageCodecRequest, { type: "write" | "inspect" |
   }
   try {
     if (job.observeMemory) {
-      memoryPages ??= filesystem?.getMemoryPages();
+      const memoryPages = filesystem?.getMemoryPages();
       if (memoryPages !== undefined) reply = { ...reply, memoryUsage: { wasmPages: memoryPages, inputWindowPeak } };
     }
   } catch (error) {
