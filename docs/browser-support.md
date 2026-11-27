@@ -828,7 +828,7 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   follow-up work.
 
 ### Mouse input (`/dev/input/mice`)
-- Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
+- Canvas input sends relative PS/2 packets to the kernel worker through `mouse_inject`. A Modeset motion that exceeds the signed-byte range sends its ordered packets together. The worker calls `kernel_inject_mouse_event` for every packet and schedules one reader wake pass after the batch. The same kernel queue supplies `read("/dev/input/mice", …)`. The absolute evdev feed and button transitions keep their existing order.
 - **Pointer Lock recommended.** The DOOM demo calls `canvas.requestPointerLock()` on first click so the browser delivers unbounded relative motion (`MouseEvent.movementX/Y`). Without pointer lock, `clientX/Y` deltas clamp at the canvas edges and feel sluggish for first-person controls. Press `Esc` to release the lock.
 - Browser `deltaY` is positive-down; the demo inverts it before injection so the kernel queue holds canonical PS/2 (positive-up) deltas.
 - Browser `MouseEvent.button` (0=L, 1=M, 2=R) is mapped to PS/2 button bits (bit0=L, bit1=R, bit2=M). Right-click suppresses the browser context menu via `contextmenu` `preventDefault()`.
@@ -841,6 +841,7 @@ pointer buttons; queued paste keys are discarded. A modifier-click reconciles
 the keyboard state before the display forwards its button press. The Modeset
 pane releases both PS/2 and evdev buttons on pointer cancellation, lost pointer
 capture, window blur, and input teardown, retaining the last absolute position.
+See [the pointer input measurements](measurements/2026-11-27-pointer-input-batch.md).
 
 ### Audio output (`/dev/dsp`)
 

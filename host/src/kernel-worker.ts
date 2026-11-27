@@ -95,7 +95,7 @@ import { connectorModeSize } from "./dri/kms-registry";
 import { VblankClock } from "./dri/vblank-clock";
 import { isJavaScriptCoreUserAgent } from "./runtime-memory-profile";
 import { getCanvasWebGl2Context } from "./webgl/canvas-context";
-import { ABSOLUTE_POINTER_EXTENT } from "./input/input-source.js";
+import { ABSOLUTE_POINTER_EXTENT, type MouseInputPacket } from "./input/input-source.js";
 import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
@@ -31718,6 +31718,12 @@ export class CentralizedKernelWorker {
    * `read()` or `poll()` on the device is woken on the next retry tick.
    */
   injectMouseEvent(dx: number, dy: number, buttons: number): void {
+    this.injectMouseEventBatch([{ dx, dy, buttons }]);
+  }
+
+  /** Append all packets of one relative browser motion before waking readers. */
+  injectMouseEventBatch(packets: readonly MouseInputPacket[]): void {
+    if (packets.length === 0) return;
     this.#runOrDeferKernelEntry(
       "mouse input and wake",
       (entry) => {
@@ -31725,7 +31731,7 @@ export class CentralizedKernelWorker {
           | ((dx: number, dy: number, buttons: number) => void)
           | undefined;
         if (!inject) return;
-        inject(dx, dy, buttons);
+        for (const { dx, dy, buttons } of packets) inject(dx, dy, buttons);
         this.scheduleWakeBlockedRetries(entry);
       },
     );

@@ -4791,7 +4791,8 @@ function handlePtyResize(msg: Extract<MainToKernelMessage, { type: "pty_resize" 
 }
 
 function handleMouseInject(msg: Extract<MainToKernelMessage, { type: "mouse_inject" }>) {
-  kernelWorker.injectMouseEvent(msg.dx, msg.dy, msg.buttons);
+  if ("packets" in msg) kernelWorker.injectMouseEventBatch(msg.packets);
+  else kernelWorker.injectMouseEvent(msg.dx, msg.dy, msg.buttons);
 }
 
 /**

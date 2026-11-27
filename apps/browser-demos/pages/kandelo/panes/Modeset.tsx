@@ -208,6 +208,12 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       injectMouseEvent: (dx, dy, bts) => {
         handleRef.current?.sendMouseEvent(dx, dy, bts);
       },
+      injectMouseEventBatch: packets => {
+        const display = handleRef.current;
+        if (!display) return;
+        if (display.sendMouseEventBatch) display.sendMouseEventBatch(packets);
+        else for (const { dx, dy, buttons } of packets) display.sendMouseEvent(dx, dy, buttons);
+      },
     };
     // The framebuffer dimensions the pointer math must map into. Do NOT
     // read `canvas.width` here: after `transferControlToOffscreen()` the
