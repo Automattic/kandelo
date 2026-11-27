@@ -1,5 +1,7 @@
 /** Import namespaces are required interfaces, not optional metadata to ignore. */
 import {
+  KGPU_IMPORT,
+  KGPU_MODULE,
   KLOG_IMPORT,
   KLOG_MODULE,
   RESERVED_MODULE_PREFIX,
@@ -20,13 +22,14 @@ interface FunctionImport {
 const EXTENSION_IMPORTS: ReadonlyMap<string, string> = new Map([
   [STACK_MODULE, STACK_IMPORT],
   [KLOG_MODULE, KLOG_IMPORT],
+  [KGPU_MODULE, KGPU_IMPORT],
 ]);
 const EXTENSION_IMPORT_NAMES: ReadonlySet<string> = new Set([...EXTENSION_IMPORTS.values(), MEMORY_GROUP_GROWTH_IMPORT]);
 const implemented = new Set<string>(EXTENSION_IMPORTS.keys());
 
 /** Artifact policy for the explicitly selected shared-memory backend. */
 export const GROUPED_WORKER_EXTENSIONS: ReadonlySet<string> = new Set([
-  STACK_MODULE, KLOG_MODULE, MEMORY_GROUP_MODULE, MEMORY_GROUP_GROWTH_MODULE,
+  STACK_MODULE, KLOG_MODULE, KGPU_MODULE, MEMORY_GROUP_MODULE, MEMORY_GROUP_GROWTH_MODULE,
 ]);
 
 /** Whether an import names an extension function, from any module. */

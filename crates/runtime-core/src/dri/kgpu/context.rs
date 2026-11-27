@@ -83,6 +83,10 @@ impl Contexts {
         self.map.remove(&id);
     }
 
+    pub fn ids(&self) -> Vec<u32> {
+        self.map.keys().copied().collect()
+    }
+
     pub fn owned_by(&self, pid: u32) -> Vec<u32> {
         self.map
             .iter()

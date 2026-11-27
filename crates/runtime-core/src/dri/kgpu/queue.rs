@@ -53,6 +53,12 @@ impl Outbox {
         self.backlog.try_reserve(1).map_err(|_| Errno::ENOMEM)
     }
 
+    /// Whether the outbox holds no drainable record. Records wait in the
+    /// backlog only behind a non-empty outbox, so this covers the backlog.
+    pub fn is_empty(&self) -> bool {
+        self.ready.is_empty()
+    }
+
     /// Whether a record of `len` bytes would go straight to the outbox.
     pub fn fits(&self, len: usize) -> bool {
         self.backlog.is_empty() && self.ready_bytes + len <= OUTBOX_CAPACITY

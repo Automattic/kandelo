@@ -60,8 +60,10 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  EXTENSION_REQUEST_KGPU_V1,
   EXTENSION_REQUEST_KLOG_V1,
   HOST_INTERCEPTED_SYSCALLS,
+  KGPU_OP_ARG_SIZES,
   POSIX_ARG_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
   PROCESS_FORK_MODE_VFORK,
@@ -147,6 +149,9 @@ import { trapProcessWorker } from "./fork-worker-import-exceptions";
 import { createHeapSafepointImport } from "./heap-safepoint";
 import { createStackCaptureImport } from "./wasm-stack-capture";
 import {
+  KGPU_IMPORT,
+  KGPU_INVALID_ARGUMENT,
+  KGPU_MODULE,
   KLOG_IMPORT,
   KLOG_INVALID_ARGUMENT,
   KLOG_MODULE,
@@ -1191,8 +1196,27 @@ export function buildDlopenImports(
     ]);
     return errno !== 0 ? -errno : result;
   };
+  // `kandelo.kgpu.v1`: the kernel owns the GPU device, so the import is
+  // request 602 on this worker's own channel, staged by the kernel through
+  // the request's InOut descriptor like klog's buffer. The size check here
+  // is not a policy decision (the kernel re-checks every op): it bounds what
+  // the host stages for an arg-sized descriptor to the op's struct (R11).
+  // No flag forbids the host's EAGAIN retry: a submit that meets a full
+  // outbox must be re-executed after a drain, not answered.
+  const kgpuImport = (arg: number | bigint, size: number, op: number): number => {
+    if (!Object.hasOwn(KGPU_OP_ARG_SIZES, op) || KGPU_OP_ARG_SIZES[op] !== size) {
+      return KGPU_INVALID_ARGUMENT;
+    }
+    const { result, errno } = invokeChannelSyscall(EXTENSION_REQUEST_KGPU_V1, [
+      arg,
+      size,
+      op,
+    ]);
+    return errno !== 0 ? -errno : result;
+  };
   const extensionImports: WebAssembly.Imports = {
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
+    [KGPU_MODULE]: { [KGPU_IMPORT]: kgpuImport },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
         [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,

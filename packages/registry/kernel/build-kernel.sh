@@ -43,6 +43,7 @@ wasm_require_exports "$OUT" \
     kernel_create_process \
     kernel_create_process_with_stdio \
     kernel_dequeue_signal \
+    kernel_device_pinned_frames \
     kernel_drain_wait_completions \
     kernel_entropy_read_cancel \
     kernel_entropy_read_step \
@@ -99,6 +100,9 @@ wasm_require_exports "$OUT" \
     kernel_ipc_shmdt_for_process \
     kernel_ipc_shmdt_for_task \
     kernel_is_fd_nonblock \
+    kernel_kgpu_complete \
+    kernel_kgpu_drain \
+    kernel_kgpu_set_renderer \
     kernel_kms_cursor_configure \
     kernel_kms_cursor_read \
     kernel_mark_process_signaled \

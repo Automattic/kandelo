@@ -910,6 +910,13 @@ export interface KernelCallbacks {
    */
   getKmsCrtcIds?: () => number[];
   /**
+   * The kernel's kgpu outbox went from empty to non-empty
+   * (`host_kgpu_kick`). Called synchronously from inside the kernel entry
+   * that queued the record, so it must not re-enter the kernel: it only
+   * schedules a later entry that drains the outbox until it is empty.
+   */
+  onKgpuKick?: () => void;
+  /**
    * Notify the embedder that GL has claimed the canvas for `crtcId`.
    * The KMS vblank pump uses this to skip the CPU `putImageData` blit
    * for canvases now painted directly by WebGL2. Idempotent.
@@ -4487,6 +4494,9 @@ export class WasmPosixKernel {
           try { this.kms.rmFb(fb_id); }
           catch (error) { this.driCleanupFailed(error, pid, "kms_rmfb", `framebuffer ${fb_id}`); }
           return DRI_CLEANUP_COMPLETE;
+        },
+        host_kgpu_kick: (): void => {
+          this.callbacks.onKgpuKick?.();
         },
         host_kms_set_gamma: (crtc_id: number, lut_ptr: KernelPointer, entries: number): void => {
           // The LUT the CRTC's output passes through (GAMMA_LUT): `entries`

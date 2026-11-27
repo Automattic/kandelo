@@ -838,6 +838,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_create_process",
   "kernel_create_process_with_stdio",
   "kernel_dequeue_signal",
+  "kernel_device_pinned_frames",
   "kernel_drain_wait_completions",
   "kernel_entropy_read_cancel",
   "kernel_entropy_read_step",
@@ -895,6 +896,9 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_ipc_shmdt_for_process",
   "kernel_ipc_shmdt_for_task",
   "kernel_is_fd_nonblock",
+  "kernel_kgpu_complete",
+  "kernel_kgpu_drain",
+  "kernel_kgpu_set_renderer",
   "kernel_kms_cursor_configure",
   "kernel_kms_cursor_read",
   "kernel_mark_process_signaled",
@@ -2314,6 +2318,42 @@ export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [
 export const EXTENSION_REQUEST_KLOG_V1 = 600 as const;
 
 export const EXTENSION_REQUEST_MEMORY_GROUP_GROW_V1 = 601 as const;
+
+/* Kernel request serving the kandelo.kgpu.v1 program extension
+* (kernel-host surface; see shared::extension_requests). */
+export const EXTENSION_REQUEST_KGPU_V1 = 602 as const;
+
+/* The argument struct size each kgpu op requires (shared::kgpu::op_arg_size).
+* The import answers -22 for any other op or size before issuing the
+* request, which bounds what the host stages; the kernel re-checks. */
+export const KGPU_OP_ARG_SIZES: Readonly<Record<number, number>> = Object.freeze({
+  1: 8,
+  2: 8,
+  3: 40,
+  4: 24,
+});
+
+export const KGPU_PROTOCOL_VERSION = 1 as const;
+export const KGPU_OP_CONTEXT_CREATE = 1 as const;
+export const KGPU_OP_CONTEXT_DESTROY = 2 as const;
+export const KGPU_OP_SUBMIT = 3 as const;
+export const KGPU_OP_WAIT = 4 as const;
+export const KGPU_ACCESS_READ = 1 as const;
+export const KGPU_ACCESS_WRITE = 2 as const;
+export const KGPU_MAX_BUFFERS = 64 as const;
+export const KGPU_MAX_STREAM = 1048576 as const;
+export const KGPU_MAX_EXTENTS = 4096 as const;
+export const KGPU_OUTBOX_CAPACITY = 262144 as const;
+export const KGPU_SUBMISSION_HEADER_SIZE = 24 as const;
+export const KGPU_BUFFER_HEADER_SIZE = 8 as const;
+export const KGPU_EXTENT_SIZE = 16 as const;
+export const KGPU_COMPLETION_SIZE = 24 as const;
+export const KGPU_SUBMISSION_SUBMIT = 1 as const;
+export const KGPU_SUBMISSION_CONTEXT_CREATE = 2 as const;
+export const KGPU_SUBMISSION_CONTEXT_DESTROY = 3 as const;
+export const KGPU_COMPLETION_RETIRED = 1 as const;
+export const KGPU_COMPLETION_CONTEXT_LOST = 2 as const;
+export const KGPU_COMPLETION_CONTEXT_READY = 3 as const;
 
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [

@@ -422,6 +422,10 @@ unsafe extern "C" {
     /// `lut_ptr` (kernel memory), then as many green and blue. `entries` 0
     /// clears the LUT (colors pass through unchanged).
     fn host_kms_set_gamma(crtc_id: u32, lut_ptr: *const u16, entries: u32);
+    // The kgpu outbox went from empty to non-empty (`HostIO::kgpu_kick`).
+    // Called from inside a kernel entry: the host schedules a later entry
+    // that calls `kernel_kgpu_drain` and must not re-enter the kernel here.
+    fn host_kgpu_kick();
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +532,10 @@ fn zeroed_wasm_stat() -> WasmStat {
 }
 
 impl HostIO for WasmHostIO {
+    fn kgpu_kick(&self) {
+        unsafe { host_kgpu_kick() }
+    }
+
     fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
         let result = unsafe { host_close(handle) };
         i32_to_result(result)
@@ -16648,7 +16656,72 @@ fn channel_kgpu(arg: *mut u8, size: i32, op: i32) -> i32 {
 /// drained outbox), and destroy the GPU contexts of retired images.
 fn settle_kgpu_waits() {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.kgpu_settle();
+    table.kgpu_settle(&WasmHostIO);
+}
+
+// ---------------------------------------------------------------------------
+// kgpu host adapter boundary
+// ---------------------------------------------------------------------------
+//
+// The kernel owns the GPU device (`crate::dri::kgpu`); the host GPU adapter
+// only moves records. Submission records leave through `kernel_kgpu_drain`
+// after a `host_kgpu_kick`; the executor's answers come back through
+// `kernel_kgpu_complete`. Both may wake parked guests or free outbox room for
+// a request the host is retrying, so the host drains wake events
+// (`kernel_drain_wakeup_events`) after either, in the same kernel entry.
+
+/// Copy whole queued submission records (`wasm_posix_shared::kgpu`
+/// submission wire) into `out`; returns the bytes written, 0 when the outbox
+/// is empty. The host calls this until it returns 0. A buffer of at least
+/// `OUTBOX_CAPACITY` (256 KiB) bytes always takes the first record; a
+/// smaller one may take none.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kgpu_drain(out_ptr: *mut u8, out_len: u32) -> u32 {
+    if out_ptr.is_null() {
+        return 0;
+    }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    table.kgpu_drain(out) as u32
+}
+
+/// Apply `len` bytes of executor completion records (`wasm_posix_shared::kgpu`
+/// completion wire). Returns 0, or a negative errno for a malformed batch,
+/// which changes nothing. A malformed batch means the host adapter and the
+/// kernel no longer agree, so the host treats it as a device fault and
+/// reports every context it knows of as lost.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kgpu_complete(in_ptr: *const u8, len: u32) -> i32 {
+    if in_ptr.is_null() && len != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    let records: &[u8] = if len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(in_ptr, len as usize) }
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.kgpu_complete(&WasmHostIO, records) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Whether the host has a renderer. Without one (`available == 0`, the
+/// default), context creation answers `ENODEV` instead of appearing to work.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kgpu_set_renderer(available: u32) {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.kgpu_set_renderer(available != 0);
+}
+
+/// Distinct group-memory frames that device pins hold, over every memory
+/// group: frames a device may still read or write, which the allocator will
+/// not reuse until the device releases them. Inspection only.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_device_pinned_frames() -> u32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    u32::try_from(table.device_pinned_frames()).unwrap_or(u32::MAX)
 }
 
 /// The calling task, as the waiting syscalls name it.

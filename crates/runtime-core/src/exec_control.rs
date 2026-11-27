@@ -809,6 +809,14 @@ pub(crate) mod tests {
             maximum: 0,
         }
     }
+    // Native tests run in parallel threads; each counts its own kicks.
+    std::thread_local! {
+        static KGPU_KICKS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    }
+    /// Take the number of `kgpu_kick` calls this thread's storage hosts saw.
+    pub(crate) fn take_kgpu_kicks() -> u32 {
+        KGPU_KICKS.with(|kicks| kicks.replace(0))
+    }
     macro_rules! noop {
         ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {$ (
             fn $name(&mut self, $($arg: $ty),*) -> $ret { NoopHost.$name($($arg),*) }
@@ -840,6 +848,9 @@ pub(crate) mod tests {
             fn bind_framebuffer(p: i32, a: usize, l: usize, w: u32, h: u32, s: u32, f: u32) -> ();
             fn unbind_framebuffer(p: i32) -> ();
             fn fb_write(p: i32, o: usize, b: &[u8]) -> ();
+        }
+        fn kgpu_kick(&self) {
+            KGPU_KICKS.with(|kicks| kicks.set(kicks.get() + 1));
         }
         fn group_memory_create(
             &mut self,

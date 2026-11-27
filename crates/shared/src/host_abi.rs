@@ -284,9 +284,11 @@ pub const EXTENSION_REQUEST_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(
         // kgpu op argument: one InOut struct whose length is the import's
-        // `size`. The kernel handler requires `size` to equal the op's struct
-        // size, but the host stages before the handler runs and this size
-        // rule has no ceiling, so staging itself is not yet bounded.
+        // `size`. The process worker's import answers -22 before issuing the
+        // request unless `size` is the op's struct size (Ruling R11), which
+        // bounds what it stages; the kernel handler re-checks. A request
+        // issued on a channel directly is bounded by scratch capacity, like
+        // any other argument-sized buffer.
         crate::extension_requests::KGPU_V1,
         [desc!(0, InOut, arg!(1), required)]
     ),

@@ -801,6 +801,19 @@ pub trait HostIO {
     /// applies it to everything the CRTC presents, cursor included.
     fn kms_set_gamma(&mut self, crtc_id: u32, lut: Option<&[u16]>) {}
 
+    /// The kgpu outbox went from empty to non-empty (`crate::dri::kgpu`).
+    ///
+    /// The kernel calls this synchronously, from inside the kernel entry
+    /// that queued the record, so the host must not re-enter the kernel
+    /// here: it schedules a later entry that calls `kernel_kgpu_drain` until
+    /// that returns 0. One kick covers every record queued until a drain
+    /// empties the outbox again, which is why the kernel does not repeat it.
+    ///
+    /// The default does nothing. A host without a GPU adapter never makes a
+    /// renderer available, so context creation fails with `ENODEV` and no
+    /// record is ever queued for it.
+    fn kgpu_kick(&self) {}
+
     /// True only after the host has negotiated a cursor presentation transport.
     fn kms_cursor_supported(&mut self) -> bool {
         false

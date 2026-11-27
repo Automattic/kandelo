@@ -661,6 +661,18 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     count: 1,
     why: "This exact optional export takes PID, TID, opaque resource token, u64 transaction and errno, then returns i32 status. These five scalars finish the already-reserved mapping; none is a kernel-memory pointer, borrowed byte range or scratch allocator authority. Actual normal kernel export signature is (i32,i32,i32,i64,i32)->i32.",
   },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.setKgpuRenderer::kernel-export-direct-use::set(available ? 1 : 0)",
+    disposition: "kernel-control",
+    count: 1,
+    why: "kernel_kgpu_set_renderer is (i32)->() and takes one boolean scalar inside an immediate entry. No kernel pointer, borrowed range or scratch authority crosses it.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.devicePinnedFrames::kernel-export-direct-use::count()",
+    disposition: "kernel-control",
+    count: 1,
+    why: "kernel_device_pinned_frames is ()->i32 and returns one inspection count inside an immediate entry. No kernel pointer, borrowed range or scratch authority crosses it.",
+  },
   // Kandelo exchange control calls: scalars in, a scalar status out; every
   // pointer-bearing exchange export goes through KernelScratchLease.
   reviewedScalarKernelExportCall(
@@ -1900,6 +1912,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#requireApiScratch::scratch-region-factory-call::allocateKernelScratchRegion( this.#memory, allocator, WasmPosixKernel.API_SCRATCH_SIZE, this.#kernelPtrWidth, "kernel public API scratch", this.#instance!, )',
     disposition: "scratch-core",
     why: "The public-wrapper scratch region binds the private Memory, exact gated instance, pointer width, and explicit 65,536-byte allocation before any temporary API transfer.",
+  },
+  {
+    key: 'host/src/kernel-worker.ts::CentralizedKernelWorker.#requireKgpuScratchRegion::scratch-region-factory-call::allocateKernelScratchRegion( this.#kernelMemory!, instance.exports.kernel_alloc_scratch as (size: number) => KernelPointer, KGPU_OUTBOX_CAPACITY, this.#kernelPointerWidth, "kernel kgpu scratch", this.#kernelInstance!, instance, )',
+    disposition: "scratch-core",
+    why: "The lazily created kgpu region allocates through the current entry's scope, binds the persistent gated generation, private Memory and the explicit outbox capacity, and is used only through synchronous checked leases for kernel_kgpu_drain and kernel_kgpu_complete.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#ensureAudioScratch::scratch-region-factory-call::allocateKernelScratchRegion( this.#memory, alloc, WasmPosixKernel.AUDIO_SCRATCH_SIZE, this.#kernelPtrWidth, "kernel audio scratch", this.#instance!, )',

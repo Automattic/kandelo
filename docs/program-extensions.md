@@ -164,21 +164,53 @@ carries. A program that links the GL driver imports this instead, so it is
 refused on a host that cannot serve it, and every other program keeps its
 base identity.
 
-**How the call reaches the kernel.** The process worker will serve the
-import by issuing kernel-host request `extension_requests::KGPU_V1` (602)
-on the calling thread's own channel. The kernel stages the argument
-through that request's descriptor in
+**How the call reaches the kernel.** The process worker, on Node and in
+browsers, serves the import by issuing kernel-host request
+`extension_requests::KGPU_V1` (602) on the calling thread's own channel.
+The kernel stages the argument through that request's descriptor in
 `host_abi::EXTENSION_REQUEST_DESCRIPTORS`, so no argument bytes pass
 through host code. The request number and descriptor are kernel-host
 surface, versioned by `HOST_ADAPTER_VERSION` (42), not by the program
 digest.
 
-**Status.** The interface is declared but not yet served. Neither the
-kernel nor the host implements request 602 or the import, so it is not in
-any implemented-extension list and admission refuses a program that
-requires it. A later slice-1 task adds the kernel handler and the worker
-import together with admission. The 602 descriptor sizes its buffer from
-the `size` argument without a ceiling; bounding host staging is open.
+**Bounded staging.** The descriptor sizes its buffer from `size`. Before
+issuing 602, the import answers `-22` unless `op` is 1 to 4 and `size` is
+that op's struct size, read from `KGPU_OP_ARG_SIZES`, which `dump-abi`
+generates from `wasm_posix_shared::kgpu` into `host/src/generated/abi.ts`.
+The host therefore never stages more than the largest op struct. The
+kernel checks the size again.
+
+**Blocking.** A wait parks in the kernel like any other kernel-owned wait.
+An op that finds the kernel's 256 KiB submission outbox full commits
+nothing and answers `EAGAIN` to the host. The import sets no flag that
+forbids the host's blocking retry, so the host re-executes the request once
+a drain frees room, and the guest sees only the final answer: the
+submission's real sequence number, or `-5` if its context was lost
+meanwhile.
+
+**The host GPU adapter.** The kernel owns the device, and the adapter only
+moves records:
+
+- The kernel calls the `host_kgpu_kick` import when its outbox goes from
+  empty to non-empty. The host must not re-enter the kernel inside that
+  call.
+- From a later kernel entry, the host calls `kernel_kgpu_drain` into a
+  buffer of at least `KGPU_OUTBOX_CAPACITY` bytes until it returns 0.
+- It delivers the executor's records through `kernel_kgpu_complete`. That
+  export returns 0, or a negative errno for a malformed batch, which applies
+  no record and loses every context.
+- After either call, the host drains the kernel's wake events, so freed room
+  or a decided wait reaches the guest.
+- `kernel_kgpu_set_renderer` says whether a renderer exists. Without one,
+  context creation answers `-19`.
+- `kernel_device_pinned_frames` counts the group frames that device pins
+  still hold.
+
+**Status.** The interface is served, and `kandelo.kgpu.v1` is in the
+implemented-extension and grouped-worker lists (Rust and TypeScript).
+Every op from a program outside a memory group answers `-95`. No host
+provides a renderer yet, so context creation answers `-19` until an
+embedder or a GPU worker supplies one.
 
 See [optional source-line maps](fork-instrumentation.md#optional-source-line-maps)
 and the [Rust debugging workflow](rust-target.md#source-diagnostics-and-backtraces).

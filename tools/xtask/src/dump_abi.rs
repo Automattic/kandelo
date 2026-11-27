@@ -4025,6 +4025,7 @@ fixedSize: {}, maxCallerSize: {} }},\n",
     ));
     out.push_str(&format!("export const EXTENSION_REQUEST_MEMORY_GROUP_GROW_V1 = {} as const;\n\n",
         shared::extension_requests::MEMORY_GROUP_GROW_V1));
+    out.push_str(&render_ts_kgpu());
     out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
     for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS
         .iter()
@@ -6124,6 +6125,83 @@ fn render_kgpu_stream_header() -> String {
         ));
     }
     out.push_str("#endif\n\n#endif /* KANDELO_KGPU_STREAM_H */\n");
+    out
+}
+
+/// The kgpu kernel-host constants a host needs: the request serving the
+/// extension, the import's argument-size precheck (Ruling R11), the drain
+/// buffer bound, and the submission and completion record layout. Derived
+/// from `wasm_posix_shared::kgpu` and the kernel device so the host never
+/// carries a hand copy.
+fn render_ts_kgpu() -> String {
+    use shared::kgpu::*;
+    let mut out = String::new();
+    out.push_str(&format!(
+        "/* Kernel request serving the kandelo.kgpu.v1 program extension\n\
+         * (kernel-host surface; see shared::extension_requests). */\n\
+         export const EXTENSION_REQUEST_KGPU_V1 = {} as const;\n\n",
+        shared::extension_requests::KGPU_V1
+    ));
+    out.push_str(
+        "/* The argument struct size each kgpu op requires (shared::kgpu::op_arg_size).\n\
+         * The import answers -22 for any other op or size before issuing the\n\
+         * request, which bounds what the host stages; the kernel re-checks. */\n\
+         export const KGPU_OP_ARG_SIZES: Readonly<Record<number, number>> = Object.freeze({\n",
+    );
+    for op in [
+        KGPU_OP_CONTEXT_CREATE,
+        KGPU_OP_CONTEXT_DESTROY,
+        KGPU_OP_SUBMIT,
+        KGPU_OP_WAIT,
+    ] {
+        out.push_str(&format!(
+            "  {op}: {},\n",
+            op_arg_size(op).expect("every kgpu op has a size")
+        ));
+    }
+    out.push_str("});\n\n");
+    for (name, value) in [
+        ("KGPU_PROTOCOL_VERSION", u64::from(KGPU_PROTOCOL_VERSION)),
+        ("KGPU_OP_CONTEXT_CREATE", KGPU_OP_CONTEXT_CREATE as u64),
+        ("KGPU_OP_CONTEXT_DESTROY", KGPU_OP_CONTEXT_DESTROY as u64),
+        ("KGPU_OP_SUBMIT", KGPU_OP_SUBMIT as u64),
+        ("KGPU_OP_WAIT", KGPU_OP_WAIT as u64),
+        ("KGPU_ACCESS_READ", u64::from(KGPU_ACCESS_READ)),
+        ("KGPU_ACCESS_WRITE", u64::from(KGPU_ACCESS_WRITE)),
+        ("KGPU_MAX_BUFFERS", u64::from(KGPU_MAX_BUFFERS)),
+        ("KGPU_MAX_STREAM", u64::from(KGPU_MAX_STREAM)),
+        ("KGPU_MAX_EXTENTS", u64::from(KGPU_MAX_EXTENTS)),
+        // The smallest drain buffer guaranteed to take a record.
+        (
+            "KGPU_OUTBOX_CAPACITY",
+            runtime_core::dri::kgpu::OUTBOX_CAPACITY as u64,
+        ),
+        ("KGPU_SUBMISSION_HEADER_SIZE", SUBMISSION_HEADER_SIZE as u64),
+        ("KGPU_BUFFER_HEADER_SIZE", BUFFER_HEADER_SIZE as u64),
+        ("KGPU_EXTENT_SIZE", EXTENT_SIZE as u64),
+        ("KGPU_COMPLETION_SIZE", COMPLETION_SIZE as u64),
+        ("KGPU_SUBMISSION_SUBMIT", SubmissionKind::Submit as u64),
+        (
+            "KGPU_SUBMISSION_CONTEXT_CREATE",
+            SubmissionKind::ContextCreate as u64,
+        ),
+        (
+            "KGPU_SUBMISSION_CONTEXT_DESTROY",
+            SubmissionKind::ContextDestroy as u64,
+        ),
+        ("KGPU_COMPLETION_RETIRED", CompletionKind::Retired as u64),
+        (
+            "KGPU_COMPLETION_CONTEXT_LOST",
+            CompletionKind::ContextLost as u64,
+        ),
+        (
+            "KGPU_COMPLETION_CONTEXT_READY",
+            CompletionKind::ContextReady as u64,
+        ),
+    ] {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
+    out.push('\n');
     out
 }
 

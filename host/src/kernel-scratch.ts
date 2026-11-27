@@ -179,6 +179,8 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_handle_guest_io",
   "kernel_inject_datagram",
   "kernel_ioctl",
+  "kernel_kgpu_complete",
+  "kernel_kgpu_drain",
   "kernel_kms_cursor_read",
   "kernel_memory_group_snapshot",
   "kernel_memory_group_storage_action",
@@ -369,6 +371,10 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_watch_fs_changes":
     case "kernel_drain_fs_changes":
     case "kernel_kms_cursor_read":
+    // Rust copies the drained records into, or decodes the completion batch
+    // out of, the lent bytes before returning and keeps no pointer.
+    case "kernel_kgpu_drain":
+    case "kernel_kgpu_complete":
     case "kernel_rootfs_stat_mode":
     case "kernel_rootfs_unlink_file":
     case "kernel_truncate":
@@ -541,6 +547,8 @@ function isKernelScratchExportName(
     case "kernel_ioctl":
     case "kernel_ipc_shm_read_chunk":
     case "kernel_ipc_shm_write_chunk":
+    case "kernel_kgpu_complete":
+    case "kernel_kgpu_drain":
     case "kernel_mq_drain_notification":
     case "kernel_pipe2":
     case "kernel_pipe_read":

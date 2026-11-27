@@ -438,4 +438,14 @@ impl MemoryGroups {
     pub fn device_pinned_frames(&self, group: MemoryGroupId) -> Result<usize, Errno> {
         Ok(self.storage(group)?.device_pinned_frames())
     }
+
+    /// Distinct device-pinned frames summed over every group with storage.
+    /// Groups never share frames, so the sum counts no frame twice.
+    pub fn device_pinned_frames_total(&self) -> usize {
+        self.groups
+            .values()
+            .filter_map(|group| group.storage.as_deref())
+            .map(|storage| storage.device_pinned_frames())
+            .sum()
+    }
 }

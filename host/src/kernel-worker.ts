@@ -61,6 +61,7 @@ import type { VfsChangeEvent } from "./vfs/types";
  * explanatory only and generated-file drift tests cover the live values.
  */
 import { ERRNO } from "./generated/abi";
+import { KGPU_OUTBOX_CAPACITY } from "./generated/abi";
 import { isProcessMemoryCreatorAdmissionClosed } from "./process-memory-creator-gate";
 import { selectRootfsHostMetadataBytes, selectRootfsIoBytes, selectRootfsJournalStateBytes, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
 import { StorageMemoryBudget, type StorageMetadataMap } from "./vfs/storage-memory-budget";
@@ -2559,6 +2560,14 @@ export interface CentralizedKernelCallbacks {
    */
   onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
 
+  /**
+   * The kernel's kgpu outbox went from empty to non-empty. Called from
+   * inside a kernel entry: it must not re-enter the kernel, only schedule a
+   * later `drainKgpu()` loop. Without a GPU adapter there is nothing to do:
+   * no renderer is set, so no record is ever queued.
+   */
+  onKgpuKick?: () => void;
+
   /** Scalar observation after an actual kernel park or host wait registration.
    * Neither a completion nor an execution-stop fence; delivered outside entry. */
   onSyscallBlocked?: (pid: number, tid: number, syscallNr: number, firstArgument: ChannelScalarValue,
@@ -3538,6 +3547,9 @@ export class CentralizedKernelWorker {
   private udpBindings = new Set<string>();
   /** Separate scratch buffer for TCP data pumping */
   #tcpScratchRegion: KernelScratchRegion | null = null;
+  /** The kgpu drain/complete staging region, allocated by the first kgpu
+   * entry: most kernels never render, and the region is a whole outbox. */
+  #kgpuScratchRegion: KernelScratchRegion | null = null;
   /** Node.js net module (loaded dynamically for browser compatibility) */
   private netModule: typeof import("net") | null = null;
   /**
@@ -3996,6 +4008,9 @@ export class CentralizedKernelWorker {
         if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
       },
       onKmsCanvasUpdated: (crtcId: number) => this.kmsBitmapRelays.get(crtcId)?.changed(0),
+      onKgpuKick: (): void => {
+        this.callbacks.onKgpuKick?.();
+      },
       onKmsGlPresented: (crtcId: number) => {
         this.kmsBitmapRelays.get(crtcId)?.changed(0);
         const stats = this.kmsStatsViews.get(crtcId);
@@ -9560,6 +9575,102 @@ export class CentralizedKernelWorker {
       return undefined;
     });
     return result;
+  }
+
+  // --- kgpu host adapter boundary -------------------------------------------
+  //
+  // The kernel owns the GPU device (`crates/runtime-core/src/dri/kgpu`); a
+  // host GPU adapter only moves records across this boundary. After
+  // `onKgpuKick`, it calls `drainKgpu()` until that returns no bytes, and it
+  // returns the executor's answers through `completeKgpu()`. Both can free
+  // outbox room for a request the host is retrying after EAGAIN, or decide a
+  // parked wait, so each drains the kernel's wake events in its own entry.
+
+  /** Whether this host can render. Without a renderer (the default), guest
+   * context creation fails with ENODEV rather than appearing to work. */
+  setKgpuRenderer(available: boolean): void {
+    this.#runImmediateKernelEntry("set kgpu renderer", entry => {
+      const set = this.#kernelInstanceForEntry(entry).exports.kernel_kgpu_set_renderer as
+        ((available: number) => void) | undefined;
+      if (typeof set !== "function") throw new Error("kernel has no kernel_kgpu_set_renderer export");
+      set(available ? 1 : 0);
+      return undefined;
+    });
+  }
+
+  /**
+   * Take whole queued submission records (`shared::kgpu` submission wire)
+   * from the kernel outbox; an empty result means the outbox is empty. The
+   * staging region is a whole outbox, so every call that finds a record
+   * returns at least one.
+   */
+  drainKgpu(): Uint8Array {
+    let drained: Uint8Array = new Uint8Array(0);
+    this.#runImmediateKernelEntry("drain kgpu outbox", entry => {
+      drained = this.#requireKgpuScratchRegion(entry).withLease(lease => {
+        const written = this.#invokeEntryScratchExport(entry, lease, "kernel_kgpu_drain",
+          [lease.exportPointer(0, KGPU_OUTBOX_CAPACITY), KGPU_OUTBOX_CAPACITY]);
+        const length = this.#checkedScratchProducerByteLength(written, KGPU_OUTBOX_CAPACITY, "kernel_kgpu_drain");
+        return length === 0 ? new Uint8Array(0) : lease.copyOut(0, length);
+      });
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      return undefined;
+    });
+    return drained;
+  }
+
+  /**
+   * Deliver executor completion records (`shared::kgpu` completion wire).
+   * Returns 0, or a negative errno for a malformed batch, which applies no
+   * record and loses every context (the adapter and kernel disagree).
+   */
+  completeKgpu(records: Uint8Array): number {
+    if (records.byteLength === 0) return 0;
+    if (records.byteLength > KGPU_OUTBOX_CAPACITY) {
+      throw new RangeError(`kgpu completion batch of ${records.byteLength} bytes exceeds ${KGPU_OUTBOX_CAPACITY}`);
+    }
+    let status = -EIO;
+    this.#runImmediateKernelEntry("complete kgpu records", entry => {
+      status = this.#requireKgpuScratchRegion(entry).withLease(lease => {
+        lease.copyFrom(records, 0, 0, records.byteLength);
+        return this.#invokeEntryScratchExport(entry, lease, "kernel_kgpu_complete",
+          [lease.exportPointer(0, records.byteLength), records.byteLength]);
+      });
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      return undefined;
+    });
+    return status;
+  }
+
+  /** Distinct group-memory frames device pins hold, over every memory group:
+   * frames a device may still touch. Inspection only. */
+  devicePinnedFrames(): number {
+    let frames = 0;
+    this.#runImmediateKernelEntry("inspect device-pinned frames", entry => {
+      const count = this.#kernelInstanceForEntry(entry).exports.kernel_device_pinned_frames as
+        (() => number) | undefined;
+      if (typeof count !== "function") throw new Error("kernel has no kernel_device_pinned_frames export");
+      frames = count() >>> 0;
+      return undefined;
+    });
+    return frames;
+  }
+
+  #requireKgpuScratchRegion(entry: KernelWorkerEntryContext): KernelScratchRegion {
+    if (this.#kgpuScratchRegion) return this.#kgpuScratchRegion;
+    // As at initialization: allocate through this entry's scoped facade, but
+    // bind the region to the persistent gated generation it outlives.
+    const instance = this.#kernelInstanceForEntry(entry);
+    this.#kgpuScratchRegion = allocateKernelScratchRegion(
+      this.#kernelMemory!,
+      instance.exports.kernel_alloc_scratch as (size: number) => KernelPointer,
+      KGPU_OUTBOX_CAPACITY,
+      this.#kernelPointerWidth,
+      "kernel kgpu scratch",
+      this.#kernelInstance!,
+      instance,
+    );
+    return this.#kgpuScratchRegion;
   }
 
   #exactMemoryGroupReceiptWithinKernelEntry(receipt: MemoryGroupTaskReceipt,

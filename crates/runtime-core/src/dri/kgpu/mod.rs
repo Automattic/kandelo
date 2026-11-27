@@ -114,7 +114,10 @@ impl KgpuDevice {
 
     /// Apply the executor's completion records (`wasm_posix_shared::kgpu`
     /// completion wire), whole or not at all: every record is decoded and
-    /// checked before any applies, so a malformed batch changes nothing.
+    /// checked before any applies, so no record of a malformed batch applies.
+    /// A malformed batch (`EINVAL`) means the host adapter and the kernel no
+    /// longer agree on what the device holds, so it faults the device: every
+    /// context is lost, as though the executor had reported each one.
     ///
     /// - `Retired` retires every submission of its context at or below its
     ///   sequence number (an executor runs a context's work in order),
@@ -127,6 +130,26 @@ impl KgpuDevice {
     /// Each wakes the parked waiters it concerns through the parking
     /// owner's dirty-source set; `ProcessTable::kgpu_settle` decides them.
     pub fn complete(&mut self, groups: &mut MemoryGroups, records: &[u8]) -> Result<(), Errno> {
+        let batch = match self.parse_completions(records) {
+            Ok(batch) => batch,
+            Err(Errno::EINVAL) => {
+                self.fault(groups);
+                return Err(Errno::EINVAL);
+            }
+            Err(error) => return Err(error),
+        };
+        for record in batch {
+            match record.kind {
+                CompletionKind::Retired => self.retire(groups, record),
+                CompletionKind::ContextLost => self.lose(groups, record.context),
+                CompletionKind::ContextReady => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Decode and check a completion batch without applying any of it.
+    fn parse_completions(&self, records: &[u8]) -> Result<Vec<Completion>, Errno> {
         if records.len() % abi::COMPLETION_SIZE != 0 {
             return Err(Errno::EINVAL);
         }
@@ -148,14 +171,14 @@ impl KgpuDevice {
             }
             batch.push(record);
         }
-        for record in batch {
-            match record.kind {
-                CompletionKind::Retired => self.retire(groups, record),
-                CompletionKind::ContextLost => self.lose(groups, record.context),
-                CompletionKind::ContextReady => {}
-            }
+        Ok(batch)
+    }
+
+    /// Lose every context: the device can no longer be trusted.
+    fn fault(&mut self, groups: &mut MemoryGroups) {
+        for id in self.contexts.ids() {
+            self.lose(groups, id);
         }
-        Ok(())
     }
 
     fn retire(&mut self, groups: &mut MemoryGroups, record: Completion) {
@@ -571,6 +594,20 @@ impl ProcessTable {
         if op_arg_size(op) != Some(arg.len()) {
             return Err(Errno::EINVAL);
         }
+        let was_empty = self.kgpu_parts().0.queue.is_empty();
+        let result = self.kgpu_dispatch(host, pid, tid, op, arg);
+        self.kgpu_kick_if_filled(&*host, was_empty);
+        result
+    }
+
+    fn kgpu_dispatch(
+        &mut self,
+        host: &mut dyn HostIO,
+        pid: u32,
+        tid: u32,
+        op: i32,
+        arg: &mut [u8],
+    ) -> Result<ParkOutcome, Errno> {
         self.kgpu_apply_retirements();
         let caller = self
             .memory_group_task(pid, tid)?
@@ -586,10 +623,40 @@ impl ProcessTable {
     }
 
     /// Apply completion records the host GPU adapter delivered.
-    pub fn kgpu_complete(&mut self, records: &[u8]) -> Result<(), Errno> {
+    pub fn kgpu_complete(&mut self, host: &dyn HostIO, records: &[u8]) -> Result<(), Errno> {
+        let was_empty = self.kgpu_parts().0.queue.is_empty();
         self.kgpu_apply_retirements();
         let (device, groups) = self.kgpu_parts();
-        device.complete(groups, records)
+        let result = device.complete(groups, records);
+        self.kgpu_kick_if_filled(host, was_empty);
+        result
+    }
+
+    /// Copy whole queued records into `out` for the host GPU adapter;
+    /// returns the bytes written, 0 once the outbox is empty. The host calls
+    /// this until it returns 0, so a drain never kicks.
+    pub fn kgpu_drain(&mut self, out: &mut [u8]) -> usize {
+        self.kgpu_parts().0.drain_outbox(out)
+    }
+
+    /// Whether the host can render (`KgpuDevice::set_renderer_available`).
+    pub fn kgpu_set_renderer(&mut self, available: bool) {
+        self.kgpu_parts().0.set_renderer_available(available);
+    }
+
+    /// Distinct group-memory frames device pins hold, over every group:
+    /// inspection's count of frames a device may still be touching.
+    pub fn device_pinned_frames(&mut self) -> usize {
+        self.kgpu_parts().1.device_pinned_frames_total()
+    }
+
+    /// The host learns of queued records only through this kick, and only
+    /// on the empty-to-non-empty edge: until a drain empties the outbox, the
+    /// host already owes it a drain.
+    fn kgpu_kick_if_filled(&mut self, host: &dyn HostIO, was_empty: bool) {
+        if was_empty && !self.kgpu_parts().0.queue.is_empty() {
+            host.kgpu_kick();
+        }
     }
 
     /// Re-decide the parked kgpu calls a fired kgpu source concerns, and
@@ -597,8 +664,10 @@ impl ProcessTable {
     /// runs this with its other settle passes; decisions reach the guest
     /// through the parking owner's ordinary completion queue, which grouped
     /// tasks publish through `group_completion` like every other park.
-    pub fn kgpu_settle(&mut self) {
+    pub fn kgpu_settle(&mut self, host: &dyn HostIO) {
+        let was_empty = self.kgpu_parts().0.queue.is_empty();
         self.kgpu_apply_retirements();
+        self.kgpu_kick_if_filled(host, was_empty);
         let waiters = crate::wait_park::with(|parks| parks.take_dirty_kgpu_waiters());
         let device = self.kgpu_parts().0;
         for (id, _pid, _tid, park) in waiters {
@@ -949,8 +1018,8 @@ mod tests {
                 },
             )
             .unwrap();
-            let result = self.table.kgpu_complete(&bytes);
-            self.table.kgpu_settle();
+            let result = self.table.kgpu_complete(&self.host, &bytes);
+            self.table.kgpu_settle(&self.host);
             result
         }
     }
@@ -1394,7 +1463,7 @@ mod tests {
         let (_, seqno) = f.submit(context, 0);
         f.drain();
         assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(0));
-        f.table.kgpu_settle();
+        f.table.kgpu_settle(&f.host);
         assert_eq!(
             records(&f.drain()),
             vec![(SubmissionKind::ContextDestroy, context, 0)]
@@ -1451,15 +1520,95 @@ mod tests {
             f.complete(CompletionKind::Retired, context, seqno),
             Err(Errno::EINVAL)
         );
+        let mut f = grouped();
+        let context = f.create();
+        let (_, seqno) = f.submit(context, 0);
         f.drain();
-        assert_eq!(
-            f.complete(CompletionKind::Retired, context, seqno + 1),
-            Err(Errno::EINVAL)
-        );
-        assert_eq!(f.table.kgpu_complete(&[0u8; 23]), Err(Errno::EINVAL));
         // R4: a ContextReady is a no-op acknowledgement.
         f.complete(CompletionKind::ContextReady, context, 0)
             .unwrap();
+        // A valid record followed by one naming an unassigned seqno: the
+        // batch is refused whole, so the valid retirement does not apply.
+        let mut batch = [0u8; 2 * abi::COMPLETION_SIZE];
+        for (bytes, seqno) in batch
+            .chunks_exact_mut(abi::COMPLETION_SIZE)
+            .zip([seqno, seqno + 1])
+        {
+            encode_completion(
+                bytes,
+                &Completion {
+                    kind: CompletionKind::Retired,
+                    context,
+                    seqno,
+                    status: 0,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(f.table.kgpu_complete(&f.host, &batch), Err(Errno::EINVAL));
+        assert_eq!(f.pinned(), 1, "no record of the batch applied");
+        assert_eq!(
+            f.table.kgpu_complete(&f.host, &[0u8; 23]),
+            Err(Errno::EINVAL),
+            "a partial record"
+        );
+    }
+
+    #[test]
+    fn a_malformed_completion_batch_loses_every_context() {
+        let mut f = grouped();
+        let first = f.create();
+        let second = f.create();
+        let (_, seqno) = f.submit(first, 0);
+        f.drain();
+        assert_eq!(
+            f.table.kgpu_complete(&f.host, &[0u8; 23]),
+            Err(Errno::EINVAL)
+        );
+        f.table.kgpu_settle(&f.host);
+        for context in [first, second] {
+            assert_eq!(
+                f.submit(context, 0).0,
+                Err(Errno::EIO),
+                "context {context} is lost"
+            );
+        }
+        let mut arg = wait_arg(first, seqno, -1);
+        assert_eq!(f.request(WAIT, &mut arg), Err(Errno::EIO));
+        // Drained work stays pinned until the executor retires it.
         assert_eq!(f.pinned(), 1);
+        f.complete(CompletionKind::Retired, first, seqno).unwrap();
+        assert_eq!(f.pinned(), 0);
+    }
+
+    #[test]
+    fn the_host_is_kicked_once_when_the_outbox_turns_nonempty() {
+        use crate::exec_control::tests::take_kgpu_kicks;
+        let mut f = grouped();
+        take_kgpu_kicks();
+        let context = f.create();
+        assert_eq!(take_kgpu_kicks(), 1, "the first record kicks");
+        let (result, _) = f.submit(context, 0);
+        assert_eq!(result, Ok(ParkOutcome::Done(0)));
+        assert_eq!(
+            take_kgpu_kicks(),
+            0,
+            "a non-empty outbox is not kicked again"
+        );
+        assert!(!f.drain().is_empty());
+        assert_eq!(take_kgpu_kicks(), 0, "draining never kicks");
+        let (_, seqno) = f.submit(context, 0);
+        assert_eq!(take_kgpu_kicks(), 1, "an emptied outbox kicks again");
+        f.drain();
+        f.complete(CompletionKind::Retired, context, seqno).unwrap();
+        assert_eq!(take_kgpu_kicks(), 0, "a completion queues nothing");
+        // Exit cleanup queues its destroy from the settle pass.
+        assert!(f.table.get_mut(f.pid).unwrap().record_normal_exit(0));
+        f.table.kgpu_settle(&f.host);
+        assert_eq!(take_kgpu_kicks(), 1, "a cleanup record kicks");
+        assert_eq!(
+            records(&f.drain()),
+            vec![(SubmissionKind::ContextDestroy, context, 0)]
+        );
     }
 }
