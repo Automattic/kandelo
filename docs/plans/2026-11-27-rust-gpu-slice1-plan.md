@@ -349,7 +349,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
     `kernel_device_pinned_frames() -> u32` (the Task 3 count, used by
     inspection)
 - Modify: `crates/shared/src/lib.rs` (extend the version-42 history line from Task 2: "…, kgpu submission drain, completion and kick")
-- Modify: the process-worker host code that serves `kandelo.klog.v1` (find it from `extension_requests::KLOG_V1` / `__kandelo_klogctl_v1` in `host/src`): serve `kandelo.kgpu.v1.__kandelo_kgpu_v1` the same way, issuing request 602 on the calling thread's channel, on both Node and browser process workers
+- Modify: the process-worker host code that serves `kandelo.klog.v1` (find it from `extension_requests::KLOG_V1` / `__kandelo_klogctl_v1` in `host/src`): serve `kandelo.kgpu.v1.__kandelo_kgpu_v1` the same way, issuing request 602 on the calling thread's channel, on both Node and browser process workers. Before issuing 602 the import returns `-22` unless `op` is 1–4 and `size` equals that op's struct size, read from a table `dump_abi` generates from `wasm_posix_shared::kgpu` into `host/src/generated/abi.ts` (Ruling R11). This bounds host staging; the kernel re-checks. In the same change, add `kandelo.kgpu.v1` to the Rust admission lists (`crates/wasm-artifact/src/program_extensions.rs` `IMPLEMENTED`, `grouped_memory.rs` `SUPPORTED`) and the TS lists (`host/src/program-extensions.ts`) together, and update `docs/program-extensions.md` to say the interface is served
 - Modify: `packages/registry/kernel/build-kernel.sh` (add the new exports to `wasm_require_exports`)
 - Modify (generated): `abi/snapshot.json`, `host/src/generated/abi.ts`
 
