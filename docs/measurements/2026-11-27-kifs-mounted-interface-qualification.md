@@ -1,5 +1,8 @@
 # Mounted filesystem qualification
 
+These results precede the `develop` merge.
+[Reconciled kernel and watcher qualification](2026-11-27-kifs-develop-watchers.md)
+
 KIFS v3 took less elapsed time than v2 in all 80 saved-shell comparisons.
 The 0.75× stretch target held in 71 of 80 comparisons and in every
 order and repeat for 12 of 20 host-operation pairs.
