@@ -2275,19 +2275,29 @@ function* instantiateSharedLibrarySteps(
       entry.value = replayedIndex;
     };
 
+    // WHY: the other exports are activation-control entry points, not
+    // ELF-visible application symbols. Publishing them would put post-catalog
+    // instrumenter helpers into the mutable process table and manufacture
+    // reference state with no source-function reconstruction recipe.
+    const publishedExports = Object.entries(relocatedExports).filter(
+      ([exportName]) =>
+        !exportName.startsWith("__") && !isForkRuntimeExport(exportName),
+    );
+    // WHY: JavaScriptCore copies the whole table at each growth. One growth
+    // for each exported function costs time that grows with the square of the
+    // table, so each growth also reserves the slots of the functions that
+    // remain.
+    let unpublishedFunctions = publishedExports.filter(
+      ([, exportValue]) => typeof exportValue === "function",
+    ).length;
+    let nextTableIdx = tableLength(options.table);
+
     // Update GOT with this library's exports
-    for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
-      if (exportName.startsWith("__") || isForkRuntimeExport(exportName)) {
-        // WHY: these are activation-control entry points, not ELF-visible
-        // application symbols. Publishing them would put post-catalog
-        // instrumenter helpers into the mutable process table and manufacture
-        // reference state with no source-function reconstruction recipe.
-        continue;
-      }
+    for (const [exportName, exportValue] of publishedExports) {
       const alreadyDefined = options.globalSymbols.has(exportName);
 
       if (typeof exportValue === "function") {
-        let tableIdx = tableLength(options.table);
+        let tableIdx = nextTableIdx;
         const localEntry = localGot.get(`func:${exportName}`);
         const gotEntry = options.got.get(exportName);
         const replayEntry = localEntry
@@ -2317,12 +2327,15 @@ function* instantiateSharedLibrarySteps(
               `${name}: saved GOT.func.${exportName} exceeds the exact table range`,
             );
           }
-          if (savedTableIdx > tableIdx) {
-            growTable(options.table, savedTableIdx - tableIdx);
-            tableIdx = savedTableIdx;
-          }
+          if (savedTableIdx > tableIdx) tableIdx = savedTableIdx;
         }
-        growTable(options.table, 1);
+        const reservedEnd = tableIdx + unpublishedFunctions;
+        const reservedLength = tableLength(options.table);
+        if (reservedEnd > reservedLength) {
+          growTable(options.table, reservedEnd - reservedLength);
+        }
+        unpublishedFunctions -= 1;
+        nextTableIdx = tableIdx + 1;
         setTableEntry(options.table, tableIdx, exportValue as unknown as Function);
         ownedTableEntries.add(tableIdx);
         // This write is performed by the host loader, outside generated

@@ -2,7 +2,7 @@
  * Tests for WebAssembly dynamic linking support (dylink.0 parsing + loading).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   createCppExceptionTag,
   createLongjmpTag,
@@ -583,6 +583,32 @@ describe.skipIf(!hasCompiler())("shared library loading", () => {
     const multiply = lib.exports.multiply as Function;
     expect(add(3, 4)).toBe(7);
     expect(multiply(5, 6)).toBe(30);
+  });
+
+  it("grows the table one time for all the exported functions", async () => {
+    const wasmBytes = buildSharedLib(
+      `
+      int foo(void) { return 1; }
+      int bar(void) { return 2; }
+      int baz(void) { return 3; }
+      int qux(void) { return 4; }
+      `,
+      "exports",
+    );
+    const options = createLoadOptions();
+    const grow = vi.spyOn(options.table, "grow");
+    const lengthBefore = options.table.length;
+
+    const lib = await loadSharedLibrary("libexports.so", wasmBytes, options);
+
+    const published = ["foo", "bar", "baz", "qux"].map((name) => lib.exports[name]);
+    const slots = Array.from(
+      { length: options.table.length - lengthBefore },
+      (_, index) => options.table.get(lengthBefore + index),
+    );
+    expect(slots.filter((slot) => slot !== null).sort()).toEqual(published.sort());
+    expect(slots.slice(-4).every((slot) => slot !== null)).toBe(true);
+    expect(grow.mock.calls.length).toBeLessThan(4);
   });
 
   it("loads a library with mutable static data", async () => {
