@@ -1011,6 +1011,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kgpu-stream"
+version = "0.1.0"
+
+[[package]]
 name = "leb128"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2453,6 +2457,7 @@ dependencies = [
  "bzip2",
  "flate2",
  "fork-instrument",
+ "kgpu-stream",
  "regex",
  "runtime-core",
  "rustix",
