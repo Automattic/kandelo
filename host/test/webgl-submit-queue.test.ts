@@ -212,6 +212,21 @@ it("captures native typed-array slots without invoking overridable source access
   const frame=new SubmitFrame(source,1,2);
   expect(frame.validate(bytes=>{expect([...bytes]).toEqual([2,3]);return 0;})).toBe(0);
 });
+it("uses the same owned process snapshot for validation and execution", () => {
+  const snapshot = new Uint8Array([1, 2, 3]);
+  const frame = SubmitFrame.fromOwnedSnapshot(snapshot, snapshot.byteLength);
+  expect(frame.validate(bytes => { expect(bytes).toBe(snapshot); return 0; })).toBe(0);
+  const binding = mkBinding(1);
+  frame.run(binding, () => expect(binding.cmdbufView).toBe(snapshot));
+  expect(frame.consumed).toBe(true);
+  expect(binding.cmdbufView).not.toBe(snapshot);
+});
+
+it("refuses to adopt shared memory or a partial backing", () => {
+  expect(() => SubmitFrame.fromOwnedSnapshot(new Uint8Array(new SharedArrayBuffer(4)), 4)).toThrow(RangeError);
+  expect(() => SubmitFrame.fromOwnedSnapshot(new Uint8Array(4).subarray(0, 2), 2)).toThrow(RangeError);
+});
+
 it("rejects invalid spans before admitting a frame", () => {
   for(const [offset,length] of [[-1,1],[0,-1],[.5,1],[0,.5],[NaN,1],[0,Infinity],[3,0],[1,2],[Number.MAX_SAFE_INTEGER,1]])
     expect(()=>new SubmitFrame(new Uint8Array(2),offset,length)).toThrow(RangeError);
