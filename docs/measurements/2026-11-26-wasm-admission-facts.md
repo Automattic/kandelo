@@ -73,3 +73,32 @@ arms, so the total endpoint timings cannot isolate the impact of reusing
 these signatures. The code removes a parse in the timed import-routing
 stage. The normal host build and 51 focused policy, import-routing and
 grouped Worker tests passed with this follow-up.
+
+## Reuse the ABI-marker result after instantiation
+
+The main Worker already extracts the ABI marker before it instantiates a
+program. The admission result now carries marker absence to the existing
+legacy warning. The fork-capable and ordinary startup paths each drop a
+second scan of the same owned bytes. The admission policy still rejects a
+known ABI mismatch and requires the marker for fork artifacts. The legacy
+warning still runs after instantiation in the ordinary and fork-capable
+startup code. The side-module check retains its own artifact inspection.
+
+The host package, including TypeScript declarations, built with
+`scripts/dev-shell.sh bash -c 'cd host && npm run build'`. Five focused
+Vitest files passed 97 cases. Two binary-resolver cases skipped because
+the required prepared artifacts were unavailable. The tests exercised
+present, missing and mismatched ABI markers, contract digests, fork
+artifact parsing, import routing and grouped Worker initialization. A
+separate `./run.sh build host` attempt stopped during SDK bootstrap when
+the isolated review worktree lacked the pinned musl submodule.
+
+The frozen Sway preview paired packaged Workers on the same 2634 × 1806
+partial image and kernel. Installed Firefox rendered four successive
+fitted prompts in each arm. Their observed intervals were 1.33–1.68 s at
+the prior PR head and 1.63–2.26 s with this change. Both Firefox arms later
+missed a cursor sample. Playwright WebKit completed every prompt and cursor
+check in both arms. A separate earlier Firefox run on the prior head
+stopped advancing after the first new prompt. These are integration
+receipts under changing host load. They establish one fewer ABI-marker scan
+per main launch with an expected ABI and no reliable startup improvement.

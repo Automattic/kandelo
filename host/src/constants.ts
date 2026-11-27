@@ -2542,12 +2542,16 @@ export function describeWasmArtifactPolicyFailures(
   return inspectWasmArtifactPolicy(programBytes, options).failures;
 }
 
-/** Include function imports already decoded during the policy check. A
- * Worker can reuse them to route imports for the same bytes it inspected. */
+/** Return facts from the policy check so the Worker can use them for the
+ * same bytes it inspected during admission. */
 export function inspectWasmArtifactPolicy(
   programBytes: ArrayBuffer,
   options: WasmArtifactPolicyOptions = {},
-): { failures: string[]; functionImports?: readonly WasmFunctionImportType[] } {
+): {
+  failures: string[];
+  functionImports?: readonly WasmFunctionImportType[];
+  abiMarkerMissing: boolean;
+} {
   const failures: string[] = [];
   let declaredAbi: number | null = null;
   const exportNames = readWasmExportNames(programBytes);
@@ -2655,12 +2659,8 @@ export function inspectWasmArtifactPolicy(
     importedGlobalsDescriptorCount > 0 || importedTablesDescriptorCount > 0 ||
     unwindTransportCount > 0 ||
     hasUnwindTagImport;
-  if (
-    options.expectedAbi !== undefined &&
-    options.expectedAbi !== null &&
-    hasForkArtifactSurface &&
-    declaredAbi === null
-  ) {
+  const abiMarkerMissing = options.expectedAbi != null && declaredAbi === null;
+  if (hasForkArtifactSurface && abiMarkerMissing) {
     // WHY: the safety bit names an ABI-epoch contract. Without the program's
     // ABI marker, copied capability metadata could make an ABI 42 transform
     // look safe to an ABI 43 host.
@@ -2705,7 +2705,7 @@ export function inspectWasmArtifactPolicy(
     }
   }
 
-  return { failures, functionImports: forkFacts?.functionImportEntries };
+  return { failures, functionImports: forkFacts?.functionImportEntries, abiMarkerMissing };
 }
 
 /**
