@@ -147,10 +147,17 @@ pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<usize, Errno> {
     }
 }
 
-fn require_io_fd_access(proc: &Process, fd: i32, write: bool) -> Result<usize, Errno> {
+fn require_io_fd_access(proc: &Process, fd: i32, kind: VectorIoKind) -> Result<usize, Errno> {
     let index = require_io_fd(proc, fd)?;
+    // Match the scalar positioned I/O order before reading any guest buffers.
+    if matches!(kind, VectorIoKind::Pread { offset } | VectorIoKind::Pwrite { offset } if offset < 0) {
+        return Err(Errno::EINVAL);
+    }
     let mode = proc.ofd_table.get(index).ok_or(Errno::EBADF)?.status_flags() & O_ACCMODE;
-    if (write && mode == O_RDONLY) || (!write && mode == O_WRONLY) { return Err(Errno::EBADF); }
+    let write = kind.is_write();
+    if (write && mode == O_RDONLY) || (!write && mode == O_WRONLY) {
+        return Err(Errno::EBADF);
+    }
     Ok(index)
 }
 
@@ -23145,7 +23152,7 @@ pub fn sys_guest_io(proc: &mut Process, host: &mut dyn HostIO,
         n if n == Syscall::Pwrite as u32 => VectorIoKind::Pwrite { offset },
         _ => return Err(Errno::EINVAL),
     };
-    let index = require_io_fd_access(proc, fd, kind.is_write())?;
+    let index = require_io_fd_access(proc, fd, kind)?;
     let operation = BlockingRetryOperation::from_syscall(syscall)?;
     let request = match take_active_vector_io(proc, tid, operation)? {
         Some(pending) => pending,
@@ -23205,7 +23212,7 @@ pub fn sys_vector_io(
 ) -> Result<GuestIoOutcome, Errno> {
     // Reject a descriptor that cannot carry I/O before reading caller memory,
     // so a zero-length vector on a closed or path-only fd still fails.
-    let index = require_io_fd_access(proc, fd, kind.is_write())?;
+    let index = require_io_fd_access(proc, fd, kind)?;
     let entropy = kind == VectorIoKind::Read && crate::entropy_read::EntropyRead::is_device(proc, index)?;
     let operation = BlockingRetryOperation::from_syscall(syscall_nr)?;
     let pid = proc.pid as i32;
@@ -42158,6 +42165,14 @@ mod tests {
             ),
             Err(Errno::EINVAL),
         );
+
+        for (syscall, wrong_access, kind) in [
+            (extended_syscalls::SYS_PREADV, write_fd, VectorIoKind::Pread { offset: -1 }),
+            (extended_syscalls::SYS_PWRITEV, read_fd, VectorIoKind::Pwrite { offset: -1 }),
+        ] {
+            assert_eq!(vector_io(&mut proc, &mut host, syscall, -1, 0, 0, kind), Err(Errno::EBADF));
+            assert_eq!(vector_io(&mut proc, &mut host, syscall, wrong_access, 0, 0, kind), Err(Errno::EINVAL));
+        }
 
         let (pipe_read, pipe_write) = sys_pipe(&mut proc).unwrap();
         assert_eq!(
