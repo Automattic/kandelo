@@ -24804,6 +24804,7 @@ mod tests {
             let dir_fd = sys_open(&mut proc, &mut host, dir.as_bytes(), O_RDONLY | O_DIRECTORY, 0).unwrap();
             let file = sys_open(&mut proc, &mut host, source.as_bytes(), O_CREAT | O_RDWR, 0o600).unwrap();
             let replacement_fd = sys_open(&mut proc, &mut host, replacement.as_bytes(), O_CREAT | O_RDWR, 0o600).unwrap();
+            let overwritten_fd = sys_open(&mut proc, &mut host, child("replace").as_bytes(), O_CREAT | O_RDWR, 0o600).unwrap();
             // Create in reverse order so the index proves it preserves name order.
             for name in ["z", "a"] {
                 sys_link(&mut proc, &mut host, source.as_bytes(), child(name).as_bytes()).unwrap();
@@ -24830,19 +24831,24 @@ mod tests {
                 expect_events(&mut proc, &mut host, fd, &[b"\x02a", b"\x02z"]);
             }
             sys_close(&mut proc, &mut host, first).unwrap();
-            sys_rename(&mut proc, &mut host, replacement.as_bytes(), child("a").as_bytes()).unwrap();
-            sys_write(&mut proc, &mut host, file, b"original").unwrap();
-            sys_write(&mut proc, &mut host, replacement_fd, b"replacement").unwrap();
-            expect_events(&mut proc, &mut host, second, &[b"\x01a", b"\x02z", b"\x02a"]);
+            sys_unlink(&mut proc, &mut host, child("a").as_bytes()).unwrap();
+            sys_write(&mut proc, &mut host, file, b"one watched alias remains").unwrap();
+            sys_write(&mut proc, &mut host, overwritten_fd, b"before replacement").unwrap();
+            expect_events(&mut proc, &mut host, second, &[b"\x01a", b"\x02z", b"\x02replace"]);
+
+            sys_rename(&mut proc, &mut host, replacement.as_bytes(), child("replace").as_bytes()).unwrap();
+            sys_write(&mut proc, &mut host, overwritten_fd, b"unlinked inode").unwrap();
+            sys_write(&mut proc, &mut host, replacement_fd, b"replacement inode").unwrap();
+            expect_events(&mut proc, &mut host, second, &[b"\x01replace", b"\x02replace"]);
 
             sys_unlink(&mut proc, &mut host, child("z").as_bytes()).unwrap();
             sys_write(&mut proc, &mut host, file, b"no remaining watched aliases").unwrap();
             expect_events(&mut proc, &mut host, second, &[b"\x01z"]);
-            for fd in [second, file, replacement_fd, dir_fd] {
+            for fd in [second, file, replacement_fd, overwritten_fd, dir_fd] {
                 sys_close(&mut proc, &mut host, fd).unwrap();
             }
-            for path in [source, child("a")] {
-                sys_unlink(&mut proc, &mut host, path.as_bytes()).unwrap();
+            for path in [source, child("replace")] {
+                assert_eq!(sys_unlink(&mut proc, &mut host, path.as_bytes()), Ok(()), "cleanup {path}");
             }
             sys_rmdir(&mut proc, &mut host, dir.as_bytes()).unwrap();
         }
