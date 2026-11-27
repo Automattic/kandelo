@@ -46,6 +46,13 @@ program ABI 56 unchanged.
 
 Image-mutating mappings, fork and pthread-control reservations enter a kernel-owned operation queue. Rust issues exact task-bound tokens and permits only the earliest live operation on an image to begin its pause. Cancelling an operation from the middle cannot let its successor bypass an earlier operation. Outstanding operations prevent image reclamation; an owning task's scratch cannot retire while its operation remains live. Host promises wake continuations, which must recheck Rust readiness before proceeding.
 
+Rust combines adjacent frames when clearing a pool selection. Fork copies a
+run only when both the parent and child physical pages are consecutive.
+Private aliases refer to the same child copy, and shared mappings still
+refer to the original shared frames. Root launch, exec and fork use the
+same bounded writes for an unpublished page table and publish its extent
+after the table is complete.
+
 Root preparation, mapping, fork, exec replacement and pthread preparation use kernel-owned continuations. Rust computes grouped layouts from the SDK artifact and retains exact admissions through allocator contention and cancellation. Normal executable commits retain the parsed layout metadata; direct byte-supplied roots read their attached executable once before admission. The host receives copied layouts and transport descriptors.
 
 After exec commit, the retained Rust controller selects detachment, exact stop observation, native Worker termination/join, replacement installation or signal cancellation, old-image retirement, replacement binding/start and final publication. The host executes the issued effect and reports its completion with the exact future receipt and effect identity. Out-of-order or repeated completions cannot advance the operation. A failed platform action retains custody; it does not become proof of Worker absence, stop or reference release. Registration still reports actual platform bindings through the kernel entry gate.

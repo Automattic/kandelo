@@ -523,21 +523,46 @@ impl Storage {
 
 fn initialize_image(memory: &mut impl PhysicalMemory, image: &Image) -> Result<(), Errno> {
     let root = image.allocation.ok_or(Errno::EIO)?.controls.address();
-    memory.write(root + 4, &image.layout.maximum_pages.to_le_bytes())?;
-    memory.write(root + 8, &image.layout.scratch_bytes.to_le_bytes())?;
+    initialize_unpublished_root(
+        memory,
+        root,
+        image.layout,
+        image.payload.iter().map(|page| page * PAGE | 3),
+    )
+}
+
+/// Initial PTEs are still private to the storage owner. Publish the extent
+/// only after the complete table is written. Live mappings use atomic stores
+/// through their existing barrier and publication paths.
+fn initialize_unpublished_root(
+    memory: &mut impl PhysicalMemory,
+    root: u32,
+    image: ImageLayout,
+    mut ptes: impl ExactSizeIterator<Item = u32>,
+) -> Result<(), Errno> {
+    if ptes.len() != image.initial_pages as usize {
+        return Err(Errno::EIO);
+    }
+    memory.write(root + 4, &image.maximum_pages.to_le_bytes())?;
+    memory.write(root + 8, &image.scratch_bytes.to_le_bytes())?;
     memory.write(root + layout::ROOT_RUN, &1u32.to_le_bytes())?;
     let mut bytes = [0; 4096];
-    for (chunk, entries) in image.payload.chunks(bytes.len() / 4).enumerate() {
-        for (at, physical) in entries.iter().enumerate() {
-            bytes[at * 4..at * 4 + 4].copy_from_slice(&(physical * PAGE | 3).to_le_bytes());
+    let mut offset = root + layout::ROOT_HEADER_BYTES;
+    loop {
+        let mut length = 0;
+        for (word, pte) in bytes.chunks_exact_mut(4).zip(ptes.by_ref()) {
+            word.copy_from_slice(&pte.to_le_bytes());
+            length += word.len();
         }
-        memory.write(
-            root + layout::ROOT_HEADER_BYTES + (chunk * bytes.len()) as u32,
-            &bytes[..entries.len() * 4],
-        )?;
+        if length == 0 {
+            break;
+        }
+        memory.write(offset, &bytes[..length])?;
+        offset += length as u32;
     }
-    memory.atomic_store(root, image.layout.initial_pages)
+    memory.atomic_store(root, image.initial_pages)
 }
+
 fn initialize_replica(
     memory: &mut impl PhysicalMemory,
     replica: &Replica,
