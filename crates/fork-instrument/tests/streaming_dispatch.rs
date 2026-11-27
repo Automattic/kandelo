@@ -434,8 +434,12 @@ fn original_function_label_branches_cross_all_capture_wrapper_blocks() {
 
 #[test]
 fn dispatch_capture_replay_round_trips_virtual_scratch_spills_at_bucket_boundaries() {
-    let body = format!("{} local.get 0",
-        "local.get 0 global.get $counter call $fork i32.add local.set 0 global.get $counter i32.const 1 i32.add global.set $counter ".repeat(40));
+    // Call operands are pooled across call sites, so 40 sequential calls alone
+    // stay small. Seventy values carried across every call force scratch.
+    let body = format!("{} {} local.get 0 {}",
+        "local.get 0 ".repeat(70),
+        "local.get 0 global.get $counter call $fork i32.add local.set 0 global.get $counter i32.const 1 i32.add global.set $counter ".repeat(40),
+        "i32.add ".repeat(70));
     for wide in [false, true] {
         let bytes = source(wide, &body);
         let scan = scan(&bytes).unwrap();
