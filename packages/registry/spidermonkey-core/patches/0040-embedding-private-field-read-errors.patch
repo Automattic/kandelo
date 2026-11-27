@@ -192,11 +192,19 @@
              }
 --- a/js/src/jit/BaselineCodeGen.cpp
 +++ b/js/src/jit/BaselineCodeGen.cpp
-@@ -3695,9 +3695,10 @@
+@@ -3695,9 +3695,18 @@
  bool BaselineCodeGen<Handler>::emit_NewPrivateName() {
    prepareVMCall();
  
-+  pushArg(Imm32(GetNewPrivateNameIsField(handler.pc())));
++  if (auto* pc = handler.maybePC()) {
++    pushArg(Imm32(GetNewPrivateNameIsField(pc)));
++  } else {
++    Register operand = R0.scratchReg();
++    Register pcReg = LoadBytecodePC(masm, operand);
++    masm.load8ZeroExtend(Address(pcReg, sizeof(jsbytecode) + GCTHING_INDEX_LEN),
++                         operand);
++    pushArg(operand);
++  }
    pushScriptNameArg(R0.scratchReg(), R1.scratchReg());
  
 -  using Fn = JS::Symbol* (*)(JSContext*, Handle<JSAtom*>);
