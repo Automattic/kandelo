@@ -251,8 +251,10 @@ device stays down until the embedder calls the kernel worker's
 implemented-extension and grouped-worker lists (Rust and TypeScript).
 Every op from a program outside a memory group answers `-95`. A renderer
 exists only where the embedder provides one. In browsers that needs
-`BrowserKernelOptions.gpuExecutorUrl` and `OffscreenCanvas`; the browser
-path builds but is not yet verified in a browser. On Node it needs
+`BrowserKernelOptions.gpuExecutorUrl` and `OffscreenCanvas`.
+`apps/browser-demos/test/kgpu-clear.spec.ts` runs `programs/kgpu-clear.c`
+(a clear and a 4x4 readback) through that path in Playwright's Chromium,
+Firefox and WebKit builds; native iOS Safari is unverified. On Node it needs
 `NodeKernelHostOptions.kgpuWebGL2Factory`, a module whose
 `createWebGL2Context()` returns `{ gl, canvas }`, since Node has no WebGL 2.
 Without a renderer, context creation answers `-19`. The device addresses
