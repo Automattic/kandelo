@@ -56,7 +56,7 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
   if(mode)frame.propertyShouldThrow=mode.value();
   JSContext::AutoNativePropertyFailureMode propertyMode(cx,mozilla::Nothing());
   frame.propertyData=JS::GetReservedSlot(metadata,NativePropertyPayload);
-  frame.propertyReturn=setter?JS::TrueValue():JS::UndefinedValue();
+  frame.callbackReturn=setter?JS::TrueValue():JS::UndefinedValue();
   auto name=NativePropertyName(frame,id);if(name.IsEmpty())return false;
   if(setter) {
     CHECK(callbacks->setter);
@@ -66,8 +66,7 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
     PropertyCallbackInfo<Value> info(&state->isolate);
     callbacks->getter(name,info);
   }
-  if(JS_IsExceptionPending(cx)||cx->isNativeExecutionTerminating())return false;
-  output.set(frame.propertyReturn);return JS_WrapValue(cx,output);
+  return frame.FinishCallback(output);
 }
 bool ReadNativeProperty(JSContext* cx,JS::HandleObject holder,
                         JS::HandleValue receiver,JS::HandleId id,

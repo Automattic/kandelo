@@ -10,8 +10,8 @@ Local<Value> Factory::undefined_value() { return Undefined(isolate); }
 Local<Object> Receiver(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.receiver.isObject());return f.Own<Object>(f.receiver); }
 void ReturnRaw(Isolate* isolate,const JS::Value& value) {
   auto& f=Current(isolate);if(JS_IsExceptionPending(f.cx))return;
-  if(f.arguments)f.arguments->rval().set(value);
-  else {CHECK(f.propertyHolder);f.propertyReturn.set(value);}
+  CHECK(f.arguments || f.propertyHolder);
+  f.callbackReturn.set(value);
 }
 MaybeLocal<Value> Object::Get(Local<Context> context,Local<Value> property) {
   auto& f=Current(context->isolate);NativeEntry nativeEntry(f,context);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
