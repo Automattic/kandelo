@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { compileSdkFixture } from "./support/compile-sdk-fixture";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-it("expires absolute futex deadlines in both clocks and preserves relative waits", async () => {
+it("honors futex and semaphore deadlines on their selected clocks", async () => {
   const { programPath, cleanup } = compileSdkFixture(
     new URL("./fixtures/futex-deadlines.c", import.meta.url),
   );

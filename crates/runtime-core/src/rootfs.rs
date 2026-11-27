@@ -4478,6 +4478,13 @@ pub fn is_dir(path: &[u8]) -> bool {
 /// converts a base file to an empty overlay file directly. Directories go
 /// through [`opendir`].
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
+    let path_entry = if flags & (O_CREAT | O_TRUNC) != 0 { crate::vfs_events::Entry::capture(path, lstat) } else { None };
+    let result = open_mutation(path, flags, mode, uid, gid)?;
+    if let Some(entry) = path_entry { entry.committed(flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY); }
+    Ok(result)
+}
+
+fn open_mutation(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     let handle = open_unmarked(path, flags, mode, uid, gid)?;
     if path_is_under_var_log(path) {
         if let Ok(index) = file_handle_to_inode(handle) {
@@ -5253,7 +5260,16 @@ fn var_log_clamp_write<'a>(idx: u32, offset: u64, buf: &'a [u8]) -> Result<&'a [
 
 /// Write `buf` at `offset`, copying a base file into the overlay first, then
 /// growing (zero-filling any gap) as needed.
-pub fn write<F>(handle: i64, offset: i64, buf: &[u8], mut byte_source: F) -> Result<usize, Errno>
+pub fn write<F>(handle: i64, offset: i64, buf: &[u8], byte_source: F) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    let result = write_mutation(handle, offset, buf, byte_source)?;
+    if result > 0 { publish_handle_change(handle); }
+    Ok(result)
+}
+
+fn write_mutation<F>(handle: i64, offset: i64, buf: &[u8], mut byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
@@ -5643,6 +5659,15 @@ where
 /// archive member into the overlay first. The caller enforces access mode and
 /// RLIMIT_FSIZE.
 pub fn truncate_handle<F>(handle: i64, length: i64, byte_source: F) -> Result<(), Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    let result = truncate_handle_mutation(handle, length, byte_source)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn truncate_handle_mutation<F>(handle: i64, length: i64, byte_source: F) -> Result<(), Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
@@ -6607,6 +6632,38 @@ pub fn handle_is_live(handle: i64) -> bool {
     false
 }
 
+
+// Directory descriptions retain the dev/inode observed when opened. Validate
+// that identity even if the pathname was renamed and replaced before binding.
+pub(crate) fn watch_directory(path: &[u8], id: crate::lock::FileId) -> Result<u32, Errno> {
+    let at_path = walk_to_inode(path).ok();
+    ROOTFS.with(|state| {
+        let matches = |inode: &Inode| matches!(inode.kind, InodeKind::Dir(_)) &&
+            crate::vfs_events::identity(inode.stat()) == id;
+        if let Some(index) = at_path.filter(|&i| state.get(i).is_some_and(matches)) {
+            return Ok(index);
+        }
+        state.inodes.iter().position(|slot| slot.as_ref().is_some_and(matches))
+            .map(|index| index as u32).ok_or(Errno::ENOENT)
+    })
+}
+
+fn publish_handle_change(handle: i64) {
+    if !crate::vfs_events::active() { return; }
+    let Ok(index) = file_handle_to_inode(handle) else { return; };
+    ROOTFS.with(|state| {
+        let Some(inode) = state.get(index) else { return; };
+        let target = crate::vfs_events::identity(inode.stat());
+        crate::vfs_events::changed(target, |dir_id, dir_index, names, emit| {
+            let Some(dir) = state.get(dir_index) else { return; };
+            if crate::vfs_events::identity(dir.stat()) != dir_id { return; }
+            if let InodeKind::Dir(entries) = &dir.kind {
+                entries.visit_watched_names(index, names, emit);
+            }
+        });
+    });
+}
+
 /// Open a directory stream over a rootfs directory, returning an encoded handle.
 pub fn opendir(path: &[u8]) -> Result<i64, Errno> {
     let comps = split_components(path);
@@ -6788,6 +6845,13 @@ pub fn closedir(handle: i64) -> Result<(), Errno> {
 
 /// mkdir a rootfs directory.
 pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = mkdir_mutation(path, mode, uid, gid)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn mkdir_mutation(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EEXIST); // the root already exists
@@ -6852,6 +6916,13 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
 
 /// Remove an empty rootfs directory.
 pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = rmdir_mutation(path)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn rmdir_mutation(path: &[u8]) -> Result<(), Errno> {
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EBUSY); // cannot remove the root
@@ -6903,6 +6974,13 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
 
 /// Unlink a rootfs non-directory name.
 pub fn unlink(path: &[u8]) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = unlink_mutation(path)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn unlink_mutation(path: &[u8]) -> Result<(), Errno> {
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EISDIR);
@@ -6955,6 +7033,15 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
 /// compatible type is atomically replaced; type mismatches yield ENOTDIR/EISDIR
 /// and a non-empty destination directory yields ENOTEMPTY.
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let old_entry = crate::vfs_events::Entry::capture(old, lstat);
+    let new_entry = crate::vfs_events::Entry::capture(new, lstat);
+    let result = rename_mutation(old, new)?;
+    if let Some(entry) = old_entry { entry.committed(false); }
+    if let Some(entry) = new_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn rename_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     rename_unmarked(old, new)?;
     mark_var_log_names(new);
     Ok(())
@@ -7115,6 +7202,13 @@ fn rename_unmarked(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 /// links to directories are EPERM; an existing destination is EEXIST. `old` is
 /// not dereferenced (the kernel already applied the syscall's follow policy).
 pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let new_entry = crate::vfs_events::Entry::capture(new, lstat);
+    let result = link_mutation(old, new)?;
+    if let Some(entry) = new_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn link_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     link_unmarked(old, new)?;
     mark_var_log_names(new);
     Ok(())
@@ -7240,6 +7334,13 @@ fn update_persistent_inode_metadata(
 
 /// chmod a rootfs path (permission bits only).
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = chmod_mutation(path, mode)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn chmod_mutation(path: &[u8], mode: u32) -> Result<(), Errno> {
     if resizable_persistence_enabled() {
         return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
             metadata.mode = mode & 0o7777;
@@ -7261,6 +7362,13 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
 /// `clear_setid` is set, set-user-ID (and set-group-ID on a group-executable
 /// file) is cleared, matching the host chown path.
 pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = chown_mutation(path, uid, gid, clear_setid)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn chown_mutation(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     if resizable_persistence_enabled() {
         return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
             change_persistent_owner(metadata, uid, gid, clear_setid);
@@ -7293,6 +7401,12 @@ pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), E
 
 /// fchmod an open rootfs file handle.
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
+    let result = fchmod_mutation(handle, mode)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn fchmod_mutation(handle: i64, mode: u32) -> Result<(), Errno> {
     if resizable_persistence_enabled() {
         return update_persistent_inode_metadata(file_handle_to_inode(handle)?, |metadata| {
             metadata.mode = mode & 0o7777;
@@ -7312,6 +7426,12 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
 
 /// fchown an open rootfs file handle. A field of `u32::MAX` (-1) is unchanged.
 pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let result = fchown_mutation(handle, uid, gid, clear_setid)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn fchown_mutation(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     if resizable_persistence_enabled() {
         return update_persistent_inode_metadata(file_handle_to_inode(handle)?, |metadata| {
             change_persistent_owner(metadata, uid, gid, clear_setid);
@@ -7353,6 +7473,21 @@ pub fn utimensat(
     ctime_sec: u64,
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = utimensat_mutation(path, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn utimensat_mutation(
+    path: &[u8],
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+) -> Result<(), Errno> {
     if resizable_persistence_enabled() {
         return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
             if atime_nsec >= 1_000_000_000 || mtime_nsec >= 1_000_000_000 || ctime_nsec >= 1_000_000_000 {
@@ -7383,6 +7518,13 @@ pub fn utimensat(
 
 /// Create a symbolic link at a rootfs path pointing at `target`.
 pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    let linkpath_entry = crate::vfs_events::Entry::capture(linkpath, lstat);
+    let result = symlink_mutation(target, linkpath, uid, gid)?;
+    if let Some(entry) = linkpath_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn symlink_mutation(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
     let comps = split_components(linkpath);
     if comps.is_empty() {
         return Err(Errno::EEXIST);

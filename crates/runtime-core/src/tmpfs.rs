@@ -178,6 +178,7 @@ struct DirEntries {
     /// Names in creation order, by cookie.
     by_cookie: BTreeMap<u64, Vec<u8>>,
     next_cookie: u64,
+    watch_version: crate::vfs_events::DirectoryVersion,
 }
 
 impl DirEntries {
@@ -188,6 +189,7 @@ impl DirEntries {
     /// Point `name` at `idx`. A new name gets the next cookie; a replaced
     /// one (rename over an existing entry) keeps its own.
     fn insert(&mut self, name: Vec<u8>, idx: u32) -> Option<u32> {
+        self.watch_version.changed();
         if let Some(entry) = self.by_name.get_mut(&name) {
             return Some(core::mem::replace(&mut entry.0, idx));
         }
@@ -201,6 +203,7 @@ impl DirEntries {
     fn remove(&mut self, name: &[u8]) -> Option<u32> {
         let (idx, cookie) = self.by_name.remove(name)?;
         self.by_cookie.remove(&cookie);
+        self.watch_version.changed();
         Some(idx)
     }
 
@@ -833,6 +836,13 @@ pub fn lstat(path: &[u8]) -> Result<WasmStat, Errno> {
 /// and honoring the access mode; `open_count` is incremented here and released
 /// via [`release_handle`].
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
+    let path_entry = if flags & (O_CREAT | O_TRUNC) != 0 { crate::vfs_events::Entry::capture(path, lstat) } else { None };
+    let result = open_mutation(path, flags, mode, uid, gid)?;
+    if let Some(entry) = path_entry { entry.committed(flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY); }
+    Ok(result)
+}
+
+fn open_mutation(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     TMPFS.with(|state| {
@@ -1282,6 +1292,12 @@ pub(crate) fn write_with_host(handle: i64, offset: i64, buf: &[u8], host: &mut d
 
 /// Write `buf` at `offset`, growing (and zero-filling any gap) as needed.
 pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
+    let result = write_mutation(handle, offset, buf)?;
+    if result > 0 { publish_handle_change(handle); }
+    Ok(result)
+}
+
+fn write_mutation(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
     let idx = file_handle_to_inode(handle)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
@@ -1411,6 +1427,12 @@ fn grow_file_bytes(data: &mut Vec<u8>, new_len: usize, err: Errno) -> Result<(),
 /// Truncate an open tmpfs regular file to `length`, zero-filling any growth.
 /// The caller enforces access mode and RLIMIT_FSIZE.
 pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
+    let result = truncate_handle_mutation(handle, length)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn truncate_handle_mutation(handle: i64, length: i64) -> Result<(), Errno> {
     truncate_handle_inner(handle, length)?;
     crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, length as u64);
     Ok(())
@@ -1559,6 +1581,13 @@ pub fn handle_is_live(handle: i64) -> bool {
 
 /// mkdir a tmpfs directory.
 pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = mkdir_mutation(path, mode, uid, gid)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn mkdir_mutation(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     mkdir_on_mount(mount_idx, rel, mode, uid, gid)
 }
@@ -1624,6 +1653,13 @@ fn mkdir_on_mount(mount_idx: usize, rel: &[u8], mode: u32, uid: u32, gid: u32) -
 
 /// Remove an empty tmpfs directory.
 pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = rmdir_mutation(path)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn rmdir_mutation(path: &[u8]) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     if comps.is_empty() {
@@ -1705,6 +1741,13 @@ pub fn remove_tree(path: &[u8]) -> Result<(), Errno> {
 
 /// Unlink a tmpfs non-directory name.
 pub fn unlink(path: &[u8]) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = unlink_mutation(path)?;
+    if let Some(entry) = path_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn unlink_mutation(path: &[u8]) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     if comps.is_empty() {
@@ -1820,6 +1863,15 @@ fn statfs_for_mount(mount_idx: usize) -> Result<WasmStatfs, Errno> {
 /// replaced; type mismatches yield ENOTDIR/EISDIR and a non-empty destination
 /// directory yields ENOTEMPTY.
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let old_entry = crate::vfs_events::Entry::capture(old, lstat);
+    let new_entry = crate::vfs_events::Entry::capture(new, lstat);
+    let result = rename_mutation(old, new)?;
+    if let Some(entry) = old_entry { entry.committed(false); }
+    if let Some(entry) = new_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn rename_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let (old_mount, old_rel) = match_mount(old).ok_or(Errno::ENOENT)?;
     let (new_mount, new_rel) = match_mount(new).ok_or(Errno::ENOENT)?;
     if old_mount != new_mount {
@@ -1906,6 +1958,13 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 /// destination is EEXIST. `old` is not dereferenced (the kernel already applied
 /// the syscall's follow policy), so a link to a symlink links the symlink.
 pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
+    let new_entry = crate::vfs_events::Entry::capture(new, lstat);
+    let result = link_mutation(old, new)?;
+    if let Some(entry) = new_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn link_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let (old_mount, old_rel) = match_mount(old).ok_or(Errno::ENOENT)?;
     let (new_mount, new_rel) = match_mount(new).ok_or(Errno::ENOENT)?;
     if old_mount != new_mount {
@@ -1941,6 +2000,41 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
         }
         Ok(())
     })
+}
+
+
+// Directory descriptions retain the dev/inode observed when opened. Validate
+// that identity even if the pathname was renamed and replaced before binding.
+pub(crate) fn watch_directory(path: &[u8], id: crate::lock::FileId) -> Result<u32, Errno> {
+    let at_path = walk_to_inode(path).ok();
+    TMPFS.with(|state| {
+        let matches = |inode: &Inode| matches!(inode.kind, InodeKind::Dir(_)) &&
+            crate::vfs_events::identity(inode.stat()) == id;
+        if let Some(index) = at_path.filter(|&i| state.get(i).is_some_and(matches)) {
+            return Ok(index);
+        }
+        state.inodes.iter().position(|slot| slot.as_ref().is_some_and(matches))
+            .map(|index| index as u32).ok_or(Errno::ENOENT)
+    })
+}
+
+fn publish_handle_change(handle: i64) {
+    if !crate::vfs_events::active() { return; }
+    let Ok(index) = file_handle_to_inode(handle) else { return; };
+    TMPFS.with(|state| {
+        let Some(inode) = state.get(index) else { return; };
+        let target = crate::vfs_events::identity(inode.stat());
+        crate::vfs_events::changed(target, |dir_id, dir_index, names, emit| {
+            let Some(dir) = state.get(dir_index) else { return; };
+            if crate::vfs_events::identity(dir.stat()) != dir_id { return; }
+            if let InodeKind::Dir(entries) = &dir.kind {
+                names.matching_names(index, &entries.watch_version, entries.len(),
+                    || entries.by_name.iter().map(|(name, &(inode, cookie))| (name.as_slice(), inode, cookie)),
+                    |cookie| entries.by_cookie.get(&cookie).map(Vec::as_slice),
+                    emit);
+            }
+        });
+    });
 }
 
 /// Open a directory stream over a tmpfs directory, returning an encoded handle.
@@ -2013,6 +2107,13 @@ fn walk_to_inode(path: &[u8]) -> Result<u32, Errno> {
 
 /// chmod a tmpfs path (permission bits only).
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = chmod_mutation(path, mode)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn chmod_mutation(path: &[u8], mode: u32) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -2025,6 +2126,13 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
 
 /// chown a tmpfs path. A field of `u32::MAX` (-1) is left unchanged.
 pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = chown_mutation(path, uid, gid, clear_setid)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn chown_mutation(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -2055,6 +2163,12 @@ pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), E
 
 /// fchmod an open tmpfs file handle.
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
+    let result = fchmod_mutation(handle, mode)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn fchmod_mutation(handle: i64, mode: u32) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -2067,6 +2181,12 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
 
 /// fchown an open tmpfs file handle. A field of `u32::MAX` (-1) is unchanged.
 pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    let result = fchown_mutation(handle, uid, gid, clear_setid)?;
+    publish_handle_change(handle);
+    Ok(result)
+}
+
+fn fchown_mutation(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
@@ -2104,6 +2224,21 @@ pub fn utimensat(
     ctime_sec: u64,
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
+    let path_entry = crate::vfs_events::Entry::capture(path, lstat);
+    let result = utimensat_mutation(path, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
+    if let Some(entry) = path_entry { entry.committed(true); }
+    Ok(result)
+}
+
+fn utimensat_mutation(
+    path: &[u8],
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
@@ -2120,6 +2255,13 @@ pub fn utimensat(
 
 /// Create a symbolic link at a tmpfs path pointing at `target`.
 pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+    let linkpath_entry = crate::vfs_events::Entry::capture(linkpath, lstat);
+    let result = symlink_mutation(target, linkpath, uid, gid)?;
+    if let Some(entry) = linkpath_entry { entry.committed(false); }
+    Ok(result)
+}
+
+fn symlink_mutation(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
     let (mount_idx, rel) = match_mount(linkpath).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
     if comps.is_empty() {

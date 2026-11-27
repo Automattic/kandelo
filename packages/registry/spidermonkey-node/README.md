@@ -42,6 +42,9 @@ Node's bundled OpenSSL uses `no-secure-memory`, like the
 [standalone OpenSSL package](../openssl/README.md#no-secure-heap). WebAssembly
 linear memory cannot enforce the secure heap's guard pages. Node reports the
 secure heap as unavailable and still builds its OpenSSL crypto and TLS provider.
+With `--secure-heap`, Node reports initialization failure on stderr. The
+`total` in `crypto.secureHeapUsed()` reflects the requested capacity while
+`used` remains zero after key generation.
 The engine link uses Kandelo's opt-in `mprotect()` library for buffer commits.
 Requests to restrict memory access return `ENOTSUP`.
 

@@ -45,6 +45,7 @@ pub mod fifo;
 pub mod fork;
 pub mod framebuffer;
 pub mod fs_changes;
+mod vfs_events;
 pub mod guest_ptr;
 pub mod guest_recvmsg;
 pub mod gl_query_request;

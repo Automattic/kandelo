@@ -1,0 +1,27 @@
+# Route uv_fs_event through the pollable guest VFS device on Kandelo.
+# Upstream's no-fsevents backend always returns ENOSYS, including on kernels
+# with the provider. libuv must select and dispatch this platform backend.
+# backend-controls exercises both provider configurations. Drop this patch
+# when upstream libuv selects the Kandelo backend itself.
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -334,7 +334,7 @@
+        src/unix/posix-hrtime.c
+        src/unix/posix-poll.c
+        src/unix/procfs-exepath.c
+-       src/unix/no-fsevents.c
++       src/unix/kandelo-fs-events.c
+        src/unix/bsd-ifaddrs.c
+        src/unix/kandelo-uptime.c
+        src/unix/linux.c
+--- a/src/unix/internal.h
++++ b/src/unix/internal.h
+@@ -301,7 +301,7 @@
+     !defined(__DragonFly__) &&                                                \
+     !defined(__FreeBSD__) &&                                                  \
+     !defined(__NetBSD__) &&                                                   \
+-    !defined(__OpenBSD__)
++    !defined(__OpenBSD__) && !defined(UV_PLATFORM_KANDELO)
+ #define uv__fs_event(loop, w, events) UNREACHABLE()
+ #endif
+ 

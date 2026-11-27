@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -56,6 +57,63 @@ static void start_watchdog(void) {
 static void finish_watchdog(void) {
   CHECK(uv_timer_stop(&timer) == 0);
   uv_close((uv_handle_t*)&timer, NULL);
+}
+static unsigned watch_events;
+static void file_event_cb(uv_fs_event_t* handle, const char* filename,
+                          int events, int status) {
+  CHECK(status == 0 && filename != NULL && strcmp(filename, "entry") == 0);
+  watch_events |= (unsigned)events;
+  if ((watch_events & (UV_RENAME | UV_CHANGE)) == (UV_RENAME | UV_CHANGE)) {
+    CHECK(uv_fs_event_stop(handle) == 0);
+    CHECK(!uv_is_active((uv_handle_t*)handle));
+    uv_close((uv_handle_t*)handle, close_cb);
+    finish_watchdog();
+  }
+}
+
+static unsigned open_descriptor_count(void) {
+  DIR* dir = opendir("/proc/self/fd");
+  struct dirent* entry;
+  unsigned count = 0;
+  CHECK(dir != NULL);
+  while ((entry = readdir(dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) count++;
+  }
+  CHECK(closedir(dir) == 0);
+  return count;
+}
+
+static void check_filesystem_watch(void) {
+  struct stat st;
+  uv_fs_event_t watcher;
+  char directory[] = "/tmp/libuv-watch-XXXXXX";
+  char path[sizeof(directory) + sizeof("/entry")];
+  const int present = stat("/dev/kandelo/fs-events", &st) == 0;
+  const int probe_errno = errno;
+  CHECK(uv_loop_init(&loop) == 0);
+  if (present) {
+    CHECK(S_ISCHR(st.st_mode));
+    CHECK(mkdtemp(directory) != NULL);
+    CHECK(snprintf(path, sizeof(path), "%s/entry", directory) < (int)sizeof(path));
+    const unsigned before = open_descriptor_count();
+    CHECK(uv_fs_event_init(&loop, &watcher) == 0);
+    CHECK(uv_fs_event_start(&watcher, file_event_cb, directory, 0) == 0);
+    start_watchdog();
+    const int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    CHECK(fd >= 0 && write(fd, "event", 5) == 5 && close(fd) == 0);
+    closed = watch_events = 0;
+    CHECK(uv_run(&loop, UV_RUN_DEFAULT) == 0 && closed == 1);
+    CHECK(unlink(path) == 0 && rmdir(directory) == 0);
+    CHECK(uv_run(&loop, UV_RUN_NOWAIT) == 0 && closed == 1);
+    CHECK(open_descriptor_count() == before);
+  } else {
+    CHECK(probe_errno == ENOENT);
+    CHECK(uv_fs_event_init(&loop, &watcher) == UV_ENOSYS);
+  }
+  CHECK(!uv_loop_alive(&loop) && uv_loop_close(&loop) == 0);
+  printf("{\"case\":\"filesystem-watch-provider-contract\",\"status\":\"pass\","
+         "\"provider\":\"%s\"}\n", present ? "present" : "absent");
+  cases++;
 }
 static uv_prepare_t prepare;
 static uv_check_t check_handle;
@@ -383,12 +441,7 @@ int main(int argc, char** argv) {
   CHECK(uv_get_constrained_memory() == (uint64_t) address_limit.rlim_cur);
   passed("memory-constraints-follow-real-guest-resource-limits");
 
-  uv_fs_event_t watcher;
-  CHECK(uv_loop_init(&loop) == 0);
-  CHECK(uv_fs_event_init(&loop, &watcher) == UV_ENOSYS);
-  CHECK(!uv_loop_alive(&loop));
-  CHECK(uv_loop_close(&loop) == 0);
-  passed("filesystem-watch-explicit-unsupported");
+  check_filesystem_watch();
   uv_library_shutdown();
   printf("{\"kind\":\"libuv-backend-controls\",\"cases\":%u,\"failures\":0}\n", cases);
   return 0;

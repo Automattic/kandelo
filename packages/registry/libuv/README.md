@@ -39,10 +39,16 @@ and frees it before calling the original void callback. Creation failure
 frees the pair in the caller. This is a C callback-signature portability
 fix, not an engine or kernel workaround.
 
-Filesystem event watching uses upstream's no-fsevents.c: initialization
-returns UV_ENOSYS. Process-title get/set also return UV_ENOSYS rather than
-upstream no-proctitle.c's successful no-ops. No title/argument storage is
-allocated. These are explicit gaps, not implemented functionality.
+The Kandelo filesystem event backend opens the optional guest device
+`/dev/kandelo/fs-events`. It binds a readable target descriptor and consumes
+kernel events through the portable poll backend. Without the device,
+`uv_fs_event_init` returns `UV_ENOSYS`. Recursive watching through this
+libuv backend returns `UV_ENOTSUP`. A stopped watcher releases its device,
+target descriptor and poll registration. The package control checks for
+the device independently and exercises the corresponding contract.
+
+Process-title get/set return `UV_ENOSYS`. Kandelo has no title/argument
+storage for these operations.
 
 Revision 5 also selects the complete unchanged upstream `procfs-exepath.c`.
 `uv_exepath` reads the guest kernel's actual `/proc/self/exe`, including its

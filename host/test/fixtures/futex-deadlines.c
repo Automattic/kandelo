@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <semaphore.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/syscall.h>
@@ -45,6 +46,27 @@ static int wait_until(clockid_t clock, int flags) {
     return 0;
 }
 
+static int semaphore_deadline(sem_t *sem, clockid_t clock, int use_default_clock) {
+    struct timespec deadline, after;
+    if (clock_gettime(clock, &deadline)) return 1;
+    deadline.tv_nsec += 20000000;
+    if (deadline.tv_nsec >= 1000000000) {
+        deadline.tv_nsec -= 1000000000;
+        deadline.tv_sec++;
+    }
+    errno = 0;
+    int result = use_default_clock ? sem_timedwait(sem, &deadline) : sem_clockwait(sem, clock, &deadline);
+    if (result != -1 || errno != ETIMEDOUT) {
+        fprintf(stderr, "semaphore clock %d: result=%d errno=%d\n", clock, result, errno);
+        return 1;
+    }
+    if (clock_gettime(clock, &after) || !expired(&after, &deadline)) {
+        fprintf(stderr, "semaphore clock %d returned before its deadline\n", clock);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     if (wait_until(CLOCK_MONOTONIC, 0) || wait_until(CLOCK_REALTIME, REALTIME)) return 1;
     struct timespec before, after, duration = {.tv_nsec = 20000000};
@@ -61,6 +83,18 @@ int main(void) {
         fprintf(stderr, "relative wait returned before its duration\n");
         return 1;
     }
+    sem_t sem;
+    if (sem_init(&sem, 0, 0) ||
+        semaphore_deadline(&sem, CLOCK_MONOTONIC, 0) ||
+        semaphore_deadline(&sem, CLOCK_REALTIME, 0) ||
+        semaphore_deadline(&sem, CLOCK_REALTIME, 1) ||
+        sem_post(&sem)) return 1;
+    errno = 0;
+    if (sem_clockwait(&sem, CLOCK_PROCESS_CPUTIME_ID, &after) != -1 || errno != EINVAL) {
+        fputs("semaphore accepted an unsupported clock\n", stderr);
+        return 1;
+    }
+    if (sem_trywait(&sem) || sem_destroy(&sem)) return 1;
     puts("FUTEX_DEADLINES_PASS");
     return 0;
 }
