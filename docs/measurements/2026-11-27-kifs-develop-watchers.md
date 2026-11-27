@@ -44,6 +44,13 @@ in v2-first order and from 192.22 to 91.14 ms in v3-first order. Unwatched
 times improved in the same runs. The timings reflect both kernels and the
 machine load over the run.
 
+A separate instrumented Firefox run counted positioned operations around
+513 guest writes to already-created files. V2 issued 14 host writes and
+21 flushes in each sample. V3 issued 544–547 host writes and 24–27 flushes.
+The v3 runs with watches issued 545 writes and 24 flushes. All four v3
+samples read one 4 KiB page. The repeated-write gap warrants work on how
+v3 submits file data to storage.
+
 ## Capacity, correctness and artifacts
 
 The timed kernel was built with the normal kernel package recipe from
@@ -61,11 +68,12 @@ is a separate qualification.
 The v2 control had 512 MiB and 65,536 file entries. The upgraded v3 shell
 reported 1 GiB and a shared logical budget for data and metadata. Kernel
 Wasm memory at boot was 32 pages (2.00 MiB) for v2 and 27 pages (1.69 MiB)
-for v3 in every timed pair. A separate Node run started with 2.42 MiB of
-physical v3 storage, created 12,000 one-byte files, and retained 972.3 MiB
-of logical free space. Kernel memory grew to 163 pages (10.19 MiB), the
-host transport metadata tracker peaked at 3 KiB, and the saved volume and
-its exported snapshot reopened successfully.
+for v3 in every timed pair. Separate capacity runs on Node and all three
+browsers started with 2.42 MiB of physical v3 storage, created 12,000
+one-byte files, and retained 972.3 MiB of logical free space. Kernel memory
+grew to 163 pages (10.19 MiB) and the host transport metadata tracker peaked
+at 3 KiB on each host. The saved volumes and their exported snapshots
+reopened successfully.
 
 The native runtime suite passed 4,156 tests after the merge. The final
 watcher changes passed all 307 rootfs tests, including two observers,

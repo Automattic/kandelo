@@ -4860,19 +4860,6 @@ export class WasmPosixKernel {
     );
   }
 
-  /**
-   * host_fetch_deferred(uri_ptr, uri_len, buf_ptr, buf_len, offset) -> i32
-   *
-   * Serve positioned bytes of the deferred resource at `uri` from the installed
-   * provider. Bytes are staged outside kernel memory and published once (never
-   * lend a live view of Rust-owned memory to the provider), mirroring
-   * `#hostReadAt`. Reports ENOSYS when no provider is installed, so the seam is
-   * truthfully unbacked until the worker wires it.
-   *
-   * The address is whatever the image recorded, relayed verbatim. This host
-   * does not interpret it, and relaying it is not a decision that it may be
-   * fetched — that decision belongs to the provider that goes and fetches.
-   */
   #hostExchangeSourceRead(
     source: bigint,
     offset: bigint,
@@ -4908,6 +4895,13 @@ export class WasmPosixKernel {
     return result;
   }
 
+  /**
+   * Serve positioned bytes using the URI and resource length recorded in the
+   * filesystem. The provider decides whether it can serve that URI and uses
+   * the length to bound its storage. Stage provider output outside Rust-owned
+   * memory and copy the result after validating the count. An absent provider
+   * reports ENOSYS.
+   */
   #hostFetchDeferred(
     uri: string,
     offset: bigint,
