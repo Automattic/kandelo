@@ -45,6 +45,23 @@ pub trait PhysicalMemory {
     fn atomic_notify(&mut self, address: u32, count: u32) -> Result<u32, Errno>;
 }
 
+/// Clear adjacent selected frames with one foreign-memory call. The input
+/// is the pool's increasing selection, so runs never cross an occupied page.
+fn zero_selected_pages(
+    memory: &mut impl PhysicalMemory,
+    pages: impl Iterator<Item = u32>,
+) -> Result<(), Errno> {
+    let mut pages = pages.peekable();
+    while let Some(first) = pages.next() {
+        let mut end = first + 1;
+        while pages.next_if_eq(&end).is_some() {
+            end += 1;
+        }
+        memory.fill(first * PAGE, (end - first) * PAGE, 0)?;
+    }
+    Ok(())
+}
+
 /// The adapter is bound to the kernel-issued resource, never a host-selected
 /// image or an object-id lookup. All page ownership stays in the caller.
 pub(crate) struct HostMemory<'a> {
@@ -276,9 +293,7 @@ impl PagePool {
             let last =
                 select_last(bitmap, pool.maximum_pages, output.len(), &[]).ok_or(Errno::ENOMEM)?;
             pool.ensure_extent(memory, last + 1)?;
-            for page in (1..=last).filter(|page| !used(bitmap, *page)) {
-                memory.fill(page * PAGE, PAGE, 0)?;
-            }
+            zero_selected_pages(memory, (1..=last).filter(|page| !used(bitmap, *page)))?;
             for (at, page) in (1..=last).filter(|page| !used(bitmap, *page)).enumerate() {
                 output[at] = page;
             }
@@ -341,9 +356,7 @@ impl PagePool {
             let selected = |page: &u32| {
                 !used(bitmap, *page) && !first.contains(*page) && !second.contains(*page)
             };
-            for page in (1..=last_payload).filter(selected) {
-                memory.fill(page * PAGE, PAGE, 0)?;
-            }
+            zero_selected_pages(memory, (1..=last_payload).filter(selected))?;
             for (at, page) in (1..=last_payload).filter(selected).enumerate() {
                 payload[at] = page;
             }
@@ -456,10 +469,13 @@ pub(super) mod tests {
     use alloc::{vec, vec::Vec};
 
     pub(in crate::memory_group) struct Memory {
+        pub(in crate::memory_group) fill_calls: Vec<(u32, u32)>,
+        pub(in crate::memory_group) copy_calls: Vec<(u32, u32, u32)>,
         bytes: Vec<u8>,
         maximum: u32,
         pub(in crate::memory_group) refuse_growth: bool,
         fail_bitmap_write: bool,
+        pub(in crate::memory_group) fail_write_after_at: Option<u32>,
         fail_atomic_store_at: Option<u32>,
         pub(in crate::memory_group) next_reported_pages: core::cell::Cell<Option<u32>>,
         watched_load: Option<u32>,
@@ -486,9 +502,12 @@ pub(super) mod tests {
         pub(in crate::memory_group) fn new(maximum: u32) -> Self {
             Self {
                 bytes: vec![0; PAGE as usize],
+                fill_calls: Vec::new(),
+                copy_calls: Vec::new(),
                 maximum,
                 refuse_growth: false,
                 fail_bitmap_write: false,
+                fail_write_after_at: None,
                 fail_atomic_store_at: None,
                 next_reported_pages: core::cell::Cell::new(None),
                 watched_load: None,
@@ -531,9 +550,13 @@ pub(super) mod tests {
                 .get_mut(address as usize..address as usize + input.len())
                 .ok_or(Errno::EFAULT)?
                 .copy_from_slice(input);
+            if self.fail_write_after_at == Some(address) {
+                return Err(Errno::EIO);
+            }
             Ok(())
         }
         fn fill(&mut self, address: u32, length: u32, value: u8) -> Result<(), Errno> {
+            self.fill_calls.push((address, length));
             self.bytes
                 .get_mut(address as usize..address as usize + length as usize)
                 .ok_or(Errno::EFAULT)?
@@ -541,6 +564,7 @@ pub(super) mod tests {
             Ok(())
         }
         fn copy(&mut self, destination: u32, source: u32, length: u32) -> Result<(), Errno> {
+            self.copy_calls.push((destination, source, length));
             self.bytes.copy_within(
                 source as usize..(source + length) as usize,
                 destination as usize,
@@ -575,6 +599,21 @@ pub(super) mod tests {
         }
         fn atomic_notify(&mut self, _: u32, _: u32) -> Result<u32, Errno> {
             Ok(0)
+        }
+    }
+
+    #[test]
+    fn clearing_selected_runs_does_not_touch_a_live_page() {
+        let mut memory = Memory::new(8);
+        memory.grow(6).unwrap();
+        memory.fill(PAGE, 6 * PAGE, 0x7b).unwrap();
+        memory.fill_calls.clear();
+        zero_selected_pages(&mut memory, [1, 2, 4, 5, 6].into_iter()).unwrap();
+        assert_eq!(memory.fill_calls, [(PAGE, 2 * PAGE), (4 * PAGE, 3 * PAGE)]);
+        let mut byte = [0];
+        for (page, expected) in [(1, 0), (2, 0), (3, 0x7b), (4, 0), (5, 0), (6, 0)] {
+            memory.read(page * PAGE, &mut byte).unwrap();
+            assert_eq!(byte, [expected]);
         }
     }
 
