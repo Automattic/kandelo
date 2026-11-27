@@ -338,6 +338,44 @@ fn source_digest_is_exact_retained_source_and_is_checked_again_after_image_reads
 }
 
 #[test]
+fn grouped_bind_refuses_changed_image_bytes_with_unchanged_metadata() {
+    let _namespace = NamespaceGuard::enter();
+    let mut host = private_program_host();
+    host.image = group_variant_for(&host.source);
+    let mut proc = Process::new(100);
+    let mut locks = AdvisoryLockManager::new();
+    let source_ref = proc.ofd_table.create(
+        FileType::Regular, O_RDONLY, SOURCE, b"/retained-source".to_vec(),
+    );
+    let image_ref = proc.ofd_table.create(
+        FileType::Regular, O_RDONLY, IMAGE, b"/group-image".to_vec(),
+    );
+    let source_fd = proc.fd_table.alloc(OpenFileDescRef(source_ref), 0).unwrap();
+    let image_fd = proc.fd_table.alloc(OpenFileDescRef(image_ref), 0).unwrap();
+    let target = prepare_fd(&mut proc, &mut locks, &mut host, source_fd);
+    let image = prepare_fd(&mut proc, &mut locks, &mut host, image_fd);
+    observe(&mut proc, &mut host, target);
+    observe(&mut proc, &mut host, image);
+    let image_stat = host.host_fstat(IMAGE).unwrap();
+
+    host.image[4] ^= 1;
+    assert!(metadata_matches(&image_stat, &host.host_fstat(IMAGE).unwrap()));
+    assert_eq!(
+        bind_memory_group_image(&mut proc, &mut locks, &mut host, 100, target, image),
+        Err(Errno::ETXTBSY),
+    );
+    assert_eq!(proc.prepared_exec_targets.get(target).unwrap().ofd_ref, OpenFileDescRef(source_ref));
+    assert_eq!(observe(&mut proc, &mut host, target), host.source);
+
+    host.image[4] ^= 1;
+    bind_memory_group_image(&mut proc, &mut locks, &mut host, 100, target, image).unwrap();
+    assert_eq!(observe(&mut proc, &mut host, target), host.image);
+    cancel(&mut proc, &mut locks, &mut host, 100, image).unwrap();
+    cancel(&mut proc, &mut locks, &mut host, 100, target).unwrap();
+    sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+}
+
+#[test]
 fn an_image_changed_during_the_trailing_source_hash_is_not_committed() {
     let source = ORIGINAL.to_vec();
     let image = output(&source);

@@ -32,7 +32,7 @@ fn bind_with_inspection(
     let target = proc.prepared_exec_targets.get(token)?;
     owner_matches_ledger_pid(target.owner(), owner_pid)?;
     plan.verify_source(target.observed_bytes()?)?;
-    bind_verified_image(proc, locks, host, owner_pid, token, image, plan.output_limit(), false, |_, bytes| {
+    bind_verified_image(proc, locks, host, owner_pid, token, image, plan.output_limit(), false, |_, _, bytes| {
         match inspection {
             Some(inspection) => { plan.verify_cached_output_inspected(bytes, &receipt.encode(), inspection)?; }
             None => { plan.verify_cached_output(bytes, &receipt.encode())?; }
@@ -49,7 +49,6 @@ pub(crate) fn bind_memory_group_image(
     proc: &mut Process, locks: &mut AdvisoryLockManager, host: &mut dyn HostIO,
     owner_pid: u32, token: u32, image_token: u32,
 ) -> Result<(), Errno> {
-    use sha2::{Digest, Sha256};
     if token == image_token { return Err(Errno::EINVAL); }
     let source = proc.prepared_exec_targets.get(token)?;
     let image = proc.prepared_exec_targets.get(image_token)?;
@@ -62,14 +61,13 @@ pub(crate) fn bind_memory_group_image(
         return Err(Errno::EOPNOTSUPP);
     }
     let image_ref = image.ofd_ref;
-    let image_digest: [u8; 32] = Sha256::digest(image.observed_bytes()?).into();
     bind_verified_image(proc, locks, host, owner_pid, token, image_ref,
-        platform_limits::MAX_REPORTABLE_TRANSFER_BYTES as u64, true, |source, bytes| {
-            let actual_image_digest: [u8; 32] = Sha256::digest(bytes).into();
-            if actual_image_digest != image_digest { return Err(Errno::ETXTBSY); }
+        platform_limits::MAX_REPORTABLE_TRANSFER_BYTES as u64, true, |targets, source, bytes| {
+            // The first observation is still owned by this ledger. Compare it
+            // to the fresh read before publishing a backing for the image.
+            if targets.get(image_token)?.observed_bytes()? != bytes { return Err(Errno::ETXTBSY); }
             let layout = wasm_artifact::grouped_memory::read_layout(bytes).map_err(|_| Errno::ENOEXEC)?;
-            let digest: [u8; 32] = Sha256::digest(source).into();
-            if layout.source_sha256 != digest { return Err(Errno::ENOEXEC); }
+            if !source.matches_digest(&layout.source_sha256) { return Err(Errno::ENOEXEC); }
             Ok(())
         })
 }
@@ -78,7 +76,7 @@ pub(crate) fn bind_memory_group_image(
 fn bind_verified_image(
     proc: &mut Process, locks: &mut AdvisoryLockManager, host: &mut dyn HostIO,
     owner_pid: u32, token: u32, image: OpenFileDescRef, output_limit: u64, expose_source: bool,
-    verify: impl FnOnce(&[u8], &[u8]) -> Result<(), Errno>,
+    verify: impl FnOnce(&PreparedExecLedger, &crate::executable_backing::SourceBinding, &[u8]) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
     let target = proc.prepared_exec_targets.get(token)?;
     owner_matches_ledger_pid(target.owner(), owner_pid)?;
@@ -159,7 +157,7 @@ fn bind_verified_image(
     if !metadata_matches(&image_stat, &target_fstat(host, image_handle)?) {
         return Err(Errno::ETXTBSY);
     }
-    verify(target.observed_bytes()?, &replacement.observed_bytes)?;
+    verify(&proc.prepared_exec_targets, &binding, &replacement.observed_bytes)?;
     replacement
         .observed_ranges
         .try_reserve_exact(1)
