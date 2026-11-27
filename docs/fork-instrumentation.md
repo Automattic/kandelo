@@ -2176,7 +2176,13 @@ the fork closure remain untouched. Within a live activation, the generated
 representation is selected by value class:
 
 - scalar locals, parameters, arguments, and carryovers use the linked frame;
-- `funcref` values use an activation-scoped immutable function catalog;
+- `funcref` values use an activation-scoped immutable function catalog.
+  Each registry snapshots the instrumenter's fixed function ordinals on
+  activation registration. Fork capture, replay, peer-table checkpoints and
+  short table patches share that snapshot. Registration and removal require
+  an idle registry. The inverse index is built on the first non-null encode
+  after a membership change. Unregister and clear release the snapshots.
+  [Fork catalog measurement](measurements/2026-11-26-fork-function-catalog.md)
 - static references use the fresh instance's static-root catalog;
 - concrete and abstract GC references use versioned typed struct/array/i31
   recipes with graph identity established before recursive fields, preserving
