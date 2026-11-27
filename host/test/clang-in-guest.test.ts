@@ -15,11 +15,12 @@ import { guestCompileCommand, guestCompilerCases } from "./fixtures/in-guest-com
 // Resolve each complete closure under the normal policy; SourceOnly captures
 // bind the complete product set to one published generation.
 const utilityNames = ["coreutils", "grep", "sed"];
+const utilityPaths = utilityNames.map((name) => `programs/wasm32/${name}/${name}.wasm`);
 const artifactNames = [
   "kernel.wasm",
   "programs/wasm32/shell.vfs.zst",
   "programs/wasm32/kandelo-sdk.zip",
-  ...utilityNames.map((name) => `programs/wasm32/${name}.wasm`),
+  ...utilityPaths,
 ];
 const sourceOnly = process.env.WASM_POSIX_RESOLUTION_POLICY === "source-only-v1";
 const artifacts = sourceOnly
@@ -69,7 +70,7 @@ describe.skipIf(!available)("base shell in-guest compiler", () => {
         size: sdk!.byteLength,
         bytes: sdk!,
       }, ...utilities.map((bytes, index) => ({
-        url: `${lazyBase}assets/programs/wasm32/${utilityNames[index]}.wasm`,
+        url: `${lazyBase}assets/${utilityPaths[index]}`,
         sha256: createHash("sha256").update(bytes).digest("hex"),
         size: bytes.byteLength,
         bytes,
