@@ -11,6 +11,7 @@ import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
+import { WAKEUP_EVENT_FIELDS, WAKEUP_EVENT_RECORD_BYTES, WAKEUP_EVENT_TYPES } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 beforeAll(() => {
@@ -281,18 +282,32 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(wake).toHaveBeenCalledTimes(1);
   });
 
-  it("tickVblank wakes blocked retries on a tick whose vblank released a waiter or queued an event", () => {
-    // kernel_vblank reaches a parked DRM_IOCTL_WAIT_VBLANK's target (or a
-    // DRM_VBLANK_EVENT's) without any host-side flip latch; the kernel
-    // reports that through kernel_kms_take_vblank_wake, consumed once.
+  it("settles kernel waits and schedules host retries when vblank reports readiness", () => {
+    // A DRM event can ready a Rust-owned epoll wait on a tick without an
+    // input event, another guest syscall or a change to the host flip count.
     let pending = 0;
+    let queued = false;
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    const wakeDrain = vi.fn((pointer: number) => {
+      if (!queued) return 0;
+      queued = false;
+      const record = new DataView(memory.buffer, pointer, WAKEUP_EVENT_RECORD_BYTES);
+      record.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+      record.setUint8(WAKEUP_EVENT_FIELDS.wakeType.offset, WAKEUP_EVENT_TYPES.waitComplete);
+      return 1;
+    });
+    const waitDrain = vi.fn(() => 0);
     const kernel = makeKernel({
       kernel_kms_take_vblank_wake: () => {
         const taken = pending;
         pending = 0;
+        queued = taken !== 0;
         return taken;
       },
-    });
+      kernel_drain_wakeup_events: wakeDrain,
+      kernel_drain_wait_completions: waitDrain,
+      kernel_wait_next_timeout_ns: () => -1n,
+    }, memory);
     (kernel.kms as unknown as { flipCount: () => number }).flipCount = () => 0;
     const wake = vi.fn();
     kernel.testAuthority.configureScratchBoundaryHooksForTest({
@@ -302,13 +317,20 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
 
     vi.advanceTimersByTime(17);
     expect(wake).not.toHaveBeenCalled();
+    expect(wakeDrain).not.toHaveBeenCalled();
+    expect(waitDrain).not.toHaveBeenCalled();
 
     pending = 1;
     vi.advanceTimersByTime(17);
     expect(wake).toHaveBeenCalledTimes(1);
+    expect(wakeDrain).toHaveBeenCalledTimes(1);
+    expect(waitDrain).toHaveBeenCalledTimes(1);
+    expect(waitDrain.mock.invocationCallOrder[0]).toBeLessThan(wake.mock.invocationCallOrder[0]);
 
     vi.advanceTimersByTime(17 * 3);
     expect(wake).toHaveBeenCalledTimes(1);
+    expect(wakeDrain).toHaveBeenCalledTimes(1);
+    expect(waitDrain).toHaveBeenCalledTimes(1);
   });
 
   it("ticks on display frames where the worker animates, passing each frame's age to the kernel", () => {
