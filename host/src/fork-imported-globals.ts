@@ -9,7 +9,7 @@ import {
   WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 } from "./generated/abi";
 import {
-  findForkGlobalSnapshot,
+  forkGlobalSnapshotFinder,
   ForkImportedGlobalBindingKind,
   ForkImportedTableBindingKind,
   type ForkGlobalSnapshot,
@@ -490,15 +490,14 @@ export class ForkImportedGlobalCapture {
         `${this.label}: cannot snapshot with ${this.prepared.size} incomplete activation(s)`,
       );
     }
-    const records = arena.recordsForCapture();
+    const findSnapshot = forkGlobalSnapshotFinder(arena.recordsForCapture());
     const globalCoordinates = this.globalCoordinates();
     const tableCoordinates = this.tableCoordinates();
     const bindings: ForkImportedGlobalBinding[] = [];
     const tableBindings: ForkImportedTableBinding[] = [];
     for (const activation of this.orderedActivations()) {
       for (const descriptor of activation.globalDescriptors) {
-        const snapshot = findForkGlobalSnapshot(
-          records,
+        const snapshot = findSnapshot(
           activation.activationId,
           descriptor.ownerId,
         );
@@ -766,13 +765,15 @@ export class ForkImportedGlobalPlanner {
     new Map<string, ForkImportedGlobalBinding>();
   private readonly tableBindingsByConsumer =
     new Map<string, ForkImportedTableBinding>();
+  private readonly findSnapshot: ReturnType<typeof forkGlobalSnapshotFinder>;
 
   constructor(
-    private readonly records: readonly ForkModuleStateRecord[],
+    records: readonly ForkModuleStateRecord[],
     modules: ReadonlyMap<number, WebAssembly.Module>,
     private readonly references: ForkImportedReferenceProvider,
     private readonly label: string,
   ) {
+    this.findSnapshot = forkGlobalSnapshotFinder(records);
     const globalBindings = importedGlobalBindingsForChild(records);
     const tableBindings = importedTableBindingsForChild(records);
     for (const binding of globalBindings) {
@@ -1001,11 +1002,7 @@ export class ForkImportedGlobalPlanner {
           + `${descriptor.ownerId} is not an integer scalar`,
         );
       }
-      const snapshot = findForkGlobalSnapshot(
-        this.records,
-        activationId,
-        descriptor.ownerId,
-      );
+      const snapshot = this.findSnapshot(activationId, descriptor.ownerId);
       if (
         snapshot.typeCode !== descriptor.typeCode
         || snapshot.typeCode !== binding.typeCode

@@ -22,6 +22,7 @@ import {
   FORK_MODULE_STATE_REQUIRED_FLAGS,
   FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
   FORK_MODULE_STATE_SECTION,
+  forkGlobalSnapshotFinder,
   MEMORY_PLAIN_FORM_SECTION,
   readForkModuleStateDescriptor,
   readForkImportedGlobals,
@@ -1043,6 +1044,37 @@ describe("module-state root-prefix ownership", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     expect(() => writeForkModuleStateRoot(memory, 128, 4, 1234))
       .toThrow("arena root must be page-aligned");
+  });
+});
+
+describe("fork global snapshot index", () => {
+  const global = (activationId: number, ownerId: number, value: number) => ({
+    kind: ForkModuleStateRecordKind.MutableGlobal,
+    activationId,
+    ownerId,
+    payload: mutableI32(value),
+  });
+
+  it("finds the one snapshot of each activation and owner", () => {
+    const find = forkGlobalSnapshotFinder([
+      global(0, 1, 11),
+      { ...global(0, 2, 12), kind: ForkModuleStateRecordKind.ReferenceRecipe },
+      global(1, 1, 13),
+    ]);
+    const value = (activationId: number, ownerId: number): number =>
+      new DataView(find(activationId, ownerId).value.buffer).getUint32(0, true);
+
+    expect(value(0, 1)).toBe(11);
+    expect(value(1, 1)).toBe(13);
+  });
+
+  it("rejects a missing snapshot and a duplicate snapshot", () => {
+    const find = forkGlobalSnapshotFinder([global(0, 1, 11), global(0, 1, 12)]);
+
+    expect(() => find(0, 2))
+      .toThrow("module-state has 0 global snapshots for 0:2; expected one");
+    expect(() => find(0, 1))
+      .toThrow("module-state has 2 global snapshots for 0:1; expected one");
   });
 });
 
