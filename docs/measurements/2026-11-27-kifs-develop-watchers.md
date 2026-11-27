@@ -108,16 +108,69 @@ resolution. V3’s 512 watched writes took 1.06–1.11× v2’s time, and the
 unwatched writes took 1.23–1.40×. Watched namespace churn took 0.35–0.50×.
 These runs had lower machine load than the frozen-image matrix.
 
+## Deferred transport build
+
+The normal `./run.sh partial shell bash coreutils git --jobs 1` build from
+`ffddaa9507` published kernel SHA-256
+`e6b4a88e0d427ba7f13345d3495bc9b8639e724760f0a6196fe0dbf536adc283`.
+The shell hash stayed
+`5e9ed5ddb7e796842ee6a4d4466077687cc6d7a1298a52164124b41fee2d9a50`.
+The pipeline refused the first run because the checked kernel recipe changed
+while it was building. The rerun used the final guards from the start.
+The published artifact matched the ABI snapshot and preserved the supported
+program ABI 56 baseline.
+
+With those artifacts, 49 Node integration tests passed and the comparison
+case was reserved for the timing run. Chromium, Firefox, and WebKit each
+passed eight checks. These runs exercised regular and grouped shell launch,
+bounded deferred reads and integrity retry, the app’s version display,
+permissions and live handles, recovery at seven upgrade interruption
+points, and capacity reuse after an injected quota refusal. The 12,000
+one-byte files again left 972.3 MiB free, with kernel memory at 27 pages
+on boot and 163 after creation. The saved volume and its export reopened.
+
+## Final packaged comparison
+
+Two new rounds used the published kernel and shell, with normal lazy-asset
+resolution. Node, Chromium, Firefox, and WebKit each ran both filesystem
+orders in each round. All 16 pairs passed the event and saved-identity
+checks. V3 beat v2 in 78 of 80 ordinary I/O comparisons and met the 0.75×
+stretch target in 73. The two ordinary misses were Node random stat
+(1.00724×) and WebKit deletion (1.00209×), both in round two.
+
+V3 won 20 of 48 watched comparisons and met the stretch target in 17.
+Watched namespace churn was faster in 15 of 16 pairs. The table gives
+the minimum and maximum median v3/v2 elapsed-time ratio across four pairs
+per host. Each workload used three samples per mode.
+
+| Host | First watched write | 512 writes with watch | Same writes without watch | Watched namespace churn |
+| --- | ---: | ---: | ---: | ---: |
+| Node | 0.41–2.65× | 0.74–1.76× | 0.50–2.03× | 0.07–0.16× |
+| Chromium | 1.50–2.66× | 1.16–1.68× | 1.21–1.99× | 0.18–0.41× |
+| Firefox | 1.06–2.82× | 1.56–2.17× | 1.85–2.72× | 0.28–0.68× |
+| WebKit | 1.33–2.07× | 0.99–1.45× | 1.00–1.87× | 0.68–1.17× |
+
+The largest v3 first-watched-write median was 1.32 ms. The relative cost
+added by the watch to repeated writes varied with the run and filesystem
+order. Chromium, for example, added about 28 ms more on v3 than on v2 in
+round one and about 15 ms less in round two. The slowdown also appeared
+without a watch. Together with the positioned I/O counts, this locates the
+sustained performance gap in repeated writes to existing files. Other
+builds were active, and the raw records include the run load and timings.
+[Final samples and input hashes](2026-11-27-kifs-packaged-watchers.json)
+
 ## Rollout
 
-The Rust-first host boundary check flags the two length words added to the
-existing `host_fetch_deferred` import. The host uses the filesystem’s
-declared resource length for bounded byte transport. Rust retains
-verification and filesystem decisions. Adapter version 42 requires a
-matching kernel and host. The change needs maintainer review.
+The Rust-first host boundary check against `6072965d43` passes. The
+six-argument `host_fetch_deferred` import uses a read-only transfer
+length published by Rust. The host reads it during the import to bound
+storage. The kernel retains verification and filesystem decisions.
+Adapter version 42 requires a matching kernel and host. The product
+launcher and packaging checks now match the required export inventory,
+including the exit-publication export from develop.
 [ABI notes](../abi-versioning.md#positioned-root-filesystem)
 
-The saved format still selects the backend at boot. The web app displays
-that format and leaves upgrades to the explicit shared host API. Physical
-power loss and the pinned guest Node/npm install remain outside this
-qualification.
+V3 stays opt-in because the final comparison missed parity. The saved
+format selects the backend at boot. The web app displays that format and
+leaves upgrades to the explicit shared host API. Physical power loss and
+the pinned guest Node/npm install remain outside this qualification.
