@@ -2226,13 +2226,13 @@ pub fn utimensat(
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
     let path_entry = crate::vfs_events::Entry::capture(path, lstat);
-    let result = utimensat_mutation(path, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
+    set_inode_times(walk_to_inode(path)?, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
     if let Some(entry) = path_entry { entry.committed(true); }
-    Ok(result)
+    Ok(())
 }
 
-fn utimensat_mutation(
-    path: &[u8],
+pub fn futimens(
+    handle: i64,
     atime_sec: u64,
     atime_nsec: u32,
     mtime_sec: u64,
@@ -2240,7 +2240,20 @@ fn utimensat_mutation(
     ctime_sec: u64,
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
-    let idx = walk_to_inode(path)?;
+    set_inode_times(file_handle_to_inode(handle)?, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
+    publish_handle_change(handle);
+    Ok(())
+}
+
+fn set_inode_times(
+    idx: u32,
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+) -> Result<(), Errno> {
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
         inode.check_mutable()?;

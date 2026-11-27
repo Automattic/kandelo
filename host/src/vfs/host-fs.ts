@@ -684,11 +684,13 @@ export class HostFileSystem implements FileSystemBackend {
     atimeNsec: number,
     mtimeSec: number,
     mtimeNsec: number,
+    noFollow = false,
   ): void {
-    const nativePath = this.safePath(path);
+    const nativePath = this.safePath(path, !noFollow);
     if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;
 
-    const stat = fs.statSync(nativePath, { bigint: true });
+    const statPath = noFollow ? fs.lstatSync : fs.statSync;
+    const stat = statPath(nativePath, { bigint: true });
     const current = this.metadata.toStatResult(stat);
     const nowMs = Date.now();
     const atimeMs =
@@ -703,12 +705,13 @@ export class HostFileSystem implements FileSystemBackend {
         : mtimeNsec === UTIME_NOW
           ? nowMs
           : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
-    fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
+    const setTimes = noFollow ? fs.lutimesSync : fs.utimesSync;
+    setTimes(nativePath, atimeMs / 1000, mtimeMs / 1000);
     this.metadata.utimens(
       stat,
       atimeMs,
       mtimeMs,
-      fs.statSync(nativePath, { bigint: true }),
+      statPath(nativePath, { bigint: true }),
     );
   }
 

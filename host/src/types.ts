@@ -241,6 +241,7 @@ export interface PlatformIO {
     atimeNsec: number,
     mtimeSec: number,
     mtimeNsec: number,
+    flags?: number,
   ): void;
   /**
    * Return and consume the next entry of a directory handle. If this throws,

@@ -5697,7 +5697,7 @@ export class WasmPosixKernel {
     atimeNsec: bigint,
     mtimeSec: bigint,
     mtimeNsec: bigint,
-    _flags: number,
+    flags: number,
   ): number {
     try {
       this.io.utimensatAt(
@@ -5707,6 +5707,7 @@ export class WasmPosixKernel {
         Number(atimeNsec),
         Number(mtimeSec),
         Number(mtimeNsec),
+        flags,
       );
       return 0;
     } catch (e) {

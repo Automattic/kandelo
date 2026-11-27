@@ -79,6 +79,8 @@ these measurements, and mapped ranges or file-cache pages are not substitutes.
 See the [libuv memory contract](https://github.com/libuv/libuv/blob/v1.52.1/docs/src/misc.rst)
 and the startup batch's source/runtime evidence distinction.
 
+Kandelo uses libuv’s POSIX timestamp conversions for path, symlink and open-descriptor updates. Path operations call `utimensat`; the symlink form passes `AT_SYMLINK_NOFOLLOW`. Descriptor operations use `futimens`. The separate `libuv-fs-timestamps` guest control checks fractional timestamps, dates beyond 2038, and the identity of renamed and unlinked open files on rootfs and tmpfs.
+
 This is an initial event-loop backend, not complete libuv support. OS-specific
 physical-memory/resource/CPU/network-interface reporting remains incomplete.
 The revision-4 target-header AST and archive-symbol

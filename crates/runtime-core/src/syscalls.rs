@@ -12622,7 +12622,7 @@ pub fn sys_utimensat(
     dirfd: i32,
     path: &[u8],
     times: Option<&[WasmTimespec; 2]>,
-    _flags: u32,
+    flags: u32,
 ) -> Result<(), Errno> {
     // Default: set both to current time
     let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = if let Some(ts) = times {
@@ -12646,6 +12646,22 @@ pub fn sys_utimensat(
                 return Ok(());
             }
             return Err(Errno::EPERM);
+        }
+        let handle = ofd.host_handle;
+        if ofd.file_type == FileType::Regular
+            && (crate::rootfs::is_rootfs_file_handle(handle) || crate::tmpfs::is_tmpfs_file_handle(handle))
+        {
+            let stat = sys_fstat(proc, host, dirfd)?;
+            if !check_utimens_permissions(proc, &stat, times)? {
+                return Ok(());
+            }
+            let (atime, mtime, now) = resolve_inode_timestamps(
+                host, &stat, (atime_sec, atime_nsec), (mtime_sec, mtime_nsec),
+            )?;
+            if crate::rootfs::is_rootfs_file_handle(handle) {
+                return crate::rootfs::futimens(handle, atime.0, atime.1, mtime.0, mtime.1, now.0, now.1);
+            }
+            return crate::tmpfs::futimens(handle, atime.0, atime.1, mtime.0, mtime.1, now.0, now.1);
         }
         if let Some(pipe_idx) = named_fifo_pipe_idx(proc, dirfd)? {
             let st = sys_fstat(proc, host, dirfd)?;
@@ -12768,40 +12784,19 @@ pub fn sys_utimensat(
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
         ofd.path.to_vec()
     } else {
-        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
+        let policy = if flags & AT_SYMLINK_NOFOLLOW != 0 { PathResolveOptions::NOFOLLOW } else { PathResolveOptions::FOLLOW };
+        resolve_at_path(proc, host, dirfd, path, policy)?.path
     };
     ensure_host_mutable_namespace_path(&resolved)?;
 
     check_search_path(proc, host, &resolved)?;
-    let st = fs_stat(host, &resolved)?;
+    let st = if flags & AT_SYMLINK_NOFOLLOW != 0 { fs_lstat(host, &resolved)? } else { fs_stat(host, &resolved)? };
     if !check_utimens_permissions(proc, &st, times)? {
         return Ok(());
     }
     if crate::tmpfs::claims_path(&resolved) || crate::rootfs::claims_path(&resolved) {
-        let (now_sec, now_nsec) = {
-            let (s, n) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
-            (
-                u64::try_from(s).map_err(|_| Errno::EINVAL)?,
-                u32::try_from(n).map_err(|_| Errno::EINVAL)?,
-            )
-        };
-        let resolve = |req_sec: i64,
-                       req_nsec: i64,
-                       cur_sec: u64,
-                       cur_nsec: u32|
-         -> Result<(u64, u32), Errno> {
-            match req_nsec {
-                UTIME_OMIT => Ok((cur_sec, cur_nsec)),
-                UTIME_NOW => Ok((now_sec, now_nsec)),
-                0..=999_999_999 => Ok((
-                    u64::try_from(req_sec).map_err(|_| Errno::EINVAL)?,
-                    req_nsec as u32,
-                )),
-                _ => Err(Errno::EINVAL),
-            }
-        };
-        let (a_sec, a_nsec) = resolve(atime_sec, atime_nsec, st.st_atime_sec, st.st_atime_nsec)?;
-        let (m_sec, m_nsec) = resolve(mtime_sec, mtime_nsec, st.st_mtime_sec, st.st_mtime_nsec)?;
+        let ((a_sec, a_nsec), (m_sec, m_nsec), (now_sec, now_nsec)) =
+            resolve_inode_timestamps(host, &st, (atime_sec, atime_nsec), (mtime_sec, mtime_nsec))?;
         if crate::rootfs::claims_path(&resolved) {
             return crate::rootfs::utimensat(
                 &resolved, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
@@ -12811,8 +12806,31 @@ pub fn sys_utimensat(
             &resolved, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
         );
     }
-    crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, 0)
+    crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, flags)
 }
+
+type InodeTimestamp = (u64, u32);
+
+fn resolve_inode_timestamps(
+    host: &mut dyn HostIO,
+    stat: &WasmStat,
+    atime: (i64, i64),
+    mtime: (i64, i64),
+) -> Result<(InodeTimestamp, InodeTimestamp, InodeTimestamp), Errno> {
+    let now = realtime_timestamp(host)?;
+    let resolve = |(sec, nsec), current| match nsec {
+        UTIME_OMIT => Ok(current),
+        UTIME_NOW => Ok(now),
+        0..=999_999_999 => Ok((u64::try_from(sec).map_err(|_| Errno::EINVAL)?, nsec as u32)),
+        _ => Err(Errno::EINVAL),
+    };
+    Ok((
+        resolve(atime, (stat.st_atime_sec, stat.st_atime_nsec))?,
+        resolve(mtime, (stat.st_mtime_sec, stat.st_mtime_nsec))?,
+        now,
+    ))
+}
+
 
 /// `madvise()` advice values Kandelo's `<sys/mman.h>` defines: the five
 /// POSIX/BSD values and the Linux values from `MADV_FREE` (8) through

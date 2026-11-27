@@ -725,6 +725,7 @@ export class VirtualPlatformIO implements PlatformIO {
     atimeNsec: number,
     mtimeSec: number,
     mtimeNsec: number,
+    flags = 0,
   ): void {
     const dir = this.getDirHandle(dirHandle);
     dir.backend.utimensat(
@@ -733,6 +734,7 @@ export class VirtualPlatformIO implements PlatformIO {
       atimeNsec,
       mtimeSec,
       mtimeNsec,
+      (flags & AT_FLAGS.AT_SYMLINK_NOFOLLOW) !== 0,
     );
   }
 
