@@ -1865,12 +1865,13 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
                     return Err(Errno::ENOTEMPTY);
                 }
             }
-            // Detach and free the replaced destination.
+            // A replaced file loses one name. Its other names and open
+            // descriptions continue to refer to the same inode.
             if let Some(InodeKind::Dir(entries)) = state.get_mut(new_parent).map(|i| &mut i.kind) {
                 entries.remove(&new_name);
             }
             if let Some(inode) = state.get_mut(existing) {
-                inode.nlink = 0;
+                inode.nlink = if new_is_dir { 0 } else { inode.nlink.saturating_sub(1) };
             }
             state.maybe_free(existing);
         }
@@ -2802,6 +2803,36 @@ mod tests {
         release_handle(h3);
         assert_eq!(rename(b"/tmp/rn_g", b"/tmp/rn_e").unwrap_err(), Errno::EISDIR);
         assert_eq!(rename(b"/tmp/rn_e", b"/tmp/rn_g").unwrap_err(), Errno::ENOTDIR);
+    }
+
+    #[test]
+    fn rename_over_file_preserves_other_names_for_replaced_inode() {
+        let old = b"/tmp/rename-over-hardlink-old";
+        let alias = b"/tmp/rename-over-hardlink-alias";
+        let replacement = b"/tmp/rename-over-hardlink-new";
+        let original = open(old, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        write(original, 0, b"original").unwrap();
+        link(old, alias).unwrap();
+        let incoming = open(replacement, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        write(incoming, 0, b"replacement").unwrap();
+        release_handle(incoming);
+
+        rename(replacement, old).unwrap();
+        let original_ino = fstat(original).unwrap().st_ino;
+        assert_eq!(fstat(original).unwrap().st_nlink, 1);
+        assert_ne!(lstat(old).unwrap().st_ino, original_ino);
+        release_handle(original);
+        let survivor = open(alias, O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(survivor).unwrap().st_ino, original_ino);
+        assert_eq!(read_all(survivor), b"original");
+        release_handle(survivor);
+        let moved = open(old, O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(read_all(moved), b"replacement");
+        release_handle(moved);
+        assert_eq!(lstat(replacement).unwrap_err(), Errno::ENOENT);
+
+        unlink(alias).unwrap();
+        unlink(old).unwrap();
     }
 
     #[test]
