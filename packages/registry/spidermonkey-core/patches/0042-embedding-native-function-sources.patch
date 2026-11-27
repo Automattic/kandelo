@@ -103,12 +103,15 @@
  #include "vm/WrapperObject.h"
 
  #include "vm/JSContext-inl.h"
-@@ -311,5 +312,8 @@
+@@ -311,7 +312,11 @@
  JSString* BaseProxyHandler::fun_toString(JSContext* cx, HandleObject proxy,
                                           bool isToSource) const {
    if (proxy->isCallable()) {
-+    if (!isToSource && cx->realm()->creationOptions().getNodeNativeFunctionSource()) {
++    if (!isToSource &&
++        cx->realm()->creationOptions().getNodeNativeFunctionSource()) {
 +      return JS_NewStringCopyZ(cx, "function () { [native code] }");
 +    }
      return JS_NewStringCopyZ(cx, "function () {\n    [native code]\n}");
    }
+
+   JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
