@@ -216,12 +216,12 @@ Each slice gets its own plan when it starts; the order is dependency order.
   ABI-56 digest unchanged.
 - [ ] **Step 5: Commit.** Message: `GPU: Declare the kgpu.v1 program extension`.
 
-### Task 3: Graphics-memory extents and GPU pins
+### Task 3: Device I/O extents and pins in group memory
 
 **Files:**
-- Create: `crates/runtime-core/src/memory_group/storage/gpu.rs` (and register it in the storage module)
-- Modify: `crates/runtime-core/src/memory_group/storage/reclaim.rs` (skip GPU-pinned frames, as it does at `:378-387` for native pins)
-- Modify: `crates/runtime-core/src/memory_group/storage/retirement.rs` (image retirement waits for GPU pins, as at `:69`)
+- Create: `crates/runtime-core/src/memory_group/storage/device_io.rs` (and register it in the storage module)
+- Modify: `crates/runtime-core/src/memory_group/storage/reclaim.rs` (skip device-pinned frames, as it does at `:378-387` for native pins)
+- Modify: `crates/runtime-core/src/memory_group/storage/retirement.rs` (image retirement waits for device pins, as at `:69`)
 - Test: `crates/runtime-core/src/memory_group/storage/tests.rs`
 
 **Interfaces:**
@@ -232,34 +232,34 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - Follow the translator pattern of `execution_word_address`
     (`storage/fork.rs:8-23`).
 - Produces (on `impl Storage`):
-  - `pub fn gpu_extents(&self, image: ImageId, addr: u64, len: u32, write: bool) -> Result<Vec<Extent>, Errno>`
+  - `pub fn device_extents(&self, image: ImageId, addr: u64, len: u32, write: bool) -> Result<Vec<Extent>, Errno>`
     - Merges physically adjacent frames.
     - Returns `EFAULT` for a non-present page, a write to a page that isn't
       writable, or overflow.
     - `len == 0` returns an empty list.
-  - `pub fn gpu_pin(&mut self, image: ImageId, extents: &[Extent]) -> GpuPinId`
-  - `pub fn gpu_unpin(&mut self, pin: GpuPinId)`: releasing an unknown id is a
+  - `pub fn device_pin(&mut self, image: ImageId, extents: &[Extent]) -> DevicePinId`
+  - `pub fn device_unpin(&mut self, pin: DevicePinId)`: releasing an unknown id is a
     no-op that returns nothing.
-  - `pub fn gpu_pinned_frames(&self) -> usize`, for tests and inspection.
+  - `pub fn device_pinned_frames(&self) -> usize`, for tests and inspection.
 
 - [ ] **Step 1: Write failing tests:**
-  - `gpu_extents_single_page`
-  - `gpu_extents_merges_adjacent_frames`
-  - `gpu_extents_splits_discontiguous_frames`: map two virtual pages to
+  - `device_extents_single_page`
+  - `device_extents_merges_adjacent_frames`
+  - `device_extents_splits_discontiguous_frames`: map two virtual pages to
     frames 5 and 9. A range spanning them yields two extents with exact
     offsets and lengths.
-  - `gpu_extents_unmapped_is_efault`
-  - `gpu_extents_write_to_readonly_is_efault`
+  - `device_extents_unmapped_is_efault`
+  - `device_extents_write_to_readonly_is_efault`
   - `pinned_frames_survive_reclaim`: pin, unmap the range, run reclaim; the
-    frames are not reused. After `gpu_unpin`, reclaim frees them.
-  - `retirement_waits_for_gpu_pins`
+    frames are not reused. After `device_unpin`, reclaim frees them.
+  - `retirement_waits_for_device_pins`
 - [ ] **Step 2: Run the tests and confirm they fail.**
   `scripts/dev-shell.sh cargo test -p runtime-core --target aarch64-apple-darwin gpu_`
 - [ ] **Step 3: Implement.** Pins hold frame references in `self`, never in
   group pages.
 - [ ] **Step 4: Run the tests, then the full `runtime-core` suite.** Expected:
   PASS.
-- [ ] **Step 5: Commit.** Message: `Kernel: Translate and pin graphics-memory extents`.
+- [ ] **Step 5: Commit.** Message: `Kernel: Translate and pin device I/O extents in group memory`.
 
 ### Task 4: Kernel `kgpu` device — contexts, submission, retirement, waits
 
@@ -271,12 +271,12 @@ Each slice gets its own plan when it starts; the order is dependency order.
 - Test: `#[cfg(test)]` modules in `dri/kgpu/*.rs`, and tests through the same extension-request entry the klog tests use
 
 **Interfaces:**
-- Consumes: Task 2 types; Task 3 `gpu_extents` / `gpu_pin` / `gpu_unpin`; `Parks::park` (`wait_park.rs:303`) and `finish_with` (`:350`).
+- Consumes: Task 2 types; Task 3 `device_extents` / `device_pin` / `device_unpin`; `Parks::park` (`wait_park.rs:303`) and `finish_with` (`:350`).
 - Produces:
   - `pub struct KgpuDevice`, owned by the process table. It holds contexts
     keyed by id (owner pid and open file description), a FIFO outbox of
     encoded submission records with a byte capacity of 256 KiB, in-flight
-    submissions (seqno → `GpuPinId` list), per-context `last_retired`, a
+    submissions (seqno → `DevicePinId` list), per-context `last_retired`, a
     `lost` flag and `renderer_available: bool`.
   - `fn drain_outbox(&mut self, out: &mut [u8]) -> usize`: copies whole
     records only.
@@ -312,7 +312,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - `create_without_renderer_is_enodev`
   - `ungrouped_caller_is_eopnotsupp`
   - `submit_queues_record_with_extents_and_pins`: drain and decode with
-    `decode_submission`. The extents equal `gpu_extents` output, and the
+    `decode_submission`. The extents equal `device_extents` output, and the
     seqno is 1, then 2.
   - `submit_bad_magic_is_einval`
   - `submit_unmapped_buffer_is_efault_and_nothing_queued`
@@ -323,7 +323,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - `context_lost_fails_waiters_and_submits_with_eio`
   - `outbox_full_parks_submitter_until_drain`
   - `exit_with_inflight_keeps_pins_until_retired`: exit, assert pins are
-    held; `complete(Retired)`, assert `gpu_pinned_frames() == 0`.
+    held; `complete(Retired)`, assert `device_pinned_frames() == 0`.
   - `destroy_by_non_owner_is_eperm`
 - [ ] **Step 2: Run the tests and confirm they fail.**
   `scripts/dev-shell.sh cargo test -p runtime-core --target aarch64-apple-darwin kgpu`
@@ -346,7 +346,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - the exports `kernel_kgpu_drain(out_ptr: u32, out_cap: u32) -> u32`,
     `kernel_kgpu_complete(in_ptr: u32, len: u32) -> i32` and
     `kernel_kgpu_set_renderer(available: u32)`, plus
-    `kernel_kgpu_pinned_frames() -> u32` (the Task 3 count, used by
+    `kernel_device_pinned_frames() -> u32` (the Task 3 count, used by
     inspection)
 - Modify: `crates/shared/src/lib.rs` (extend the version-42 history line from Task 2: "…, kgpu submission drain, completion and kick")
 - Modify: the process-worker host code that serves `kandelo.klog.v1` (find it from `extension_requests::KLOG_V1` / `__kandelo_klogctl_v1` in `host/src`): serve `kandelo.kgpu.v1.__kandelo_kgpu_v1` the same way, issuing request 602 on the calling thread's channel, on both Node and browser process workers
@@ -450,7 +450,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
 ### Task 7: GPU worker and kernel-worker host glue
 
 **Files:**
-- Create: `host/src/kgpu/ring.ts`: SPSC byte ring over a `SharedArrayBuffer`, with 64 KiB of data and head/tail `Int32Array` words.
+- Create: `host/src/device-worker/ring.ts`: SPSC byte ring over a `SharedArrayBuffer`, with 64 KiB of data and head/tail `Int32Array` words.
   `push(record: Uint8Array): boolean` and `pop(out: Uint8Array): number`, neither blocking.
 - Create: `host/src/kgpu/gpu-worker.ts`: the worker entry. It does the following:
   - Receives `{ executorBytes | executorUrl, groupMemory: WebAssembly.Memory, submissions: SAB, completions: SAB, port: MessagePort, renderer: "webgl2" | "null" }`.
@@ -478,7 +478,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - Node: `worker_threads`, following `host/src/program-policy-node.ts:7-11`;
   - Node passes `"null"` unless the embedder supplied a WebGL 2 factory.
 - Modify: the `getMemoryGroupUsage()` backing snapshot. It adds
-  `gpuPinnedFrames` from `kernel_kgpu_pinned_frames()`, copied like the
+  `devicePinnedFrames` from `kernel_device_pinned_frames()`, copied like the
   other counters (`docs/shared-memory-groups.md`, "Desktop-first opt-in").
 - Modify: `host/tsup.config.ts` (add the worker entry), and `host/src/binary-resolver.ts` (resolve `kandelo_gpu_executor32.wasm` as `:1937` does for the policy module).
 - Test: `host/test/kgpu-ring.test.ts`, `host/test/kgpu-host.test.ts`
@@ -533,7 +533,7 @@ Each slice gets its own plan when it starts; the order is dependency order.
 
   A second test spawns the same program ungrouped and asserts that the
   output names `EOPNOTSUPP`. A third test spawns, reads back, exits and
-  repeats 20 times, asserting that `getMemoryGroupUsage().backing.gpuPinnedFrames`
+  repeats 20 times, asserting that `getMemoryGroupUsage().backing.devicePinnedFrames`
   returns to 0.
 - [ ] **Step 2: Build the inputs and run the spec; confirm it fails.**
   `scripts/dev-shell.sh bash scripts/build-programs.sh`, then
