@@ -1,5 +1,6 @@
 import { CH_TOTAL_SIZE, WASM_PAGE_SIZE, PAGES_PER_THREAD, extractGlobalConstants } from "./constants";
-import { FORK_SAVE_BUFFER_SIZE, growMemoryToCover } from "./process-memory";
+import { FORK_SAVE_BUFFER_SIZE, channelStopOffset, growMemoryToCover } from "./process-memory";
+import { ForkShareAddressSpace, STOP_WORDS_BYTES, type PageRun } from "./fork-share-address-space";
 import { fillProcessBytes } from './process-memory-views';
 import {
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
@@ -99,6 +100,7 @@ export class ThreadPageAllocator {
   private readonly threadSlotByteLength: number;
   private activeCount = 0;
   private readonly hostControlPages = new Set<number>();
+  private readonly liveSlots = new Map<number, number>();
 
   constructor(options: ThreadPageAllocatorOptions);
   constructor(maxPages: number);
@@ -145,7 +147,7 @@ export class ThreadPageAllocator {
   }
 
   /** Allocate pages for a new thread. Zeros the channel and TLS regions. */
-  allocate(memory: WebAssembly.Memory): ThreadAllocation {
+  allocate(memory: WebAssembly.Memory | ForkShareAddressSpace): ThreadAllocation {
     return this.allocateSlot(memory, false);
   }
 
@@ -163,12 +165,12 @@ export class ThreadPageAllocator {
    * syscall channel, replay prefix, and scratch page, but that platform state
    * must neither require nor consume capacity promised to pthread_create.
    */
-  allocateHostControl(memory: WebAssembly.Memory): ThreadAllocation {
+  allocateHostControl(memory: WebAssembly.Memory | ForkShareAddressSpace): ThreadAllocation {
     return this.allocateSlot(memory, true);
   }
 
   private allocateSlot(
-    memory: WebAssembly.Memory,
+    memory: WebAssembly.Memory | ForkShareAddressSpace,
     hostControl: boolean,
   ): ThreadAllocation {
     if (!hostControl) this.assertCanAllocate();
@@ -209,8 +211,12 @@ export class ThreadPageAllocator {
       (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE) * WASM_PAGE_SIZE;
     const channelOffset =
       (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
+    const slotPages = slotByteLength / WASM_PAGE_SIZE;
     try {
-      growMemoryToCover(memory, slotStartPage * WASM_PAGE_SIZE + slotByteLength, this.ptrWidth);
+      // WHY: the kernel worker observes the channel at one physical word, so
+      // the slot must be one run that no other process shares.
+      if (memory instanceof ForkShareAddressSpace) memory.privateRun(slotStartPage, slotPages);
+      else growMemoryToCover(memory, slotStartPage * WASM_PAGE_SIZE + slotByteLength, this.ptrWidth);
     } catch (error) {
       // Keep an already reserved native interval available for a later retry.
       // Reused slots have not been removed from their free list yet.
@@ -220,6 +226,9 @@ export class ThreadPageAllocator {
 
     // Zero channel, TLS, and the per-thread fork save buffer.
     fillProcessBytes(memory, channelOffset, CH_TOTAL_SIZE, 0);
+    // WHY: a fork child gets a copy of every slot of its parent, with the
+    // stop words of a parent thread that fork parked.
+    fillProcessBytes(memory, channelStopOffset(channelOffset), STOP_WORDS_BYTES, 0);
     fillProcessBytes(memory, controlOffset, WASM_PAGE_SIZE, 0);
     if (largeTls) fillProcessBytes(memory, tls.offset, tls.byteLength, 0);
     fillProcessBytes(memory, forkSaveOffset, WASM_PAGE_SIZE, 0);
@@ -230,6 +239,7 @@ export class ThreadPageAllocator {
 
     if (hostControl) this.hostControlPages.add(slotStartPage);
     else this.activeCount++;
+    this.liveSlots.set(slotStartPage, slotPages);
     return {
       slotStartPage,
       basePage: slotStartPage,
@@ -243,11 +253,17 @@ export class ThreadPageAllocator {
     };
   }
 
+  /** Guest page runs of the slots in use, pthread and host control. */
+  liveSlotRuns(): PageRun[] {
+    return [...this.liveSlots].map(([page, count]) => ({ page, count }));
+  }
+
   /** Return pages to the free list after thread exit. */
   free(slotStartPage: number): void {
     const hostControl = this.hostControlPages.delete(slotStartPage);
     const largeTls = !hostControl && this.threadSlotByteLength > PAGES_PER_THREAD * WASM_PAGE_SIZE;
     (largeTls ? this.freeLargeTlsPages : this.freePages).push(slotStartPage);
+    this.liveSlots.delete(slotStartPage);
     if (!hostControl) {
       this.activeCount = Math.max(0, this.activeCount - 1);
     }

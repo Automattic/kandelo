@@ -180,6 +180,8 @@ host/test/fork-replay-gate.test.ts	source-only
 host/test/fork-replay-host-parity.test.ts	source-only
 host/test/fork-resume-catalog.test.ts	source-only
 host/test/fork-save-buffer-overrun.test.ts	source-only
+host/test/fork-share-address-space.test.ts	source-only
+host/test/fork-share-memory.test.ts	prepared-product
 host/test/fork-side-module-contract.test.ts	source-only
 host/test/fork-static-root-catalog.test.ts	source-only
 host/test/fork-unwind-transport.test.ts	source-only
@@ -313,6 +315,7 @@ host/test/kernel-telemetry-entry.test.ts	source-only
 host/test/kernel-wasm-input-snapshot.test.ts	source-only
 host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
+host/test/kernel-worker-syscall-trace.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
 host/test/klogctl.test.ts	prepared-product
 host/test/kms-bitmap-relay.test.ts	source-only
@@ -346,6 +349,8 @@ host/test/memory-group-admission.test.ts	source-only
 host/test/memory-group-import-guard.test.ts	source-only
 host/test/memory-group-protocol.test.ts	source-only
 host/test/memory-group-usage.test.ts	source-only
+host/test/memory-instrument-worker.test.ts	prepared-product
+host/test/memory-instrument.test.ts	prepared-product
 host/test/migration/channel-chunked.test.ts	source-only
 host/test/migration/codec.test.ts	source-only
 host/test/mkdir-existing-directory.test.ts	prepared-product
@@ -462,6 +467,7 @@ host/test/procfs-fd-stat.test.ts	prepared-product
 host/test/program-fixture-freshness.test.ts	source-only
 host/test/program-originals.test.ts	prepared-product
 host/test/program-policy-worker.test.ts	prepared-product
+host/test/program-rewriter.test.ts	prepared-product
 host/test/psync-semantics.test.ts	prepared-product
 host/test/pthread-channel-reuse.test.ts	prepared-product
 host/test/pthread-shared-memory-growth.test.ts	prepared-product

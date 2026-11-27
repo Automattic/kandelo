@@ -1,0 +1,39 @@
+[package]
+name = "memory-instrument"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Routes every wasm32 linear-memory access through a software page table"
+publish = false
+
+[[bin]]
+name = "wasm-memory-instrument"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "kandelo-memory-instrument-module"
+path = "src/module.rs"
+required-features = ["standalone"]
+test = false
+bench = false
+
+[lib]
+name = "memory_instrument"
+path = "src/lib.rs"
+
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
+standalone = []
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"], optional = true }
+sha2 = { version = "0.10", default-features = false }
+wasmparser = "0.247"
+wasm-encoder = { version = "0.247", features = ["wasmparser"] }
+
+[dev-dependencies]
+wasmprinter = "0.247"
+wat = "1"

@@ -71,6 +71,7 @@ import {
 import {
   describeWasmArtifactPolicyFailures,
   extractHeapBase,
+  extractMemoryTableBase,
   extractAbiVersion,
   extractThreadSlotDeclaration,
   wasmContainsLegacyAsyncify,
@@ -842,6 +843,31 @@ describe("extractHeapBase", () => {
       exports: [{ name: "__heap_base", kind: 3, index: 1 }],
     });
     expect(extractHeapBase(wasm)).toBeNull();
+  });
+});
+
+describe("extractMemoryTableBase", () => {
+  it("reads the table base of a memory-instrumented program", () => {
+    const wasm = buildWasm({
+      globals: [
+        { valType: I32, mut: 0, init: [0x41, ...sleb128_i32(0x130000)] },
+        { valType: I32, mut: 1, init: [0x41, ...sleb128_i32(0x120000)] },
+      ],
+      exports: [
+        { name: "__heap_base", kind: 3, index: 0 },
+        { name: "__memory_table_base", kind: 3, index: 1 },
+      ],
+    });
+    expect(extractMemoryTableBase(wasm)).toBe(0x120000n);
+    expect(extractHeapBase(wasm)).toBe(0x130000n);
+  });
+
+  it("returns null for a program that is not memory-instrumented", () => {
+    const wasm = buildWasm({
+      globals: [{ valType: I32, mut: 0, init: [0x41, ...sleb128_i32(0x130000)] }],
+      exports: [{ name: "__heap_base", kind: 3, index: 0 }],
+    });
+    expect(extractMemoryTableBase(wasm)).toBeNull();
   });
 });
 

@@ -1,4 +1,5 @@
 import { GroupProcessAddressSpace } from './process-address-space';
+import { ForkShareAddressSpace } from './fork-share-address-space';
 import type { ProcessMemorySource } from './process-memory-views';
 import type { GroupedWorkerWait32 } from './worker-channel-ipc';
 
@@ -17,6 +18,7 @@ export class ProcessAtomicI32 {
     }
   }
   private native(): Int32Array {
+    if (this.source instanceof ForkShareAddressSpace) return this.source.atomicWord(this.address);
     return new Int32Array(nativeBuffer(this.source as WebAssembly.Memory), this.address, 1);
   }
   load(): number {
@@ -50,6 +52,7 @@ export class ProcessAtomicI32 {
 export class ProcessAtomicU64 {
   constructor(private readonly source: ProcessMemorySource, readonly address: number) {}
   private native(): BigUint64Array {
+    if (this.source instanceof ForkShareAddressSpace) return this.source.atomicLong(this.address);
     return new BigUint64Array(nativeBuffer(this.source as WebAssembly.Memory), this.address, 1);
   }
   load(): bigint {

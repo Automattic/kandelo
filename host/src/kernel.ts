@@ -7,6 +7,7 @@ import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
 import { GroupProcessAddressSpace, processAddressFromWasm, type ProcessAddressSpace } from "./process-address-space";
+import type { ForkShareAddressSpace } from "./fork-share-address-space";
 import { MemoryGroupProtocolFault } from "./memory-group-protocol";
 import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageRecord, type PlanarPlaneStorage } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
@@ -856,7 +857,7 @@ export interface KernelCallbacks {
    * operations. An absent explicit source never falls back to getProcessMemory.
    * This alone does not enable grouped launch or adapt graphics consumers.
    */
-  getProcessAddressSpace?: (pid: number) => ProcessAddressSpace | WebAssembly.Memory | undefined;
+  getProcessAddressSpace?: (pid: number) => ProcessAddressSpace | ForkShareAddressSpace | WebAssembly.Memory | undefined;
   /**
    * The mutation epoch of `pid`'s memory while the process is provably
    * quiescent (every thread parked in a syscall, no vfork child borrowing
@@ -4609,10 +4610,10 @@ export class WasmPosixKernel {
 
   /** Resolve once per import: a missing or retired explicit image must never
    * expose another source returned by the graphics/native callback. */
-  #resolveProcessAddressSpace(pid: number): ProcessAddressSpace | WebAssembly.Memory | undefined {
+  #resolveProcessAddressSpace(pid: number): ProcessAddressSpace | ForkShareAddressSpace | WebAssembly.Memory | undefined {
     const explicit = this.callbacks.getProcessAddressSpace;
     return explicit
-      ? intrinsicApply(explicit, this.callbacks, [pid]) as ProcessAddressSpace | WebAssembly.Memory | undefined
+      ? intrinsicApply(explicit, this.callbacks, [pid]) as ProcessAddressSpace | ForkShareAddressSpace | WebAssembly.Memory | undefined
       : this.callbacks.getProcessMemory?.(pid);
   }
 

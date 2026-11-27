@@ -83,11 +83,11 @@ export function attachCanvas(
       } else {
         if (opts === undefined) { requireIndependentPixels(); return; }
         const memory = opts.getProcessMemory(pid);
-        if (!memory) return;
+        if (!memory || binding.offset === undefined) return;
         try {
           binding.view = new Uint8ClampedArray(
             memory.buffer,
-            binding.addr,
+            binding.offset,
             binding.len,
           );
         } catch {

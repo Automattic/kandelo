@@ -11,7 +11,10 @@ import {
   KernelReentrantEntryError,
 } from "../src/kernel-entry-gate";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
+import { channelStopOffset } from "../src/process-memory";
 import {
+  CHANNEL_STATUS_PENDING,
+  CH_STATUS,
   CH_TOTAL_SIZE,
   PROCESS_METADATA_KIND_ARGV,
   PROCESS_METADATA_KIND_ENVIRONMENT,
@@ -518,26 +521,113 @@ describe("kernel process registration entry authority", () => {
     if (failure === "missing") expect(getter).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("captures a child's actual generation, borrowed address space=%s", borrowedAddressSpace => {
+  it("observes the channel of a fork child at its place in the Memory of its parent", () => {
     let harness!: ProcessEntryHarness;
-    const generations = new Map([[73, 14n], [74, 0x8000_0000_0000_0021n]]);
-    const getter = vi.fn((pid: number, pointer: number | bigint) => {
-      new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), generations.get(pid)!, true);
-      return 8;
-    });
+    const setMainChannel = vi.fn(() => 0);
     harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
-      kernel_get_process_exec_generation: getter, kernel_set_max_addr: () => 0,
-      kernel_set_main_channel_addr: () => 0, kernel_set_process_pointer_width: () => 0});
-    const memory = processMemory();
-    harness.worker.registerProcess(73, memory, [65_536]);
-    const childMemory = borrowedAddressSpace ? memory : processMemory();
-    harness.worker.registerProcess(74, childMemory, [131_072], {borrowedAddressSpace});
+      kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+        new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+        return 8;
+      },
+      kernel_set_max_addr: () => 0, kernel_set_main_channel_addr: setMainChannel,
+      kernel_set_process_pointer_width: () => 0});
+    const memory = new WebAssembly.Memory({initial: 32, maximum: 1024, shared: true});
+    harness.worker.registerProcess(75, memory, [65_536], {pageTable: {table: 0x9_0000, group: 0x4_0000}});
+    new Int32Array(memory.buffer)[(65_536 + CH_STATUS) / 4] = CHANNEL_STATUS_PENDING;
+    const child = harness.worker.forkProcessAddressSpace(75, [{page: 1, count: 3}]);
+
+    harness.worker.registerProcess(76, memory, [65_536], {addressSpace: child});
+
+    const channel = (harness.worker as any).processes.get(76).channels[0];
+    expect(setMainChannel).toHaveBeenLastCalledWith(76, 65_536n);
+    expect(channel.source).toBe(child);
+    expect(channel.channelOffset).toBe(65_536);
+    expect(child.readable(65_536)).not.toBe(65_536);
+    expect(channel.i32View.byteOffset).toBe(child.readable(65_536));
+    expect(harness.worker.getProcessForkShare(76)).toBe(child);
+  });
+
+  it("gives a process with page tables one address space for its channels", () => {
+    const harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+        new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+        return 8;
+      },
+      kernel_set_max_addr: () => 0, kernel_set_main_channel_addr: () => 0,
+      kernel_set_process_pointer_width: () => 0});
+    const pageTable = {table: 0x1_0000, group: 0x2_0000};
+    harness.worker.registerProcess(77, processMemory(), [65_536], {pageTable});
+    harness.worker.registerProcess(78, processMemory(), [65_536]);
     const records = (harness.worker as any).processes;
-    expect(records.get(73).execGeneration).toBe(14n);
-    expect(records.get(74).execGeneration).toBe(0x8000_0000_0000_0021n);
-    expect(records.get(74).borrowedAddressSpace).toBe(borrowedAddressSpace);
-    expect(records.get(74).memory).toBe(childMemory);
-    expect(getter.mock.calls.map(([pid]) => pid)).toEqual([73,74]);
+    const registration = records.get(77);
+    expect(registration.source.location).toBe(pageTable);
+    expect(registration.channels[0].source).toBe(registration.source);
+    expect(records.get(78).source).toBe(records.get(78).memory);
+    expect(harness.worker.getProcessForkShare(78)).toBeUndefined();
+  });
+
+  it.each([
+    ["every thread has a pending syscall", [65_536, 131_072], 0, false, 1],
+    ["a running thread waits on its stop word", [65_536], 1, false, 1],
+    ["a running thread does not stop", [65_536], 0, false, 0],
+    ["a vfork child borrows the memory", [65_536, 131_072], 0, true, 0],
+  ] as const)("forks with shared pages only when %s", (_case, pending, echo, borrowed, shared) => {
+    const harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+        new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+        return 8;
+      },
+      kernel_set_max_addr: () => 0, kernel_set_main_channel_addr: () => 0,
+      kernel_set_process_pointer_width: () => 0});
+    const memory = new WebAssembly.Memory({initial: 32, maximum: 1024, shared: true});
+    const pageTable = {table: 0x9_0000, group: 0x4_0000};
+    harness.worker.registerProcess(79, memory, [65_536], {pageTable});
+    const registration = (harness.worker as any).processes.get(79);
+    registration.channels.push({...registration.channels[0], channelOffset: 131_072,
+      i32View: new Int32Array(memory.buffer, 131_072)});
+    if (borrowed) harness.worker.registerProcess(80, memory, [196_608], {borrowedAddressSpace: true});
+    const words = new Int32Array(memory.buffer);
+    for (const channel of pending) words[(channel + CH_STATUS) / 4] = CHANNEL_STATUS_PENDING;
+    const stopWords = channelStopOffset(131_072) / 4;
+    words[stopWords + 1] = echo;
+
+    const child = harness.worker.forkProcessAddressSpace(79, [{page: 1, count: 3}]);
+
+    const writeEntry = (page: number) => words[(pageTable.table + 0x4_0000) / 4 + page];
+    expect(writeEntry(20) & 3).toBe(shared);
+    expect(writeEntry(1) & 3).toBe(0);
+    expect(words[stopWords]).toBe(0);
+    expect(child.readable(20 * 65_536) === 20 * 65_536).toBe(shared === 1);
+  });
+
+  it("forks without sharing the pages of a placed device mapping", () => {
+    const harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+        new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+        return 8;
+      },
+      kernel_set_max_addr: () => 0, kernel_set_main_channel_addr: () => 0,
+      kernel_set_process_pointer_width: () => 0});
+    const memory = new WebAssembly.Memory({initial: 32, maximum: 1024, shared: true});
+    const pageTable = {table: 0x9_0000, group: 0x4_0000};
+    harness.worker.registerProcess(79, memory, [65_536], {pageTable});
+    const words = new Int32Array(memory.buffer);
+    words[(65_536 + CH_STATUS) / 4] = CHANNEL_STATUS_PENDING;
+    const page = 65_536;
+    harness.worker.framebuffers.bind({pid: 79, addr: 20 * page, len: 2 * page, w: 1, h: 1, stride: 4, fmt: "BGRA32"});
+    harness.worker.framebuffers.place(79, 20 * page);
+    harness.worker.bos.create({pid: 79, bo_id: 1, size: 16, w: 2, h: 2, stride: 8});
+    harness.worker.bos.bind(79, 1, 25 * page, 16);
+    harness.worker.bos.primeBindFromSab(79, 1, memory, 25 * page);
+    harness.worker.framebuffers.bind({pid: 80, addr: 27 * page, len: page, w: 1, h: 1, stride: 4, fmt: "BGRA32"});
+    harness.worker.framebuffers.place(80, 27 * page);
+
+    const child = harness.worker.forkProcessAddressSpace(79, [{page: 1, count: 3}]);
+
+    const shared = (index: number) => words[(pageTable.table + 0x4_0000) / 4 + index] & 3;
+    expect([19, 20, 21, 22, 24, 25, 26, 27].map(shared)).toEqual([1, 0, 0, 1, 1, 0, 1, 1]);
+    for (const index of [20, 21, 25]) expect(child.readable(index * page)).not.toBe(index * page);
+    expect(child.readableRun(20 * page, 2 * page)).toBeGreaterThan(0);
   });
 
   it("replaces exec registration atomically without advancing the retained old record", () => {

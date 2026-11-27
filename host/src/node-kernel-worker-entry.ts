@@ -105,11 +105,14 @@ import {
   type PreparedExecLaunchRequest,
 } from "./exec-target";
 import { readThreadTlsRequirements, type ThreadPageAllocator } from "./thread-allocator";
+import { createNodeProgramRewriteWorker } from "./memory-instrument-node";
+import { ProgramRewriter, type ProgramImage } from "./program-rewriter";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
   detectPtrWidth,
   extractHeapBase,
+  extractMemoryTableBase,
   isWasmModuleBytes,
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
@@ -160,6 +163,9 @@ import {
 } from "./fork-host-import-runtime";
 import {
   acquireForkMemoryClone,
+  acquireForkMemoryCopy,
+  CHANNEL_PAGES,
+  channelStopOffset,
   computeProcessMemoryLayout,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
@@ -168,9 +174,12 @@ import {
   ProcessMemoryCapacityError,
   ProcessMemoryAllocator,
   ProcessMemoryRetirementBacklogError,
+  workerPageTable,
   type ProcessMemoryLayout,
   type ProcessMemoryLease,
 } from "./process-memory";
+import { STOP_WORDS_BYTES, type ForkMemory, type ForkShareAddressSpace } from "./fork-share-address-space";
+import { fillProcessBytes } from "./process-memory-views";
 import {
   VforkAddressSpaceBusyError,
   VforkLifetimeCoordinator,
@@ -240,6 +249,10 @@ let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
+let forkMemory: ForkMemory = "copy";
+let memoryInstrumenter: WebAssembly.Module | undefined;
+let programRewriter: ProgramRewriter | undefined;
+let forkShareMinimumBytes = 0;
 let processMemoryAllocator: ProcessMemoryAllocator;
 const reclamationMeasurementPressure = (() => {
   const configured = process.env.KANDELO_RECLAIM_PRESSURE_BYTES;
@@ -315,6 +328,11 @@ interface ProcessInfo extends ProcessGenerationOwnership {
    * compiles.
    */
   programModule: WebAssembly.Module;
+  /**
+   * The admitted form of a program that the host rewrote at its start. A
+   * fork child that leaves the group runs it.
+   */
+  plainProgram?: ProgramImage;
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
   channelOffset: number;
   ptrWidth: 4 | 8;
@@ -850,12 +868,14 @@ async function createFreshProcessMemory(
 }> {
   const heapBase = extractHeapBase(programBytes);
   const tlsRequirements = readThreadTlsRequirements(programBytes);
+  const tableBase = forkMemory === "share" ? extractMemoryTableBase(programBytes) : null;
   const layout = computeProcessMemoryLayout({
     maxPages,
     defaultThreadSlots,
     ptrWidth,
     programBytes,
     heapBase,
+    pageTable: tableBase === null ? undefined : Number(tableBase),
   });
   const memoryLease = await processMemoryAllocator.acquireWhenAvailable({
     ptrWidth,
@@ -877,6 +897,23 @@ async function createFreshProcessMemory(
     memoryLease.release();
     throw error;
   }
+}
+
+/**
+ * The form of an admitted program that its process runs.
+ *
+ * WHY: in `"share"` mode the process of a marked program runs the rewritten
+ * form. It keeps the admitted form as `plainProgram`, for a fork child that
+ * gets a private Memory.
+ */
+async function launchForms(
+  bytes: ArrayBuffer,
+  module: WebAssembly.Module,
+): Promise<Pick<ProcessInfo, "programBytes" | "programModule" | "plainProgram">> {
+  const plainProgram = { bytes, module };
+  const rewritten = await programRewriter?.rewritten(plainProgram);
+  if (!rewritten) return { programBytes: bytes, programModule: module };
+  return { programBytes: rewritten.bytes, programModule: rewritten.module, plainProgram };
 }
 
 function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -1080,6 +1117,18 @@ async function handleInit(msg: InitMessage) {
   const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
+  forkMemory = msg.config.forkMemory ?? "copy";
+  memoryInstrumenter = msg.config.memoryInstrumenter === undefined
+    ? undefined
+    : new WebAssembly.Module(msg.config.memoryInstrumenter);
+  forkShareMinimumBytes = msg.config.forkShareMinimumBytes ?? 0;
+  programRewriter = forkMemory === "share" && memoryInstrumenter
+    ? new ProgramRewriter(
+        memoryInstrumenter,
+        createNodeProgramRewriteWorker,
+        (bytes) => kernelWorker.wasmModules.programModule(bytes),
+      )
+    : undefined;
   processMemoryAllocator = new ProcessMemoryAllocator({
     maxMemories: Math.max(
       1,
@@ -1572,12 +1621,12 @@ async function handleSpawn(msg: SpawnMessage) {
     if (msg.cwd) await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
 
     const startProgram = async (
-      programBytes: ArrayBuffer,
-      programModule: WebAssembly.Module,
+      admittedBytes: ArrayBuffer,
+      admittedModule: WebAssembly.Module,
       argv: string[],
       committedSecureExec?: boolean,
     ): Promise<number> => {
-      if (groupedSession?.accepts(programModule)) {
+      if (groupedSession?.accepts(admittedModule)) {
         const secureExec = committedSecureExec ?? await retryKernelEntryResult(() => kernelWorker.processSecureExec(pid));
         if (msg.pty) {
           const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid)); ptyByPid.set(pid, ptyIdx);
@@ -1586,9 +1635,10 @@ async function handleSpawn(msg: SpawnMessage) {
           await retryKernelEntryResult(() => kernelWorker.installHostStdinPipe(pid));
           if (msg.stdin) kernelWorker.setStdinData(pid, msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin));
         }
-        await groupedSession.launch(pid, programBytes, programModule, argv, msg.env ?? [], maxPages, defaultThreadSlots, secureExec, committedSecureExec !== undefined);
+        await groupedSession.launch(pid, admittedBytes, admittedModule, argv, msg.env ?? [], maxPages, defaultThreadSlots, secureExec, committedSecureExec !== undefined);
         respond(msg.requestId, pid); return 0;
       }
+      const { programBytes, programModule, plainProgram } = await launchForms(admittedBytes, admittedModule);
       const ptrWidth = detectPtrWidth(programBytes);
       const {
         memory,
@@ -1610,6 +1660,7 @@ async function handleSpawn(msg: SpawnMessage) {
           env: msg.env ?? [],
           brkBase: layout.brkBase,
           mmapBase: layout.mmapBase,
+          pageTable: layout.pageTable,
           maxAddr: layout.maxAddr,
         }));
       createdMemoryRegistered = true;
@@ -1629,7 +1680,7 @@ async function handleSpawn(msg: SpawnMessage) {
       // bytes is a handle onto those bytes, never a kernel copy.
       if (committedSecureExec === undefined) {
         const attached = await retryKernelEntryResult(() => kernelWorker.attachProgram(
-          pid, { bytes: new Uint8Array(programBytes), name: argv[0] || "program" },
+          pid, { bytes: new Uint8Array(admittedBytes), name: argv[0] || "program" },
         ));
         if (attached < 0) throw new Error(`spawn: the kernel refused pid ${pid}'s executable (errno ${-attached})`);
       }
@@ -1682,6 +1733,8 @@ async function handleSpawn(msg: SpawnMessage) {
         programModule,
         memory,
         channelOffset,
+        pageTable: workerPageTable(layout.pageTable, channelOffset),
+        memoryInstrumenter,
         secureExec,
         externrefGenerationId: externrefGeneration.id,
         forkHostImports: forkHostImports.init,
@@ -1705,6 +1758,7 @@ async function handleSpawn(msg: SpawnMessage) {
         execRetirement: createWorkerQuiescence(),
         programBytes,
         programModule,
+        plainProgram,
         worker,
         channelOffset,
         ptrWidth,
@@ -1959,10 +2013,11 @@ async function handleVfork(
     processMemoryAllocator,
   );
   let childMemoryLeaseConsumed = false;
+  const parentForkShare = kernelWorker.getProcessForkShare(parentPid);
   let workspaceAllocation: ReturnType<ThreadPageAllocator["allocate"]>;
   try {
     workspaceAllocation =
-      parentInfo.threadAllocator.allocateHostControl(parentMemory);
+      parentInfo.threadAllocator.allocateHostControl(parentForkShare ?? parentMemory);
   } catch (error) {
     childMemoryLease.release();
     throw new VforkAddressSpaceBusyError(
@@ -2006,6 +2061,7 @@ async function handleVfork(
         mmapBase: childLayout.mmapBase,
         borrowedAddressSpace: true,
         inheritedThreadSlot: continuation.slot,
+        addressSpace: parentForkShare,
       }));
     registered = true;
     // Inheritance refuses to start while another kernel entry holds the gate
@@ -2032,7 +2088,7 @@ async function handleVfork(
       externrefProcessOwner.forkGenerationFromContinuation(
         parentInfo.externrefGeneration,
         childPid,
-        parentMemory,
+        kernelWorker.getProcessForkShare(parentPid) ?? parentMemory,
         ptrWidth,
         forkBufAddr,
       );
@@ -2062,6 +2118,9 @@ async function handleVfork(
       programModule: parentInfo.programModule,
       memory: parentMemory,
       channelOffset: childChannelOffset,
+      pageTable: parentForkShare
+        && workerPageTable(parentForkShare.location, parentForkShare.readable(childChannelOffset)),
+      memoryInstrumenter,
       secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
@@ -2328,7 +2387,15 @@ async function handleOrdinaryFork(
   }
 
   const ptrWidth = parentInfo.ptrWidth;
-  const childLayout = parentInfo.layout;
+  // WHY: a parent below the share threshold gains nothing from shared pages,
+  // so its child gets a private Memory and runs the plain form at full speed.
+  const parentSpace = kernelWorker.getProcessForkShare(parentPid);
+  const leaving = parentSpace && parentInfo.plainProgram && parentSpace.byteLength < forkShareMinimumBytes
+    ? { space: parentSpace, program: parentInfo.plainProgram }
+    : undefined;
+  const plainChild = leaving?.program;
+  const childLayout = plainChild ? { ...parentInfo.layout, pageTable: null } : parentInfo.layout;
+  const childProgram = plainChild ?? { bytes: parentProgram, module: parentInfo.programModule };
   // WHY: the launch below yields. A sibling exec may then retire the parent's
   // exact generation, so the committed fork must pass retired-memory
   // admission and own its clone before the first await.
@@ -2336,12 +2403,15 @@ async function handleOrdinaryFork(
     vforkMechanismTraceEnabled,
     processMemoryAllocator,
   );
-  const childMemoryLease = acquireForkMemoryClone(
-    processMemoryAllocator,
-    parentMemory,
-    ptrWidth,
-    childLayout.maximumPages,
-  );
+  // WHY: a program with page tables shares its Memory with the child. The
+  // child gets its own tables, and a page is copied on its first write.
+  const sharesMemory = childLayout.pageTable !== null;
+  const acquirePrivateMemory = leaving
+    ? () => acquireForkMemoryCopy(processMemoryAllocator, leaving.space, ptrWidth, childLayout.maximumPages)
+    : () => acquireForkMemoryClone(processMemoryAllocator, parentMemory, ptrWidth, childLayout.maximumPages);
+  const childMemoryLease = sharesMemory
+    ? parentInfo.memoryLease.retainAddressSpace()
+    : acquirePrivateMemory();
   const childMemory = childMemoryLease.memory;
   const memoryStatsAfterClone = sampleProcessMemoryStats(
     vforkMechanismTraceEnabled,
@@ -2359,6 +2429,7 @@ async function handleOrdinaryFork(
     );
   }
   const childChannelOffset = childLayout.channelOffset;
+  let childAddressSpace: ForkShareAddressSpace | undefined;
   let childWorker: DeferredWorkerHandle | undefined;
   let registered = false;
   let workerStartAttempted = false;
@@ -2377,11 +2448,20 @@ async function handleOrdinaryFork(
       return [];
     }
 
-    new Uint8Array(
-      childMemory.buffer,
-      childChannelOffset,
-      CH_TOTAL_SIZE,
-    ).fill(0);
+    if (sharesMemory) {
+      // WHY: the host uses the main control pages and every pthread slot of
+      // the parent at their physical offset, so those pages stay unshared.
+      const controlPage = childLayout.controlBase / WASM_PAGE_SIZE;
+      childAddressSpace = kernelWorker.forkProcessAddressSpace(parentPid, [
+        { page: controlPage, count: childLayout.channelPage + CHANNEL_PAGES - controlPage },
+        ...parentInfo.threadAllocator.liveSlotRuns(),
+      ]);
+      childMemoryLease.ownAddressSpace(childAddressSpace);
+      // WHY: the child's copy of the control pages holds the stop request
+      // of a parent thread that this fork parked.
+      fillProcessBytes(childAddressSpace, channelStopOffset(childChannelOffset), STOP_WORDS_BYTES, 0);
+    }
+    fillProcessBytes(childAddressSpace ?? childMemory, childChannelOffset, CH_TOTAL_SIZE, 0);
     // See the launch-continuation retry note on the root spawn path. This
     // fork-child registration raced dinit/php-fpm boot traffic in practice
     // (KernelReentrantEntryError → spurious fork failure).
@@ -2391,6 +2471,7 @@ async function handleOrdinaryFork(
         maxAddr: childLayout.maxAddr,
         mmapBase: childLayout.mmapBase,
         inheritedThreadSlot: continuation.slot,
+        addressSpace: childAddressSpace,
       }));
     registered = true;
     // Inheritance refuses to start while another kernel entry holds the gate
@@ -2418,7 +2499,7 @@ async function handleOrdinaryFork(
       externrefProcessOwner.forkGenerationFromContinuation(
         parentInfo.externrefGeneration,
         childPid,
-        parentMemory,
+        kernelWorker.getProcessForkShare(parentPid) ?? parentMemory,
         ptrWidth,
         forkBufAddr,
       );
@@ -2444,10 +2525,13 @@ async function handleOrdinaryFork(
     const childInitData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
-      programBytes: parentProgram,
-      programModule: parentInfo.programModule,
+      programBytes: childProgram.bytes,
+      programModule: childProgram.module,
       memory: childMemory,
       channelOffset: childChannelOffset,
+      pageTable: childAddressSpace
+        && workerPageTable(childAddressSpace.location, childAddressSpace.readable(childChannelOffset)),
+      memoryInstrumenter,
       secureExec: await retryKernelEntryResult(() => kernelWorker.processSecureExec(childPid)),
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
@@ -2476,8 +2560,9 @@ async function handleOrdinaryFork(
       memoryLease: childMemoryLease,
       workerQuiescence: createWorkerQuiescence(),
       execRetirement: createWorkerQuiescence(),
-      programBytes: parentProgram,
-      programModule: parentInfo.programModule,
+      programBytes: childProgram.bytes,
+      programModule: childProgram.module,
+      plainProgram: plainChild ? undefined : parentInfo.plainProgram,
       worker,
       channelOffset: childChannelOffset,
       ptrWidth,
@@ -2620,13 +2705,14 @@ async function handleExec(
 ): Promise<number | PreparedExecLaunchPlan> {
   const {
     pid,
-    targetBytes: programBytes,
-    targetModule: programModule,
+    targetBytes,
+    targetModule,
     argv: launchArgv,
     envp,
   } = request;
   const initiatingInfo = processes.get(pid);
   if (!initiatingInfo) return -3; // ESRCH
+  const { programBytes, programModule, plainProgram } = await launchForms(targetBytes, targetModule);
   const vforkBorrower = vforkLifetimes.isActiveBorrower(initiatingInfo);
   const newPtrWidth = detectPtrWidth(programBytes);
   const metadataResult = kernelWorker.validateExecMetadata(
@@ -2813,6 +2899,8 @@ async function handleExec(
         programModule,
         memory: newMemory,
         channelOffset: newChannelOffset,
+        pageTable: workerPageTable(newLayout.pageTable, newChannelOffset),
+        memoryInstrumenter,
         secureExec,
         externrefGenerationId: replacementExternrefGeneration.id,
         forkHostImports: replacementForkHostImports.init,
@@ -2846,6 +2934,7 @@ async function handleExec(
           metadataPtrWidth: initiatingInfo.ptrWidth,
           brkBase: newLayout.brkBase,
           mmapBase: newLayout.mmapBase,
+          pageTable: newLayout.pageTable,
           maxAddr: newLayout.maxAddr,
           // Refresh kernel-side Process.argv and environment so procfs and
           // kernel APIs reflect the replacement image.
@@ -2865,6 +2954,7 @@ async function handleExec(
         execRetirement: createWorkerQuiescence(),
         programBytes,
         programModule,
+        plainProgram,
         worker: replacementWorker,
         channelOffset: newChannelOffset,
         ptrWidth: newPtrWidth,
@@ -3080,11 +3170,12 @@ async function handlePosixSpawn(
   // the asynchronous memory allocation below.
   post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
 
-  const { programBytes, programModule, argv } = program;
-  if (groupedSession?.accepts(programModule)) {
-    await groupedSession.launch(childPid, programBytes, programModule, argv, envp, maxPages, defaultThreadSlots, secureExec, true);
+  const { argv } = program;
+  if (groupedSession?.accepts(program.programModule)) {
+    await groupedSession.launch(childPid, program.programBytes, program.programModule, argv, envp, maxPages, defaultThreadSlots, secureExec, true);
     return 0;
   }
+  const { programBytes, programModule, plainProgram } = await launchForms(program.programBytes, program.programModule);
   const ptrWidth = detectPtrWidth(programBytes);
   let fresh: Awaited<ReturnType<typeof createFreshProcessMemory>>;
   try {
@@ -3125,6 +3216,7 @@ async function handlePosixSpawn(
         ptrWidth,
         brkBase: layout.brkBase,
         mmapBase: layout.mmapBase,
+        pageTable: layout.pageTable,
         maxAddr: layout.maxAddr,
       }));
     registered = true;
@@ -3156,6 +3248,8 @@ async function handlePosixSpawn(
       programModule,
       memory,
       channelOffset,
+      pageTable: workerPageTable(layout.pageTable, channelOffset),
+      memoryInstrumenter,
       secureExec,
       externrefGenerationId: processExternrefGeneration.id,
       forkHostImports: processForkHostImports.init,
@@ -3178,6 +3272,7 @@ async function handlePosixSpawn(
       execRetirement: createWorkerQuiescence(),
       programBytes,
       programModule,
+      plainProgram,
       worker,
       channelOffset,
       ptrWidth,
@@ -3305,11 +3400,12 @@ async function handleClone(
   }
   if (cacheCompiledModule) threadModuleCache.set(pid, threadModule);
 
+  const forkShare = kernelWorker.getProcessForkShare(pid);
   let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
   try {
     const allocationState = await retryKernelEntryResultForGeneration(
       belongsToCompiledProcessImage,
-      () => processInfo.threadAllocator.allocate(memory),
+      () => processInfo.threadAllocator.allocate(forkShare ?? memory),
     );
     if (allocationState.status === "stale") {
       throw new Error(`Process ${pid} changed generation during clone allocation`);
@@ -3368,6 +3464,8 @@ async function handleClone(
     memory,
     processChannelOffset: processInfo.channelOffset,
     channelOffset: alloc.channelOffset,
+    pageTable: forkShare && workerPageTable(forkShare.location, forkShare.readable(alloc.channelOffset)),
+    memoryInstrumenter,
     secureExec: processInfo.secureExec,
     externrefGenerationId: processInfo.externrefGeneration.id,
     forkHostImports: forkHostImports.init,

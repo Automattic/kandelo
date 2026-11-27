@@ -80,6 +80,7 @@ import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
 import { selectKernelMaxPages, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
 import type { ForkAddressSpaceCopy } from "./process-memory";
+import type { ForkMemory } from "./fork-share-address-space";
 
 export type { HttpRequest, HttpResponse };
 
@@ -135,6 +136,31 @@ export interface NodeKernelHostOptions {
    * give the child identical bytes. See `ForkAddressSpaceCopy`.
    */
   forkCopy?: ForkAddressSpaceCopy;
+  /**
+   * Address-space mode for programs rewritten by `wasm-memory-instrument`
+   * (default `"copy"`). `"share"` gives each such process a group header and
+   * routes host access through its page tables. Fork then shares the
+   * parent's pages with the child, and a store to a shared page copies that
+   * page first. See `ForkMemory`.
+   */
+  forkMemory?: ForkMemory;
+  /**
+   * Bytes of `kandelo_memory_instrument32.wasm`
+   * (`crates/memory-instrument/build-wasm.sh`). A process with page tables
+   * needs it to load a side module with `dlopen`: the host rewrites the
+   * module so its memory accesses use the tables of the process. In
+   * `"share"` mode the default is the resolver's copy of that file.
+   */
+  memoryInstrumenter?: ArrayBuffer;
+  /**
+   * In `"share"` mode, the smallest guest address space, in bytes, whose
+   * fork child shares the pages of its parent (default 0: every fork
+   * shares). This applies to a program with the
+   * `kandelo.memory.rewrite_at_exec` mark, which the host rewrites when a
+   * process starts it. A smaller parent gets a child with a private Memory
+   * that runs the plain form of the program, without page tables.
+   */
+  forkShareMinimumBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Size of the data buffer for syscall data transfer (default: 65536).
@@ -350,7 +376,7 @@ export class NodeKernelHost {
         || !isStagedRootfsImageIntegrity(this.options.rootfsImageIntegrity))) {
       throw new Error("rootfs image file integrity metadata is invalid");
     }
-    const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
+    const wasmBytes = kernelWasmBytes ?? loadBinary("kernel.wasm");
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
     if (this.options.enableTcpNetwork && this.options.offlineEgressLink) {
       throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
@@ -554,6 +580,12 @@ export class NodeKernelHost {
             }),
             maxProcessMemoryBytes,
             forkCopy: this.options.forkCopy,
+            forkMemory: this.options.forkMemory,
+            memoryInstrumenter: this.options.memoryInstrumenter
+              ?? (this.options.forkMemory === "share"
+                ? loadBinary("kandelo_memory_instrument32.wasm")
+                : undefined),
+            forkShareMinimumBytes: this.options.forkShareMinimumBytes,
             defaultThreadSlots: this.options.defaultThreadSlots,
             dataBufferSize: this.options.dataBufferSize ?? 65536,
             useSharedMemory: true,
@@ -1693,8 +1725,8 @@ function mergeEnv(env: string[]): string[] {
   return result;
 }
 
-function loadKernelWasm(): ArrayBuffer {
-  const buf = readFileSync(resolveBinary("kernel.wasm"));
+function loadBinary(request: string): ArrayBuffer {
+  const buf = readFileSync(resolveBinary(request));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 

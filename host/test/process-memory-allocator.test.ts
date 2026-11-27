@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { WASM_PAGE_SIZE } from "../src/constants";
+import { ForkShareAddressSpace } from "../src/fork-share-address-space";
 import {
   acquireForkMemoryClone,
+  acquireForkMemoryCopy,
   copyArrayBufferInChunks,
   copyIntoZeroedArrayBuffer,
   copyProcessAddressSpace,
@@ -148,6 +150,13 @@ describe("ProcessMemoryAllocator", () => {
     expect(() => owner.retainAlias()).toThrow(
       "Cannot retain process memory after forced termination",
     );
+    const forkChild = owner.retainAddressSpace();
+    expect(forkChild.memory).toBe(owner.memory);
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 1,
+      liveAliases: 2,
+    });
+    forkChild.release();
 
     owner.release();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -157,6 +166,28 @@ describe("ProcessMemoryAllocator", () => {
       liveAliases: 0,
       pendingRetirements: 1,
     });
+    allocator.clear();
+  });
+
+  it("gives the pages of a fork child back only on a quiescent release", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: 4 * WASM_PAGE_SIZE,
+    });
+    const owner = allocator.acquire(request(4));
+    const foo = { release: vi.fn() } as unknown as ForkShareAddressSpace;
+    const bar = { release: vi.fn() } as unknown as ForkShareAddressSpace;
+    const quiescent = owner.retainAddressSpace();
+    const forced = owner.retainAddressSpace();
+    quiescent.ownAddressSpace(foo);
+    forced.ownAddressSpace(bar);
+
+    quiescent.release();
+    forced.releaseAfterForcedTermination();
+
+    expect(foo.release).toHaveBeenCalledTimes(1);
+    expect(bar.release).not.toHaveBeenCalled();
+    owner.release();
     allocator.clear();
   });
 
@@ -204,6 +235,66 @@ describe("ProcessMemoryAllocator", () => {
     expect(childBytes[WASM_PAGE_SIZE + 17]).toBe(0x2a);
     childLease.release();
     replacementLease.release();
+  });
+
+  it("copies a fork parent's guest-virtual pages into a private memory", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 2,
+      maxTotalBytes: 64 * WASM_PAGE_SIZE,
+    });
+    const parentLease = allocator.acquire(request(16));
+    const parentBytes = new Uint8Array(parentLease.memory.buffer);
+    const table = 2 * WASM_PAGE_SIZE;
+    const movedTo = 15 * WASM_PAGE_SIZE;
+    new Int32Array(parentLease.memory.buffer)[table / 4 + 1] = movedTo - WASM_PAGE_SIZE;
+    parentBytes[WASM_PAGE_SIZE] = 0x11;
+    parentBytes[movedTo] = 0x22;
+    parentBytes[11 * WASM_PAGE_SIZE] = 0x33;
+    const parentSpace = new ForkShareAddressSpace(
+      parentLease.memory,
+      { table, group: 10 * WASM_PAGE_SIZE },
+    );
+
+    const childLease = acquireForkMemoryCopy(allocator, parentSpace, 4, 32);
+
+    const childBytes = new Uint8Array(childLease.memory.buffer);
+    expect(childLease.memory).not.toBe(parentLease.memory);
+    expect(childBytes.byteLength).toBe(16 * WASM_PAGE_SIZE);
+    expect(childBytes[WASM_PAGE_SIZE]).toBe(0x22);
+    expect(childBytes[11 * WASM_PAGE_SIZE]).toBe(0x33);
+    expect(childBytes[movedTo]).toBe(0x22);
+    childLease.release();
+    parentLease.release();
+    allocator.clear();
+  });
+
+  it("captures a fork parent's guest-virtual pages before an asynchronous allocation yields", async () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 2,
+      maxTotalBytes: 64 * WASM_PAGE_SIZE,
+      createMemoryAsync: async request => new WebAssembly.Memory({
+        initial: request.initialPages, maximum: request.maximumPages, shared: true,
+      }),
+    });
+    const parentLease = await allocator.acquireWhenAvailable(request(16));
+    const parentBytes = new Uint8Array(parentLease.memory.buffer);
+    const table = 2 * WASM_PAGE_SIZE;
+    const movedTo = 15 * WASM_PAGE_SIZE;
+    new Int32Array(parentLease.memory.buffer)[table / 4 + 1] = movedTo - WASM_PAGE_SIZE;
+    parentBytes[movedTo] = 0x22;
+    const parentSpace = new ForkShareAddressSpace(
+      parentLease.memory,
+      { table, group: 10 * WASM_PAGE_SIZE },
+    );
+
+    const pending = allocator.acquireForkCopy(parentSpace, 4, 32);
+    parentBytes[movedTo] = 0x44;
+    const childLease = await pending;
+
+    expect(new Uint8Array(childLease.memory.buffer)[WASM_PAGE_SIZE]).toBe(0x22);
+    childLease.release();
+    parentLease.release();
+    allocator.clear();
   });
 
   it("bounds retirement bursts without making finalization permanent authority", async () => {

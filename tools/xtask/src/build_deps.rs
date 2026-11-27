@@ -62,7 +62,8 @@ use sha2::{Digest, Sha256};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::pkg_manifest::{
     BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
-    HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, PackageToolchain, SourceProvider, TargetArch,
+    HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, MemoryInstrumentationPolicy,
+    PackageToolchain, SourceProvider, TargetArch,
     cache_provenance_path, expected_cache_provenance_bytes, file_paths_conflict,
     remove_cache_provenance, validate_cache_provenance, write_cache_provenance,
 };
@@ -7550,6 +7551,9 @@ fn compute_sha_with_identity_context_for_platform(
                 if let Some(source) = &out.shared_memory_from {
                     h.update(b"|shared_memory_from="); h.update(source.as_bytes());
                 }
+                if out.memory_instrumentation == MemoryInstrumentationPolicy::Auto {
+                    h.update(b"|memory_instrumentation=auto");
+                }
                 if let Some(original) = &out.original_wasm {
                     h.update(b"|original_wasm=");
                     h.update((original.len() as u64).to_le_bytes());
@@ -14678,6 +14682,17 @@ fn stamp_program_outputs(target: &DepsManifest, tmp: &Path, repo_root: &Path,
                 member.display()
             )
         })?;
+        let stamped = mark_program_output_for_memory_rewrite(
+            stamped,
+            output.memory_instrumentation,
+        )
+        .map_err(|error| {
+            format!(
+                "{}: mark wasm output {} for the memory rewrite: {error}",
+                target.spec(),
+                member.display()
+            )
+        })?;
         // The built member may be read-only: a `make install` binary
         // is commonly mode 0555, the fork-instrument step deliberately
         // preserves that mode, and the resolver-scratch copy inherits
@@ -15974,6 +15989,28 @@ fn program_artifact_signature_text(
     let params = params.iter().map(value_name).collect::<Vec<_>>().join(",");
     let results = results.iter().map(value_name).collect::<Vec<_>>().join(",");
     format!("({params}) -> ({results})")
+}
+
+/// Applies `memory_instrumentation = "auto"` to one built program output.
+///
+/// WHY: only a process that forks can share pages, and the rewrite accepts
+/// a wasm32 main program only. Every other output stays unmarked, so its
+/// processes never pay for the rewritten form.
+fn mark_program_output_for_memory_rewrite(
+    bytes: Vec<u8>,
+    policy: MemoryInstrumentationPolicy,
+) -> Result<Vec<u8>, String> {
+    if policy == MemoryInstrumentationPolicy::Disabled {
+        return Ok(bytes);
+    }
+    let facts = wasm_artifact_facts(&bytes)?;
+    let forking_wasm32_program = facts.imports_kernel_fork
+        && facts.dylink_section_count == 0
+        && facts.memory_pointer_widths == [4];
+    if !forking_wasm32_program {
+        return Ok(bytes);
+    }
+    memory_instrument::mark_for_exec(&bytes).map_err(|error| format!("{error:#}"))
 }
 
 #[cfg(test)]
@@ -26753,6 +26790,91 @@ fork_instrumentation = "disabled"
             "re-ordering program outputs is a meaningful change (not normalized) and must \
              invalidate the cache key"
         );
+    }
+
+    fn forking_program(memory: &str) -> Vec<u8> {
+        wat::parse_str(format!(
+            r#"(module
+                (import "kernel" "kernel_fork" (func (param i32) (result i32)))
+                (import "env" "memory" (memory {memory}))
+                (global (export "__heap_base") i32 (i32.const 65552))
+                (func)
+                (data "foo"))"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn memory_instrumentation_auto_marks_a_forking_wasm32_program_once() {
+        let program = forking_program("1 100 shared");
+        let mark = wasm_custom_section("kandelo.memory.rewrite_at_exec", &[]);
+
+        let marked = mark_program_output_for_memory_rewrite(
+            program.clone(),
+            MemoryInstrumentationPolicy::Auto,
+        )
+        .unwrap();
+
+        assert_eq!(marked, [program, mark].concat());
+        assert_eq!(
+            mark_program_output_for_memory_rewrite(marked.clone(), MemoryInstrumentationPolicy::Auto).unwrap(),
+            marked
+        );
+    }
+
+    #[test]
+    fn memory_instrumentation_leaves_other_outputs_unmarked() {
+        let forking = forking_program("1 100 shared");
+        let mut side_module = forking.clone();
+        side_module.splice(8..8, wasm_custom_section("dylink.0", &[]));
+        let no_fork = wat::parse_str(
+            r#"(module
+                (import "env" "memory" (memory 1 100 shared))
+                (global (export "__heap_base") i32 (i32.const 65552)))"#,
+        )
+        .unwrap();
+
+        for (bytes, policy) in [
+            (forking, MemoryInstrumentationPolicy::Disabled),
+            (side_module, MemoryInstrumentationPolicy::Auto),
+            (no_fork, MemoryInstrumentationPolicy::Auto),
+            (forking_program("i64 1 100 shared"), MemoryInstrumentationPolicy::Auto),
+        ] {
+            assert_eq!(
+                mark_program_output_for_memory_rewrite(bytes.clone(), policy).unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn memory_instrumentation_auto_refuses_a_forking_program_that_the_rewrite_rejects() {
+        let program = wat::parse_str(
+            r#"(module
+                (import "kernel" "kernel_fork" (func (param i32) (result i32)))
+                (memory 1)
+                (func))"#,
+        )
+        .unwrap();
+
+        let error = mark_program_output_for_memory_rewrite(program, MemoryInstrumentationPolicy::Auto)
+            .unwrap_err();
+
+        assert_eq!(error, "module does not export __heap_base");
+    }
+
+    #[test]
+    fn memory_instrumentation_auto_changes_the_cache_key() {
+        let root = tempdir("sha-memory-instrumentation");
+        write_program_manifest(&root, "dash", "1.0.0", "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\n");
+        let registry = Registry { roots: vec![root.clone()] };
+        let initial = sha_of(&registry, "dash");
+
+        write_program_manifest(&root, "dash", "1.0.0", "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\nmemory_instrumentation = \"disabled\"\n");
+        assert_eq!(initial, sha_of(&registry, "dash"));
+
+        write_program_manifest(&root, "dash", "1.0.0", "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\nmemory_instrumentation = \"auto\"\n");
+        assert_ne!(initial, sha_of(&registry, "dash"));
     }
 
     #[test]

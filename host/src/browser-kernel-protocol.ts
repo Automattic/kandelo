@@ -8,6 +8,7 @@ import type {
 } from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { ForkAddressSpaceCopy } from "./process-memory";
+import type { ForkMemory } from "./fork-share-address-space";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -219,6 +220,8 @@ export interface InitMessage {
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
   workerEntryUrl: string;
+  /** Entry of the Worker that rewrites a marked program. */
+  programRewriteWorkerEntryUrl: string;
   bridgePort?: MessagePort;
   config: {
     experimentalMemoryGroup?: TrustedMemoryGroupOptions;
@@ -237,6 +240,12 @@ export interface InitMessage {
     maxProcessMemoryBytes: number;
     /** Fork address-space copy mode; the allocator defaults to `"sparse"`. */
     forkCopy?: ForkAddressSpaceCopy;
+    /** Address-space mode for memory-instrumented programs; defaults to `"copy"`. */
+    forkMemory?: ForkMemory;
+    /** Bytes of the memory instrumenter module that rewrites marked programs and side modules. */
+    memoryInstrumenter?: ArrayBuffer;
+    /** Smallest parent address space whose fork child shares pages; defaults to 0. */
+    forkShareMinimumBytes?: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */

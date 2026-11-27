@@ -26,6 +26,7 @@ import {
   browserImageModule32ModuleSpecifier,
   browserPositionedImageModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
+  browserMemoryInstrument32ModuleSpecifier,
   browserRepositoryAliases,
   browserRootfsModuleSpecifier,
 } from "./browser-module-contract.mjs";
@@ -360,6 +361,10 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
  * image writer pages build their boot images with, through the same resolver
  * tiers as the kernel.
  *
+ * `@kandelo-memory-instrument32-wasm` resolves
+ * `kandelo_memory_instrument32.wasm`, which `BrowserKernel` fetches in
+ * `forkMemory: "share"` mode, through the same resolver tiers as the kernel.
+ *
  * Resolution is deferred until import time so pages that don't consume
  * these aliases can run without a kernel build present. Pages that do
  * import them get a clear error pointing at the build script.
@@ -369,6 +374,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const ROOTFS = browserRootfsModuleSpecifier;
   const IMAGE_MODULE32 = browserImageModule32ModuleSpecifier;
   const POSITIONED_IMAGE_MODULE32 = browserPositionedImageModule32ModuleSpecifier;
+  const MEMORY_INSTRUMENT32 = browserMemoryInstrument32ModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -419,6 +425,17 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
         this.error(
           "kandelo_image_module_positioned32.wasm not found. Run " +
             "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.",
+        );
+      }
+      if (pathPart === MEMORY_INSTRUMENT32) {
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("kandelo_memory_instrument32.wasm");
+        }
+        const resolved = tryResolveBinary("kandelo_memory_instrument32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        this.error(
+          "kandelo_memory_instrument32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/memory-instrument/build-wasm.sh`.",
         );
       }
       if (pathPart === ROOTFS) {

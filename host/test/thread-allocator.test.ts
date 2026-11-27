@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { ThreadPageAllocator } from "../src/thread-allocator";
 import { WASM_PAGE_SIZE, PAGES_PER_THREAD, CH_TOTAL_SIZE } from "../src/constants";
+import { ForkShareAddressSpace, GROUP_HEADER_BYTES } from "../src/fork-share-address-space";
+import { channelStopOffset } from "../src/process-memory";
 
 const MAX_PAGES = 256;
 const FIRST_THREAD_SLOT_PAGE = 24;
@@ -270,5 +272,94 @@ describe("ThreadPageAllocator", () => {
     expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
     alloc.free(pthread.slotStartPage);
     expect(alloc.allocate(mem).slotStartPage).toBe(pthread.slotStartPage);
+  });
+
+  it("lists the slots in use, pthread and host control", () => {
+    const alloc = makeAllocator();
+    const mem = makeMemory();
+    const first = alloc.allocate(mem);
+    const control = alloc.allocateHostControl(mem);
+    const second = alloc.allocate(mem);
+
+    alloc.free(first.slotStartPage);
+
+    expect(alloc.liveSlotRuns()).toEqual([
+      { page: control.slotStartPage, count: PAGES_PER_THREAD },
+      { page: second.slotStartPage, count: PAGES_PER_THREAD },
+    ]);
+  });
+
+  it("keeps the large TLS of a slot in the unshared run of a fork child", () => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: MAX_PAGES, shared: true });
+    const groupBase = 4 * WASM_PAGE_SIZE;
+    const parent = new ForkShareAddressSpace(memory, {
+      table: groupBase + GROUP_HEADER_BYTES,
+      group: groupBase,
+    });
+    const makeLargeTlsAllocator = () => new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE,
+      reservedSlots: 1,
+      tlsRequirements: { byteLength: WASM_PAGE_SIZE + 1, alignment: 1 },
+      reserveSlotStartPage: () => FIRST_THREAD_SLOT_PAGE,
+    });
+    const parentAllocator = makeLargeTlsAllocator();
+    const first = parentAllocator.allocate(parent);
+    const runs = parentAllocator.liveSlotRuns();
+    new Uint8Array(memory.buffer, first.tls.offset, first.tls.byteLength).fill(0xab);
+    const child = parent.fork(runs);
+
+    const second = makeLargeTlsAllocator().allocate(child);
+
+    const tls = child.readableRun(second.tls.offset, second.tls.byteLength);
+    expect(runs).toEqual([{ page: FIRST_THREAD_SLOT_PAGE, count: PAGES_PER_THREAD + 2 }]);
+    expect(second.tls).toEqual(first.tls);
+    expect(tls).toBe(child.readable(second.channelOffset) + 2 * WASM_PAGE_SIZE);
+    expect(new Uint8Array(memory.buffer, tls, second.tls.byteLength).every((b) => b === 0)).toBe(true);
+    expect(new Uint8Array(memory.buffer, first.tls.offset, first.tls.byteLength).every((b) => b === 0xab)).toBe(true);
+  });
+
+  it("gives a fork child that shares the memory its own physical slot", () => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: MAX_PAGES, shared: true });
+    const groupBase = 4 * WASM_PAGE_SIZE;
+    const parent = new ForkShareAddressSpace(memory, {
+      table: groupBase + GROUP_HEADER_BYTES,
+      group: groupBase,
+    });
+    const first = makeAllocator().allocate(parent);
+    new Uint8Array(memory.buffer, first.channelOffset, 16).fill(0xab);
+    const child = parent.fork([{ page: 2, count: 1 }]);
+
+    const second = makeAllocator().allocate(child);
+
+    const channel = child.writable(second.channelOffset);
+    expect(parent.writable(first.channelOffset)).toBe(first.channelOffset);
+    expect(second.channelOffset).toBe(first.channelOffset);
+    expect(second.tlsOffset).toBe(first.tlsOffset);
+    expect(second.forkSaveOffset).toBe(first.forkSaveOffset);
+    expect(channel).not.toBe(first.channelOffset);
+    expect(child.readable(second.tlsOffset)).toBe(channel - 2 * WASM_PAGE_SIZE);
+    expect(child.readable(second.forkSaveOffset)).toBe(channel - WASM_PAGE_SIZE);
+    expect(child.readBytes(second.channelOffset, 16).every((b) => b === 0)).toBe(true);
+    expect(parent.readBytes(first.channelOffset, 16).every((b) => b === 0xab)).toBe(true);
+  });
+
+  it("zeroes the stop words that a fork child inherits with a slot", () => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: MAX_PAGES, shared: true });
+    const groupBase = 4 * WASM_PAGE_SIZE;
+    const parent = new ForkShareAddressSpace(memory, {
+      table: groupBase + GROUP_HEADER_BYTES,
+      group: groupBase,
+    });
+    const first = makeAllocator().allocate(parent);
+    new Int32Array(memory.buffer).fill(7, channelStopOffset(first.channelOffset) / 4);
+    const child = parent.fork([{ page: first.slotStartPage, count: PAGES_PER_THREAD }]);
+
+    const second = makeAllocator().allocate(child);
+
+    const stopWords = channelStopOffset(second.channelOffset);
+    expect(child.readable(stopWords)).not.toBe(stopWords);
+    expect([...child.readBytes(stopWords, 8)]).toEqual(new Array(8).fill(0));
+    expect(parent.readBytes(stopWords, 1)[0]).toBe(7);
   });
 });

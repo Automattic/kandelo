@@ -1363,6 +1363,11 @@ const auditAllowances: AuditAllowance[] = [
     why: "Module initialization captures only the native buffer getter to authenticate caller process Memory. It retains no Memory instance or buffer; explicit grouped roots take the virtual path and cannot masquerade as native buffer objects.",
   },
   {
+    key: "host/src/fork-share-address-space.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-control",
+    why: "The fork-share address space captures the intrinsic Memory buffer getter and grow method before host hooks run, so guest-address translation cannot be redirected to a fake buffer; no Memory instance is captured here.",
+  },
+  {
     key: "host/src/process-atomic-word.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "The Worker-local atomic accessor captures only the native buffer getter to authenticate each ordinary process Memory before constructing one fresh word view. The capture retains no Memory instance or buffer; grouped roots use checked virtual operations and cannot enter the native branch as fabricated Memory values.",
@@ -1593,6 +1598,12 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This is the small Rust metadata module, not a kernel. The sole supplied import is freshly created private worker memory, with no filesystem, OPFS, process or device capabilities. Worker retirement owns the entire instance after success, refusal, cancellation or parser allocation failure.",
+  },
+  {
+    key: "host/src/memory-instrument.ts::rewrite::wasm-instance-authority::new WebAssembly.Instance(instrumenter)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This is the Rust memory rewriter, not a kernel. It imports nothing and owns private nonshared memory. The caller copies the module bytes in and the rewritten bytes out: a process Worker for a side module, the rewrite Worker for a program. The instance receives neither kernel nor guest linear memory and is unreachable after the call returns.",
   },
   {
     key: 'images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.instantiatePositioned::wasm-instance-authority::new WebAssembly.Instance(module, { env })',

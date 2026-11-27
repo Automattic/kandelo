@@ -11,6 +11,7 @@ import {
   encodeForkModuleStateDescriptor,
   computeForkModuleTemplateId,
   computeForkModuleTemplateIdSync,
+  computeProgramForkTemplateId,
   ForkImportedGlobalBindingKind,
   ForkImportedTableBindingKind,
   ForkModuleStateArena,
@@ -21,6 +22,7 @@ import {
   FORK_MODULE_STATE_REQUIRED_FLAGS,
   FORK_MODULE_STATE_ROOT_POINTER_WORD_OFFSET,
   FORK_MODULE_STATE_SECTION,
+  MEMORY_PLAIN_FORM_SECTION,
   readForkModuleStateDescriptor,
   readForkImportedGlobals,
   readForkImportedTables,
@@ -29,6 +31,7 @@ import {
   replayEventsForChild,
   type ForkSparseTableSnapshot,
 } from "../src/fork-module-state";
+import { ForkShareAddressSpace, GROUP_HEADER_BYTES } from "../src/fork-share-address-space";
 import {
   type ForkReplayEvent,
   ForkReplayEventJournal,
@@ -108,6 +111,40 @@ describe("fork module template identity", () => {
     const source = storage.subarray(7, 264);
     expect(computeForkModuleTemplateIdSync(source))
       .toEqual(await computeForkModuleTemplateId(source));
+  });
+});
+
+describe("program fork template identity", () => {
+  const program = (...plainForms: Uint8Array[]): Uint8Array => {
+    const name = new TextEncoder().encode(MEMORY_PLAIN_FORM_SECTION);
+    return Uint8Array.from([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+      ...plainForms.flatMap((plainForm) => [
+        0x00, 1 + name.length + plainForm.length, name.length, ...name, ...plainForm,
+      ]),
+    ]);
+  };
+  const templateId = (bytes: Uint8Array): Promise<Uint8Array> =>
+    computeProgramForkTemplateId(new WebAssembly.Module(bytes as BufferSource), bytes);
+
+  it("hashes the bytes of a program that records no plain form", async () => {
+    const bytes = program();
+
+    expect(await templateId(bytes)).toEqual(computeForkModuleTemplateIdSync(bytes));
+  });
+
+  it("uses the plain form hash that a rewritten program records", async () => {
+    const plainForm = Uint8Array.from({ length: 32 }, (_, index) => index);
+
+    expect(await templateId(program(plainForm))).toEqual(plainForm);
+  });
+
+  it.each([
+    ["a short hash", [new Uint8Array(31)]],
+    ["two sections", [new Uint8Array(32), new Uint8Array(32)]],
+  ])("refuses %s", async (_, plainForms) => {
+    await expect(templateId(program(...plainForms)))
+      .rejects.toThrow("kandelo.memory.plain_form must be one section of 32 bytes");
   });
 });
 
@@ -1428,5 +1465,49 @@ describe("ForkModuleStateArena", () => {
     expect(arenaAllocator.releases).toEqual(
       [...arenaAllocator.allocations].reverse(),
     );
+  });
+
+  it("writes and reads through the page tables of a fork child", () => {
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: 1024, shared: true });
+    const groupBase = 4 * PAGE_SIZE;
+    const parent = new ForkShareAddressSpace(
+      memory,
+      { table: groupBase + GROUP_HEADER_BYTES, group: groupBase },
+    );
+    const space = parent.fork([{ page: 2, count: 1 }]);
+    const root = 20 * PAGE_SIZE;
+    let next = root;
+    const allocate = (size: number): number => {
+      const addr = next;
+      next += size;
+      return addr;
+    };
+    // The second chunk covers pages 21 and 22. Copying page 22 first puts
+    // the two pages in separate physical runs, in reverse order.
+    space.writeBytes(22 * PAGE_SIZE, new Uint8Array(1));
+    const arena = new ForkModuleStateArena(space, 4, allocate, () => {}, "shared");
+    const payload = new Uint8Array(70_000).fill(0x91);
+    arena.begin();
+    arena.appendModule({ activationId: 0, templateId: templateId(9) });
+    arena.appendRecord({
+      kind: ForkModuleStateRecordKind.ReferenceRecipe,
+      activationId: 0,
+      ownerId: 1,
+      payload,
+    });
+    arena.seal();
+
+    expect(space.readableRun(21 * PAGE_SIZE, 2 * PAGE_SIZE)).toBe(-1);
+    expect(arena.records()[1]!.payload).toEqual(payload);
+    expect(arena.recordViews()[1]!.payload).toEqual(payload);
+    const attached = new ForkModuleStateArena(space, 4, allocate, () => {}, "attached");
+    attached.attach(root);
+    expect(attached.records().map((record) => record.kind)).toEqual([
+      ForkModuleStateRecordKind.Module,
+      ForkModuleStateRecordKind.ReferenceRecipe,
+    ]);
+    expect(
+      new Uint8Array(memory.buffer, root, 3 * PAGE_SIZE).every((byte) => byte === 0),
+    ).toBe(true);
   });
 });

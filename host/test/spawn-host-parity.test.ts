@@ -200,7 +200,7 @@ describe("spawn host parity", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const handler = posixSpawnHandlerSource(readFileSync(entry, "utf8"));
       expect(handler, `${entry} must launch the supplied committed module`)
-        .toContain("const { programBytes, programModule, argv } = program;");
+        .toContain("await launchForms(program.programBytes, program.programModule);");
       expect(handler, `${entry} must not repeat candidate resolution`).not.toMatch(
         /resolveExecutableForLaunch|handlePosixSpawnResolve|execPrograms|readExecFromVfs/,
       );
@@ -271,7 +271,7 @@ describe("spawn host parity", () => {
         clone,
         `${entry} must guard clone allocation and thread attachment`,
       ).toMatch(
-        /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => processInfo\.threadAllocator\.allocate\(memory\),[\s\S]*retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
+        /retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => processInfo\.threadAllocator\.allocate\(forkShare \?\? memory\),[\s\S]*retryKernelEntryResultForGeneration\(\s*belongsToCompiledProcessImage,\s*\(\) => kernelWorker\.attachThreadChannel\(/,
       );
     }
   });
@@ -302,12 +302,10 @@ describe("spawn host parity", () => {
         // fresh process memory in another worker. Its deferred-provider tests
         // mutate and retire the parent before construction resolves and verify
         // that the child still receives the original snapshot.
-        const asynchronousClone = handler.indexOf(
-          "await processMemoryAllocator.acquireForkClone(",
-        );
+        const asynchronousClone = handler.indexOf("await acquirePrivateMemory()");
         expect(asynchronousClone).toBe(nextAwait);
         expect(handler).toMatch(
-          /const childMemoryLease = processMemoryAllocator\.hasAsyncMemoryFactory\s*\? await processMemoryAllocator\.acquireForkClone\([\s\S]*?\)\s*: acquireForkMemoryClone\(/,
+          /const acquirePrivateMemory = leaving\s*\? \(\) => processMemoryAllocator\.acquireForkCopy\(leaving\.space,[^\n]*\)\s*: \(\) => processMemoryAllocator\.acquireForkClone\(parentMemory,[^\n]*\);[\s\S]*const childMemoryLease = sharesMemory\s*\? parentInfo\.memoryLease\.retainAddressSpace\(\)\s*: processMemoryAllocator\.hasAsyncMemoryFactory\s*\? await acquirePrivateMemory\(\)\s*: acquirePrivateMemoryNow\(\);/,
         );
       } else {
         expect(clone, `${entry} must clone before yielding`).toBeLessThan(nextAwait);

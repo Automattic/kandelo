@@ -1623,6 +1623,22 @@ duplicate identities, and recheck actual files with bounded stable reads.
 This build-time handoff avoids nested index generation inside sealed image
 recipes; it is not guest execution or package-upgrade authority.
 
+The optional `[[outputs]].memory_instrumentation` declaration is `"disabled"`
+(the default) or `"auto"`. With `"auto"` the resolver appends the empty custom
+section `kandelo.memory.rewrite_at_exec` to the output after the recipe ends,
+when the output is a wasm32 main program that imports `kernel.kernel_fork`. A
+side module, a wasm64 program, a program that cannot fork and a non-Wasm
+member stay unmarked. Such a program that `wasm-memory-instrument` rejects
+fails the build. The code of the output does not change: a host in `"copy"`
+fork mode runs it as before, and a host in `"share"` mode rewrites it when a
+process starts it (see `crates/memory-instrument/README.md`, "Rewrite at
+exec"). The declaration is cache key material only when it is `"auto"`, so
+existing packages keep their keys. A build script run outside the resolver
+does not write the mark. The mark and the host-written section
+`kandelo.memory.plain_form` are not in `abi/snapshot.json`: no running
+program can read them, and a host that does not know the mark runs the
+program unchanged.
+
 The optional producer-side `[[outputs]].original_wasm` declaration associates
 a raw original with an output without changing executable layout. When used,
 the resolver supplies `WASM_POSIX_BUILD_ORIGINAL_STORE` below the private work

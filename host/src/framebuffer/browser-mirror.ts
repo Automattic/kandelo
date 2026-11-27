@@ -52,11 +52,12 @@ export class BrowserFramebufferMirrors {
         this.unbind(pid, generation);
         continue;
       }
-      // mmap publishes its binding before the guest glue grows Memory. Match
-      // the direct renderer's retry behavior until that backing is available.
-      if (binding.addr > memory.buffer.byteLength - binding.len) continue;
+      // mmap publishes its binding before the kernel worker grows Memory and
+      // places the mapping. Match the direct renderer's retry behavior until
+      // that backing is available.
+      if (binding.offset === undefined || binding.offset > memory.buffer.byteLength - binding.len) continue;
       // Read the current buffer after memory.grow; the display view never moves.
-      pixels.set(new Uint8Array(memory.buffer, binding.addr, binding.len));
+      pixels.set(new Uint8Array(memory.buffer, binding.offset, binding.len));
     }
   }
 }

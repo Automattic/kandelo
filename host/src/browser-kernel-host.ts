@@ -49,6 +49,7 @@ import { batchBySynReport } from "./input/input-batch";
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
+import programRewriteWorkerEntryUrl from "./memory-instrument-browser-worker.ts?worker&url";
 import {
   DEFAULT_MAX_WORKERS,
   WASM_PAGE_SIZE,
@@ -90,6 +91,7 @@ import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import { formatHostErrorDiagnostic } from "./host-diagnostic";
 import type { PcmOutputState } from "./audio/pcm-driver";
 import type { ForkAddressSpaceCopy } from "./process-memory";
+import type { ForkMemory } from "./fork-share-address-space";
 
 // Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
 // framebuffer acknowledgements and PCM (2s each) before terminating its realm.
@@ -160,6 +162,31 @@ export interface BrowserKernelOptions {
    * give the child identical bytes. See `ForkAddressSpaceCopy`.
    */
   forkCopy?: ForkAddressSpaceCopy;
+  /**
+   * Address-space mode for programs rewritten by `wasm-memory-instrument`
+   * (default `"copy"`). `"share"` gives each such process a group header and
+   * routes host access through its page tables. Fork then shares the
+   * parent's pages with the child, and a store to a shared page copies that
+   * page first. See `ForkMemory`.
+   */
+  forkMemory?: ForkMemory;
+  /**
+   * Bytes of `kandelo_memory_instrument32.wasm`
+   * (`crates/memory-instrument/build-wasm.sh`). A process with page tables
+   * needs it to load a side module with `dlopen`: the host rewrites the
+   * module so its memory accesses use the tables of the process. In
+   * `"share"` mode the default is the build's copy of that file.
+   */
+  memoryInstrumenter?: ArrayBuffer;
+  /**
+   * In `"share"` mode, the smallest address space of a parent, in bytes, whose
+   * fork child shares the pages of its parent (default 0: every fork
+   * shares). This applies to a program with the
+   * `kandelo.memory.rewrite_at_exec` mark, which the host rewrites when a
+   * process starts it. A smaller parent gets a child with a private Memory
+   * that runs the plain form of the program, without page tables.
+   */
+  forkShareMinimumBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Additional VFS mount points */
@@ -345,6 +372,21 @@ async function fetchDefaultRootfsVfsImage(): Promise<ArrayBuffer> {
   if (!response.ok) {
     throw new Error(
       `vfsImage:"default" could not fetch the canonical rootfs image ` +
+        `(${response.status} ${response.statusText})`,
+    );
+  }
+  return response.arrayBuffer();
+}
+
+async function fetchDefaultMemoryInstrumenter(): Promise<ArrayBuffer> {
+  const { browserDefaultMemoryInstrumenterUrl } = await import(
+    "./browser-kernel-default-artifacts"
+  );
+  const url = await browserDefaultMemoryInstrumenterUrl();
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `forkMemory:"share" could not fetch the memory instrumenter ` +
         `(${response.status} ${response.statusText})`,
     );
   }
@@ -754,8 +796,12 @@ export class BrowserKernel {
     const journalName = opts.experimentalFixedPersistenceName ?? opts.experimentalResizablePersistenceName;
     let releaseJournalLease: BrowserPersistenceJournalLease | null = null;
     let releaseComputerLease: (() => Promise<void>) | null = null;
+    let memoryInstrumenter = this.options.memoryInstrumenter;
     this.workerStarting = true;
     try {
+      if (memoryInstrumenter === undefined && this.options.forkMemory === "share") {
+        memoryInstrumenter = await fetchDefaultMemoryInstrumenter();
+      }
       if (journalName === undefined && (opts.persistentComputerName !== undefined || opts.persistenceComputerLease !== undefined)) {
         throw new Error("persistent computer lease requires a journal");
       }
@@ -896,6 +942,7 @@ export class BrowserKernel {
           experimentalResizablePersistenceName: opts.experimentalResizablePersistenceName,
           requireExistingRootfsPersistence: opts.requireExistingRootfsPersistence,
           workerEntryUrl,
+          programRewriteWorkerEntryUrl,
           config: {
             experimentalMemoryGroup: this.options.experimentalMemoryGroup === undefined ? undefined : { ...this.options.experimentalMemoryGroup },
             maxWorkers: this.options.maxWorkers,
@@ -910,6 +957,9 @@ export class BrowserKernel {
               this.options.maxProcessMemoryBytes
               ?? this.options.maxWorkers * this.maxPages * WASM_PAGE_SIZE,
             forkCopy: this.options.forkCopy,
+            forkMemory: this.options.forkMemory,
+            memoryInstrumenter,
+            forkShareMinimumBytes: this.options.forkShareMinimumBytes,
             defaultThreadSlots: this.options.defaultThreadSlots,
             env: this.options.env,
             enableSyscallLog: this.options.enableSyscallLog,
