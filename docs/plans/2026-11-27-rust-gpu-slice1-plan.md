@@ -474,7 +474,15 @@ Each slice gets its own plan when it starts; the order is dependency order.
   - Starts the worker lazily on the first kick.
   - `onKick` schedules a kernel entry that loops `kernel_kgpu_drain` into the ring and posts a doorbell.
   - `onDoorbell` pops completions and calls `kernel_kgpu_complete` within a kernel entry.
-  - If the worker exits or errors, it calls `kernel_kgpu_complete` with ContextLost for every live context.
+  - If the worker exits or errors, it calls the new `kernel_kgpu_reset()` export, but only after the worker is proven gone (its `exit` event, or `terminate()` resolved), never before (Ruling R15).
+- Modify: `crates/runtime-core/src/dri/kgpu/mod.rs` and `crates/kernel/src/wasm_api.rs` to add `kernel_kgpu_reset()`. In one step it does the following:
+  - loses every context;
+  - retires and unpins every in-flight submission;
+  - discards the outbox and backlog;
+  - wakes parked waits so they answer `-EIO`;
+  - clears `renderer_available` until the host sets it again with `kernel_kgpu_set_renderer(1)` after starting a new worker.
+
+  Extend the version-42 history line, and add the export to `build-kernel.sh` and `run.sh`. Before this ring code relies on record field offsets, `dump_abi` `render_ts_kgpu` must generate them; do not copy them by hand.
 - Modify: `host/src/kernel.ts` `#buildImportObject` (`:2603`): add `host_kgpu_kick`.
 - Modify: `host/src/kernel-worker.ts`: construct `KgpuHost`, call `kernel_kgpu_set_renderer(1)` at init where a renderer exists, and call `terminate()` at kernel teardown.
 - Modify: `host/src/browser-kernel-worker-entry.ts` and `host/src/node-kernel-worker-entry.ts` to supply `createWorker`:
@@ -501,6 +509,8 @@ Each slice gets its own plan when it starts; the order is dependency order.
       for all 16 pixels;
     - `ring_full_backpressure_completes_all`: 200 submissions, all retire in
       order;
+    - `exit_while_pinned_publishes_after_retired`: a grouped process exits with work in flight. Its exit publishes only after `Retired` arrives, and the group then shows zero images.
+    - `worker_crash_resets_device_and_releases_exits`: kill the worker while a grouped process has drained work in flight and then exits. After the reset, the process's exit publishes, `kernel_device_pinned_frames()` is 0, a later CONTEXT_CREATE answers `ENODEV` until the renderer is set again, and the
     - `worker_crash_loses_contexts`: terminate the worker mid-run, and the
       parked wait returns `EIO`;
     - `node_null_renderer_create_is_enodev`.
