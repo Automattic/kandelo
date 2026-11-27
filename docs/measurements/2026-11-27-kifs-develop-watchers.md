@@ -170,7 +170,8 @@ launcher and packaging checks now match the required export inventory,
 including the exit-publication export from develop.
 [ABI notes](../abi-versioning.md#positioned-root-filesystem)
 
-V3 stays opt-in because the final comparison missed parity. The saved
-format selects the backend at boot. The web app displays that format and
-leaves upgrades to the explicit shared host API. Physical power loss and
-the pinned guest Node/npm install remain outside this qualification.
+The comparison missed parity under the original rollout gate. The app
+now selects v3 for new Library computers. Existing computers open their
+saved format, and upgrades still use the explicit shared host API.
+Physical power loss and the pinned guest Node/npm install remain outside
+this qualification.

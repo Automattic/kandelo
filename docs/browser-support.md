@@ -384,7 +384,9 @@ pipe pair.
   gap -- POSIX declares `syslog(3)` to return `void`, so neither `logger` nor
   any other program can be told the message went nowhere. Use `logger -s` to
   see it locally regardless: that also writes it to standard error.
-- The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
+- The Kandelo page creates temporary, resizable, OPFS-backed KIFS v3 computers
+  by default. A new computer starts with at least 1 GiB of logical capacity.
+  Existing computers reopen their saved filesystem format.
   **Release compatibility warning:** saved computers from this release will not
   work in the next release. Export important files before updating Kandelo.
   The app shows this warning when you choose to save a computer: in the

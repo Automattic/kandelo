@@ -253,8 +253,8 @@ journal and any checkpoint on disk. The kernel reconstructs the live
 namespace in memory during boot. The
 [KIFS v3 design](plans/2026-11-25-disk-backed-rootfs-metadata.md)
 uses one authenticated on-disk tree for the namespace and file-block
-references. An explicit embedder option selects the standalone volume
-for a disposable computer through the shared Node and browser boot path.
+references. The shared Node and browser boot path can select a standalone
+volume for a new or saved computer.
 This path covers guest lookup, directory listing, file and symlink reads,
 regular-file creation, writes, truncation, sync, hard links, regular-file
 rename and unlink, directory and symlink creation, permissions, ownership,
@@ -298,8 +298,11 @@ Both export APIs leave the original generation active.
 The shared Node and browser boot protocol accepts an explicit upgrade
 profile for checked resizable computers. The development profile selects
 at least 1 GiB. The custom profile keeps a computer's declared capacity.
-The Kandelo app opens the saved format and shows the mounted version in
-Internals → Config. An activated KIFS volume takes
+The Kandelo app uses the development profile automatically when it first
+initializes a Library computer. It marks the filesystem initialized after
+the v3 mount succeeds. An interrupted initialization can retry with the
+same checked base. Existing computers reopen their saved format. The app
+shows the mounted version in Internals → Config. An activated KIFS volume takes
 precedence over every profile. Raw images without a checked binding retain
 their existing default. Fixed computers keep their declared geometry. On v3,
 live metadata and allocated data draw from the same capacity. The volume

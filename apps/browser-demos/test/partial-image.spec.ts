@@ -96,7 +96,7 @@ test("the partial image boots as its own machine with only its activities", asyn
   expect(errors).toEqual([]);
 });
 
-test("the app displays the mounted filesystem version and opens both saved formats", async ({ page }) => {
+test("new computers boot KIFS v3 without a prompt and saved computers keep their format", async ({ page }) => {
   test.skip(manifest?.image !== "shell", "checks the built shell's filesystem capacity");
   test.setTimeout(240_000);
   const selectedKernel = process.env.KANDELO_KIFS_BENCH_KERNEL;
@@ -119,17 +119,17 @@ test("the app displays the mounted filesystem version and opens both saved forma
       };
     }, kernelBytes);
   }
-  const name = `partial-inodes-${crypto.randomUUID()}`;
   const search = new URLSearchParams({
     vfs: PARTIAL_URL,
     profile: "shell",
-    experimentalPersistence: name,
-    experimentalPersistenceMode: "resizable",
   });
   const errors: string[] = [];
+  const prompts: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  // Each visit to this test-only named computer confirms persistence access.
-  page.on("dialog", dialog => dialog.accept());
+  page.on("dialog", async dialog => {
+    prompts.push(dialog.message());
+    await dialog.dismiss();
+  });
   await page.goto(`/?${search}`);
   try {
     await ready(page);
@@ -139,26 +139,37 @@ test("the app displays the mounted filesystem version and opens both saved forma
   }
   const stats = await runTerminalCommand(page, `set -eu
 df -Pk / | tail -n 1
+printf 'fresh v3\\n' > "$HOME/kifs-fresh-marker"
+sync
 printf 'LOGIN %s %s %s\n' "$(id -u)" "$(id -g)" "$HOME"`);
   expect(stats.exitCode, stats.output).toBe(0);
-  expect(stats.output).toMatch(/\s524288\s/);
-  await expectFilesystemVersion(page, /^KIFS v[12]$/);
+  expect(stats.output).toMatch(/\s1048576\s/);
+  expect(prompts).toEqual([]);
+  await expectFilesystemVersion(page, "KIFS v3");
+  const newComputerUrl = page.url();
+  const newComputerId = new URL(newComputerUrl).searchParams.get("computer");
+  expect(newComputerId).toMatch(/^[0-9a-f-]{36}$/);
   const login = /LOGIN (\d+) (\d+) (\/[^\s]+)/.exec(stats.output);
   expect(login).toBeTruthy();
 
   // Use the same composed package base and manifest metadata to install a
   // separate legacy computer. First verify an ordinary boot keeps the saved
   // format, then request conversion of the same computer.
-  const legacyName = `partial-saved-${crypto.randomUUID()}`;
-  search.set("experimentalPersistence", legacyName);
-  search.set("experimentalKifsV3", "1");
-  const appUrl = new URL("/?" + search, page.url()).href;
   await page.goto("/trap-signal-test.html");
-  const identity = await page.evaluate(async ({ name, legacyName, uid, gid, home, hostUrl, imageUrl, lazyUrl, kernelBytes }) => {
+  const storageUrl = "/@fs/" + resolve(import.meta.dirname, "../../../host/src/browser-computer-storage.ts");
+  const { identity, legacyId, legacyName } = await page.evaluate(async ({ newComputerId, uid, gid, home, hostUrl, imageUrl, lazyUrl, kernelBytes, storageUrl, storeUrl }) => {
     const { BrowserKernel } = await import(hostUrl);
     const api = await import(imageUrl);
     const { imageOwnedLazyAssetDirectory } = await import(lazyUrl);
-    const parent = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+    const { browserComputerStorageName, browserPersistenceDirectory } = await import(storageUrl);
+    const { BrowserComputerStore } = await import(storeUrl);
+    const store = new BrowserComputerStore();
+    const source = await store.read(newComputerId);
+    const legacyComputer = await store.create(source.descriptor, "temporary", source.profileId);
+    await store.update(legacyComputer.id, { partialImageSha256: source.partialImageSha256 });
+    const name = browserComputerStorageName(source.id);
+    const legacyName = browserComputerStorageName(legacyComputer.id);
+    const parent = await browserPersistenceDirectory(name);
     const manifest = JSON.parse(await (await (await parent.getFileHandle(name + ".base.json")).getFile()).text());
     const installed = await api.loadFixedPersistenceImageHandle(name, manifest.identity);
     if (!installed?.journalInitialized) throw new Error("app did not commit the new computer");
@@ -193,16 +204,19 @@ df -Pk / | tail -n 1`, "bash", home], { uid, gid });
       const code = await bash.exit;
       if (code !== 0 || !/\s524288\s/.test(output)) throw new Error(`legacy shell seed failed (${code}): ${output}`);
       await api.markFixedPersistenceJournalInitialized(legacyName, manifest.identity, legacy);
+      await store.markFilesystemInitialized(legacyComputer.id);
     } finally { await host.destroy(); }
     if (host.getPersistenceShutdownFailure()) throw new Error(host.getPersistenceShutdownFailure());
     const match = /SAVED_INODE [0-9 ]+/.exec(output);
     if (!match) throw new Error("missing saved inode identity: " + output);
-    return match[0].trim();
-  }, { name, legacyName, uid: Number(login![1]), gid: Number(login![2]), home: login![3]!,
+    return { identity: match[0].trim(), legacyId: legacyComputer.id, legacyName };
+  }, { newComputerId, uid: Number(login![1]), gid: Number(login![2]), home: login![3]!,
+    storageUrl, storeUrl: "/@fs/" + resolve(import.meta.dirname, "../../../web-libs/kandelo-session/src/browser-computer-store.ts"),
     kernelBytes, hostUrl: "/@fs/" + resolve(import.meta.dirname, "../../../host/src/browser-kernel-host.ts"),
     lazyUrl: "/@fs/" + resolve(import.meta.dirname, "../lib/init/image-owned-runtime-urls.ts"),
     imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
-  await page.goto(appUrl);
+  const appUrl = "/?computer=" + legacyId;
+  await page.goto(appUrl + "&experimentalKifsV3=1");
   await ready(page);
   const checkSavedFiles = `set -eu
 cd "$HOME"
@@ -218,11 +232,11 @@ df -Pk / | tail -n 1`;
   // Prepare the v3 generation through the shared host API. The app itself
   // only opens the saved format, including when given the old query parameter.
   await page.goto("/trap-signal-test.html");
-  await page.evaluate(async ({ legacyName, hostUrl, imageUrl, lazyUrl, kernelBytes }) => {
+  await page.evaluate(async ({ legacyName, hostUrl, imageUrl, lazyUrl, kernelBytes, storageUrl }) => {
     const { BrowserKernel } = await import(hostUrl);
     const { loadFixedPersistenceImageHandle } = await import(imageUrl);
     const { imageOwnedLazyAssetDirectory } = await import(lazyUrl);
-    const parent = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+    const parent = await (await import(storageUrl)).browserPersistenceDirectory(legacyName);
     const manifest = JSON.parse(await (await (await parent.getFileHandle(legacyName + ".base.json")).getFile()).text());
     const installed = await loadFixedPersistenceImageHandle(legacyName, manifest.identity);
     if (!installed?.journalInitialized) throw new Error("legacy computer is missing");
@@ -236,11 +250,10 @@ df -Pk / | tail -n 1`;
       if (host.getRootfsFormatVersion() !== 3) throw new Error("test upgrade did not mount KIFS v3");
     } finally { await host.destroy(); }
     if (host.getPersistenceShutdownFailure()) throw new Error(host.getPersistenceShutdownFailure());
-  }, { legacyName, kernelBytes, hostUrl: "/@fs/" + resolve(import.meta.dirname, "../../../host/src/browser-kernel-host.ts"),
+  }, { legacyName, kernelBytes, storageUrl, hostUrl: "/@fs/" + resolve(import.meta.dirname, "../../../host/src/browser-kernel-host.ts"),
     lazyUrl: "/@fs/" + resolve(import.meta.dirname, "../lib/init/image-owned-runtime-urls.ts"),
     imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
-  search.delete("experimentalKifsV3");
-  await page.goto("/?" + search);
+  await page.goto(appUrl);
   const status = page.locator(".kdock-status-text");
   await expect(status).toHaveAttribute("data-status", /^(running|error)$/, { timeout: 120_000 });
   if (await status.getAttribute("data-status") === "error") {
@@ -254,8 +267,8 @@ df -Pk / | tail -n 1`;
   await expectFilesystemVersion(page, "KIFS v3");
 
   await page.goto("/trap-signal-test.html");
-  await page.evaluate(async ({ legacyName, imageUrl }) => {
-    const parent = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+  await page.evaluate(async ({ legacyName, imageUrl, storageUrl }) => {
+    const parent = await (await import(storageUrl)).browserPersistenceDirectory(legacyName);
     const manifest = JSON.parse(await (await (await parent.getFileHandle(legacyName + ".base.json")).getFile()).text());
     const copies = [];
     for (const suffix of ["activation0", "activation1"]) {
@@ -284,13 +297,20 @@ df -Pk / | tail -n 1`;
       retired = true;
     }
     if (!retired) throw new Error("confirmed migration retained its owned legacy journal");
-  }, { legacyName, imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
-  await page.goto("/?" + search);
+  }, { legacyName, storageUrl, imageUrl: "/@fs/" + resolve(import.meta.dirname, "../pages/kandelo/kernel-host/fixed-persistence-image.ts") });
+  await page.goto(appUrl);
   await ready(page);
   const reopened = await runTerminalCommand(page, 'stat -c "SAVED_INODE %i %h %a %u %g" "$HOME/kifs-saved-alias"');
   expect(reopened.exitCode, reopened.output).toBe(0);
   expect(reopened.output).toContain(identity);
   await expectFilesystemVersion(page, "KIFS v3");
+  await page.goto(newComputerUrl);
+  await ready(page);
+  await expectFilesystemVersion(page, "KIFS v3");
+  const newComputer = await runTerminalCommand(page, 'cat "$HOME/kifs-fresh-marker"');
+  expect(newComputer.exitCode).toBe(0);
+  expect(newComputer.output).toContain("fresh v3");
+  expect(prompts).toEqual([]);
   if (selectedKernel !== undefined) {
     const loads = await page.evaluate(() => Number(sessionStorage.getItem("kifs-qualification-kernel-loads")));
     expect(loads).toBeGreaterThanOrEqual(4);

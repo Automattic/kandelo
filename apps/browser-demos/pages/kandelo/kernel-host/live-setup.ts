@@ -1954,6 +1954,7 @@ async function bootProfile(
     );
   };
   let kernel: BrowserKernel | null = null;
+  let filesystemUpgradeMessage: string | undefined;
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
@@ -1986,7 +1987,10 @@ async function bootProfile(
       onHostDiagnostic: (diagnostic) => {
         if (!isCurrent()) return;
         const upgrading = diagnostic.source === "Filesystem upgrade";
-        if (upgrading) tick(diagnostic.message);
+        if (upgrading) {
+          filesystemUpgradeMessage = diagnostic.message;
+          tick(diagnostic.message);
+        }
         host.pushDmesg({
           t: bootElapsedMs(bootStartedAt),
           level: upgrading ? "info" : "warn",
@@ -2014,6 +2018,10 @@ async function bootProfile(
     // not accept (the lazy-asset directory above) is a type error, never a field the
     // host silently drops.
     if (opfsImage !== undefined && opfsImage !== null && persistence !== null) {
+      // The Library owns first boot. Keep a failed initialization eligible for
+      // retry, and let initialized computers reopen their saved generation.
+      const initializeKifsV3 = markFilesystemInitialized !== undefined
+        && !requireExistingFilesystem && !opfsImage.journalInitialized;
       try {
         try {
           await kernel.initFromOpfsImage({
@@ -2027,6 +2035,7 @@ async function bootProfile(
             persistentComputerName: experimentalPersistenceName,
             persistenceComputerLease: experimentalPersistenceLease,
             requireExistingRootfsPersistence: opfsImage.journalInitialized,
+            ...(initializeKifsV3 ? { kifsUpgradeProfile: "development" } : {}),
           });
         } catch (error) {
           if (isNoValidOverlayGenerationError(error) &&
@@ -2037,6 +2046,10 @@ async function bootProfile(
             if (previous !== null) throw new RetryPreviousPersistenceGeneration(previous);
           }
           throw error;
+        }
+        if (initializeKifsV3 && kernel.getRootfsFormatVersion() !== 3) {
+          const reason = filesystemUpgradeMessage === undefined ? "" : ` ${filesystemUpgradeMessage}`;
+          throw new Error(`Could not initialize the new computer as KIFS v3.${reason}`);
         }
         await assertPersistentImageBootMetadata(kernel, opfsImage.composition);
         if (profileId !== opfsImage.composition.profileId) {

@@ -1099,7 +1099,7 @@ type SavedKifsBootKernel = BootPersistenceKernel & Pick<CentralizedKernelWorker,
 
 class DeferredKifsUpgrade extends Error {
   constructor(limit: string, cause: unknown) {
-    super(`Filesystem upgrade deferred due to ${limit}. Continuing with the saved filesystem.`, { cause });
+    super(`Filesystem upgrade deferred due to ${limit}.`, { cause });
   }
 }
 
