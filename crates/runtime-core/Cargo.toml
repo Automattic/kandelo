@@ -11,6 +11,10 @@ crate-type = ["rlib"]
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
 wasm-posix-shared = { path = "../shared" }
+# The kgpu command-stream format. The GPU device validates a submitted
+# stream's header (magic and version) against the same definitions the guest
+# driver and the executor use.
+kgpu-stream = { path = "../kgpu-stream" }
 
 sha2 = { version = "0.10", default-features = false, features = ["compress"] }
 

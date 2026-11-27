@@ -87,6 +87,10 @@ pub struct ProcessTable {
     exec_controls: crate::exec_control::Controls,
     root_controls: crate::root_control::Roots,
     retirement_controls: crate::retirement_control::Controls,
+    /// The kernel GPU device behind `kandelo.kgpu.v1` (`crate::dri::kgpu`).
+    /// Held here because its submissions pin memory-group storage, which
+    /// this table also owns.
+    kgpu: crate::dri::kgpu::KgpuDevice,
     current_pid: u32,
     /// Next machine-wide process or thread identity to consider.
     ///
@@ -735,6 +739,13 @@ impl ProcessTable {
     pub fn memory_groups(&mut self) -> &mut crate::memory_group::MemoryGroups {
         &mut self.memory_groups
     }
+    /// The GPU device with the memory-group owner its pins live in, borrowed
+    /// together so a submission can translate, pin and queue in one entry.
+    pub fn kgpu_parts(
+        &mut self,
+    ) -> (&mut crate::dri::kgpu::KgpuDevice, &mut crate::memory_group::MemoryGroups) {
+        (&mut self.kgpu, &mut self.memory_groups)
+    }
     /// Seal admission and stop one current member selected by the actual
     /// group/image ledger. The returned PID requests native notification only;
     /// execution fences, reference retirement and physical reuse stay with
@@ -1022,6 +1033,7 @@ impl ProcessTable {
             exec_controls: crate::exec_control::Controls::new(),
             root_controls: crate::root_control::Roots::new(),
             retirement_controls: crate::retirement_control::Controls::new(),
+            kgpu: crate::dri::kgpu::KgpuDevice::new(),
             current_pid: 0,
             next_task_id: FIRST_TASK_ID,
             current_tid: 0,

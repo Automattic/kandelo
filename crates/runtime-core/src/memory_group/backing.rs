@@ -385,3 +385,55 @@ impl MemoryGroups {
         Ok(true)
     }
 }
+
+/// Device I/O on a grouped caller's memory (see `storage::device_io`). These
+/// are the only ways a device driver reaches that custody: by the caller's
+/// exact task receipt for translation, and by the group that issued a pin
+/// for its release.
+impl MemoryGroups {
+    /// Translate and pin every range of one device request in a single
+    /// storage call, so the pinned frames are the frames translated.
+    pub(crate) fn device_translate_and_pin(
+        &mut self,
+        record: wasm_posix_shared::memory_group::ReceiptRecord,
+        ranges: &[super::storage::DeviceRange],
+        host: &mut dyn HostIO,
+    ) -> Result<
+        (
+            alloc::vec::Vec<alloc::vec::Vec<wasm_posix_shared::kgpu::Extent>>,
+            super::storage::DevicePinId,
+        ),
+        Errno,
+    > {
+        let (store, admission) = self.storage_owner(record)?;
+        let resource = store.resource();
+        store.device_translate_and_pin(&HostMemory { resource, host }, admission, ranges)
+    }
+
+    /// Read request metadata from the caller's memory into kernel memory.
+    pub(crate) fn device_read(
+        &mut self,
+        record: wasm_posix_shared::memory_group::ReceiptRecord,
+        addr: u64,
+        out: &mut [u8],
+        host: &mut dyn HostIO,
+    ) -> Result<(), Errno> {
+        let (store, admission) = self.storage_owner(record)?;
+        let resource = store.resource();
+        store.device_read(&HostMemory { resource, host }, admission, addr, out)
+    }
+
+    /// Release a pin the device retired. The group outlives the pin: image
+    /// retirement waits for device pins, so a missing group means the pin is
+    /// already gone and there is nothing left to release.
+    pub(crate) fn device_unpin(&mut self, group: u32, pin: super::storage::DevicePinId) {
+        if let Ok(store) = self.resolve_group(group).and_then(|group| self.storage_mut(group)) {
+            store.device_unpin(pin);
+        }
+    }
+
+    /// Distinct frames of `group` that device pins hold; inspection's count.
+    pub fn device_pinned_frames(&self, group: MemoryGroupId) -> Result<usize, Errno> {
+        Ok(self.storage(group)?.device_pinned_frames())
+    }
+}

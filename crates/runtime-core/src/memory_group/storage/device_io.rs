@@ -16,6 +16,14 @@ use wasm_posix_shared::kgpu::Extent as DeviceExtent;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DevicePinId(u64);
 
+/// One guest range a device request names, with the access the device needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DeviceRange {
+    pub addr: u64,
+    pub len: u32,
+    pub write: bool,
+}
+
 /// One device's hold on a set of frames. Unlike a native pin, which keeps a
 /// single observed word alive, a device pin covers every frame of a request.
 pub(super) struct DevicePin {
@@ -139,6 +147,67 @@ impl Storage {
         self.device_pins.publish_io(entry);
         self.next_device_pin = next;
         Ok(DevicePinId(token))
+    }
+
+    /// Translate every range of one device request and pin all their frames,
+    /// for the image `admission` executes.
+    ///
+    /// WHY one method: `device_pin` trusts that its extents still name the
+    /// frames translation read. Translating and pinning inside one call, with
+    /// no release of the storage borrow between them, is what makes that
+    /// true: no mapping change can be published in between. A request that
+    /// names no bytes at all is refused rather than given an empty pin, and
+    /// poisoned storage refuses before reading any PTE.
+    pub(in crate::memory_group) fn device_translate_and_pin(
+        &mut self,
+        memory: &impl PhysicalMemory,
+        admission: GroupAdmission,
+        ranges: &[DeviceRange],
+    ) -> Result<(Vec<Vec<DeviceExtent>>, DevicePinId), Errno> {
+        let image = self.owned(admission)?.image;
+        let mut translated = Vec::new();
+        translated.try_reserve(ranges.len()).map_err(|_| Errno::ENOMEM)?;
+        let mut total = 0usize;
+        for range in ranges {
+            let extents = self.device_extents(memory, image, range.addr, range.len, range.write)?;
+            total += extents.len();
+            translated.push(extents);
+        }
+        if total == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let mut all = Vec::new();
+        all.try_reserve(total).map_err(|_| Errno::ENOMEM)?;
+        for extents in &translated {
+            all.extend_from_slice(extents);
+        }
+        let pin = self.device_pin(image, &all)?;
+        Ok((translated, pin))
+    }
+
+    /// Copy `out.len()` bytes at guest `addr` of the image `admission`
+    /// executes into kernel memory, through the same translation a device
+    /// request uses. The kernel reads request metadata (a stream header, a
+    /// buffer table) this way exactly once, so a guest that rewrites it later
+    /// cannot change what the kernel validated.
+    pub(in crate::memory_group) fn device_read(
+        &self,
+        memory: &impl PhysicalMemory,
+        admission: GroupAdmission,
+        addr: u64,
+        out: &mut [u8],
+    ) -> Result<(), Errno> {
+        let image = self.owned(admission)?.image;
+        let len = u32::try_from(out.len()).map_err(|_| Errno::EFAULT)?;
+        let mut at = 0usize;
+        for extent in self.device_extents(memory, image, addr, len, false)? {
+            // Extents lie inside the backing, whose size fits u32.
+            let offset = u32::try_from(extent.offset).map_err(|_| Errno::EFAULT)?;
+            let end = at + extent.len as usize;
+            memory.read(offset, &mut out[at..end])?;
+            at = end;
+        }
+        Ok(())
     }
 
     /// Only the device's retirement of the work ends a pin. An id that was

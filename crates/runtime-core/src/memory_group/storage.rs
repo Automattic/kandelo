@@ -35,6 +35,7 @@ mod operation;
 #[cfg(test)]
 mod contract_tests;
 pub(crate) use progress::ProgressTarget;
+pub(crate) use device_io::{DevicePinId, DeviceRange};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageLayout {

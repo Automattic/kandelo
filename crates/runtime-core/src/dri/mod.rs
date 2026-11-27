@@ -12,6 +12,7 @@ pub mod edid;
 pub mod fence;
 pub mod implicit_sync;
 pub mod ioctl_kms;
+pub mod kgpu;
 pub mod kms;
 pub mod master;
 pub mod modes;

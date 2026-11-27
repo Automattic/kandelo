@@ -23,7 +23,8 @@
 //! # How a park ends, and why each way is decided here
 //!
 //! Parked today: `futex` waits and sleeps (`nanosleep`, `clock_nanosleep`,
-//! `usleep`).
+//! `usleep`), and `kandelo.kgpu.v1` waits and held submissions, which the GPU
+//! device decides (`crate::dri::kgpu`).
 //!
 //! * **A source fires** (`FUTEX_WAKE`): the waking syscall runs in the kernel,
 //!   so the wake and the park are ordered by the kernel's own serialization.
@@ -109,6 +110,12 @@ pub enum Resume {
     /// (`crate::wait_retry`). A caught signal interrupts it with `EINTR`
     /// (restartable under `SA_RESTART`, as Linux's ERESTARTSYS).
     Retry(crate::wait_retry::RetryOp),
+    /// A `kandelo.kgpu.v1` call the GPU device decides
+    /// (`crate::dri::kgpu`): a wait for a sequence number to retire, or a
+    /// submission held behind a full outbox. The device re-decides it when
+    /// one of its kgpu wake sources fires and publishes the result through
+    /// the ordinary completion queue.
+    Kgpu(crate::dri::kgpu::KgpuPark),
 }
 
 impl Resume {
@@ -120,7 +127,8 @@ impl Resume {
             | Resume::Suspend
             | Resume::SigTimed(_)
             | Resume::Epoll(_)
-            | Resume::Retry(_) => 0,
+            | Resume::Retry(_)
+            | Resume::Kgpu(_) => 0,
         }
     }
 
@@ -136,6 +144,8 @@ impl Resume {
             Resume::Child(_) | Resume::Suspend | Resume::Retry(_) => -(Errno::ETIMEDOUT as i32),
             // POSIX: a sigtimedwait whose timeout passes fails with EAGAIN.
             Resume::SigTimed(_) => -(Errno::EAGAIN as i32),
+            // A DRM-style fence wait that runs out reports ETIME.
+            Resume::Kgpu(_) => -(Errno::ETIME as i32),
         }
     }
 
@@ -153,6 +163,9 @@ impl Resume {
             Resume::Retry(_) => wire::FLAG_SUPPRESS_RESTART,
             // Neither is ever restarted (signal(7)).
             Resume::Suspend | Resume::SigTimed(_) | Resume::Epoll(_) => wire::FLAG_SUPPRESS_RESTART,
+            // The kgpu import returns its result directly and has no libc
+            // restart path, so an interrupted wait is EINTR to the driver.
+            Resume::Kgpu(_) => wire::FLAG_SUPPRESS_RESTART,
         }
     }
 
@@ -579,7 +592,12 @@ impl Parks {
         if self.dirty_sources.is_empty() {
             return Vec::new();
         }
-        let dirty = core::mem::take(&mut self.dirty_sources);
+        // kgpu sources belong to the GPU device's own pass
+        // (`take_dirty_kgpu_waiters`); leave them for it.
+        let (kgpu, dirty): (Vec<_>, Vec<_>) = core::mem::take(&mut self.dirty_sources)
+            .into_iter()
+            .partition(|source| crate::dri::kgpu::is_kgpu_source(*source));
+        self.dirty_sources = kgpu;
         let resume = &self.resume;
         self.queue
             .iter()
@@ -590,6 +608,41 @@ impl Parks {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The parked kgpu calls a kgpu source that fired since the last pass
+    /// concerns, oldest first. The device re-decides each one and reports
+    /// it with [`Self::finish_kgpu_waiter`]; one still pending stays parked
+    /// until another source concerns it.
+    pub fn take_dirty_kgpu_waiters(&mut self) -> Vec<(WaiterId, u32, u32, crate::dri::kgpu::KgpuPark)> {
+        if !self.dirty_sources.iter().any(|s| crate::dri::kgpu::is_kgpu_source(*s)) {
+            return Vec::new();
+        }
+        let (dirty, rest): (Vec<_>, Vec<_>) = core::mem::take(&mut self.dirty_sources)
+            .into_iter()
+            .partition(|source| crate::dri::kgpu::is_kgpu_source(*source));
+        self.dirty_sources = rest;
+        let resume = &self.resume;
+        self.queue
+            .iter()
+            .filter_map(|s| match resume.get(&s.id) {
+                Some(Resume::Kgpu(park)) if dirty.iter().any(|d| park.concerned_by(*d)) => {
+                    Some((s.id, s.pid, s.tid, *park))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Decide the parked kgpu call `id`.
+    pub fn finish_kgpu_waiter(&mut self, id: WaiterId, park: crate::dri::kgpu::KgpuPark, value: i32) -> bool {
+        match self.queue.remove_with_reason(id, WakeReason::Source(park.source())) {
+            Some(wakeup) => {
+                self.finish(wakeup, value, 0);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Record that `source` fired, if anything is parked to care.
@@ -659,6 +712,7 @@ impl Parks {
                 Some(proc) if proc.is_live_explicit_tid(sleeper.tid) => {
                     let interruptible = match self.resume.get(&sleeper.id) {
                         Some(Resume::Retry(op)) => op.signal_interrupts(),
+                        Some(Resume::Kgpu(park)) => park.signal_interrupts(),
                         _ => true,
                     };
                     if interruptible && signal_targets_task(proc, sleeper.tid) {
@@ -947,6 +1001,9 @@ pub fn retire_process(pid: u32) {
     // this queue; the same lifecycle ends them.
     crate::dri::syncobj::forget_process(pid);
     crate::dri::implicit_sync::forget_process(pid);
+    // GPU contexts belong to the process image; the device destroys them
+    // where the process table is in hand (`crate::dri::kgpu`).
+    crate::dri::kgpu::note_process_retired(pid);
 }
 
 pub fn retire_task(pid: u32, tid: u32) {

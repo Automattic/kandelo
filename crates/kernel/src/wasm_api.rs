@@ -7273,6 +7273,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         wasm_posix_shared::extension_requests::KLOG_V1 => {
             kernel_syslog(a1 as i32, channel_mut_ptr!(1, u8), a3 as i32)
         }
+        // `kandelo.kgpu.v1` (`__kandelo_kgpu_v1(arg, size, op)`), issued by
+        // the process worker on the calling thread's own channel. The kernel
+        // stages `arg` through the request's InOut descriptor, sized by
+        // `size`; see `channel_kgpu`.
+        wasm_posix_shared::extension_requests::KGPU_V1 => {
+            channel_kgpu(channel_mut_ptr!(0, u8), a2, a3)
+        }
         120 => kernel_getrandom(channel_mut_ptr!(0, u8), process_size_u32!(1), a3 as u32), // SYS_GETRANDOM
         109 => {
             // SYS_REALPATH: (path, buf, buf_len)
@@ -16604,6 +16611,43 @@ fn channel_legacy_pshared(nr: u32, a1: u32, a2: u32) -> i32 {
     result
 }
 
+/// One `kandelo.kgpu.v1` op from the calling task (`crate::dri::kgpu`).
+///
+/// `size` must equal the op's argument struct size or the answer is
+/// `EINVAL` (R11), checked here before the staged bytes are borrowed and
+/// again by the device. A wait, or a submission held behind a full outbox,
+/// parks like any other kernel-owned wait; grouped callers' results are
+/// published through `group_completion`.
+fn channel_kgpu(arg: *mut u8, size: i32, op: i32) -> i32 {
+    match (wasm_posix_shared::kgpu::op_arg_size(op), usize::try_from(size)) {
+        (Some(expected), Ok(size)) if expected == size => {}
+        _ => return -(Errno::EINVAL as i32),
+    }
+    let task = {
+        let (_gkl, proc) = unsafe { get_process() };
+        channel_guest_task(proc)
+    };
+    // SAFETY: the descriptor validator proved `size` staged bytes at `arg`
+    // for this request, and nothing else borrows them during the call.
+    let arg = unsafe { slice::from_raw_parts_mut(arg, size as usize) };
+    let mut host = WasmHostIO;
+    let outcome = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        table.kgpu_request(&mut host, task.pid, task.tid, op, arg)
+    };
+    let result = report_park(outcome);
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// Re-decide parked kgpu calls whose sources fired (a retirement, a loss, a
+/// drained outbox), and destroy the GPU contexts of retired images.
+fn settle_kgpu_waits() {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.kgpu_settle();
+}
+
 /// The calling task, as the waiting syscalls name it.
 fn channel_guest_task(proc: &Process) -> syscalls::GuestTask {
     let pid = proc.pid;
@@ -18357,6 +18401,7 @@ pub extern "C" fn kernel_drain_wakeup_events(
     settle_signal_waits();
     release_orphaned_ofd_locks();
     settle_retry_waits();
+    settle_kgpu_waits();
     if crate::wait_park::with(|parks| parks.epoll_ready()) {
         if let Ok(now) = crate::wait_park::now_ns(&mut WasmHostIO) {
             settle_epoll_waits(now);
@@ -18446,6 +18491,7 @@ pub extern "C" fn kernel_drain_wait_completions(
     settle_signal_waits();
     release_orphaned_ofd_locks();
     settle_retry_waits();
+    settle_kgpu_waits();
     if let Some(now) = now {
         settle_epoll_waits(now);
     }

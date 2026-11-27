@@ -137,6 +137,13 @@ pub enum WakeSource {
     /// a mutex was released, a condition signaled, a barrier round
     /// completed. `id` is the object's table ID.
     PShared { id: u32 },
+    /// A GPU context retired work up to `seqno`, or (with `u64::MAX`) can
+    /// never retire more: it was lost or destroyed. A waiter on a sequence
+    /// number at or below `seqno` is re-decided (`crate::dri::kgpu`).
+    KgpuSeqno { device: u32, context: u32, seqno: u64 },
+    /// A GPU device's outbox took records from its backlog: a submitter
+    /// parked behind a full outbox may now be admitted.
+    KgpuOutbox { device: u32 },
 }
 
 impl WakeSource {
@@ -181,6 +188,9 @@ pub enum WaitKind {
     AdvisoryLock,
     /// A completed result withheld from a stopped process until `SIGCONT`.
     StoppedPublication,
+    /// A `kandelo.kgpu.v1` wait for a sequence number, or a submission
+    /// parked behind a full outbox.
+    Kgpu,
 }
 
 /// One parked task.
