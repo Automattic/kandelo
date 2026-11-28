@@ -44,6 +44,11 @@ symlink. Experimental QUIC/DTLS are not enabled in this standard build; their
 implementation and qualification remain required later compatibility work.
 There is no automatic second executable or user profile selector.
 
+The Inspector-disabled build registers its empty Inspector binding initializer
+with the native callback signature. The upstream built-in inventory can
+load the internal Inspector helper through this path. Full Inspector
+protocol support remains open.
+
 Node realms materialize backing buffers for fixed-length typed arrays larger
 than 64 bytes, matching the pinned native Node release. Passing
 `--js-immutable-arraybuffer` enables the immutable ArrayBuffer operations in
