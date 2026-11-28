@@ -678,6 +678,12 @@ JSObject* CreateErrorStackState(JSContext* cx) {
   JS::RootedValue prototype(cx), stringify(cx);
   if (!JS_GetProperty(cx, error, "prototype", &prototype)) return nullptr;
   JS::RootedObject errorPrototype(cx, &prototype.toObject());
+  // Node exposes the lazy stack on each captured error. Leaving the engine's
+  // prototype accessor lets serialization retain a raw stack when formatting
+  // the error's own stack throws.
+  JS::ObjectOpResult removedStack;
+  if (!JS_DeleteProperty(cx, errorPrototype, "stack", removedStack) ||
+      !removedStack.ok()) return nullptr;
   if (!JS_GetProperty(cx, errorPrototype, "toString", &stringify) ||
       !JS_DefineProperty(cx, error, "stackTraceLimit", 10, JSPROP_ENUMERATE)) return nullptr;
   JS::SetReservedSlot(state, OriginalToString, stringify);

@@ -49,6 +49,10 @@ with the native callback signature. The upstream built-in inventory can
 load the internal Inspector helper through this path. Full Inspector
 protocol support remains open.
 
+Node realms expose lazy stacks on captured Error objects. The bridge removes
+SpiderMonkey's inherited Error stack accessor during realm setup so upstream
+serialization can omit a stack whose formatter throws.
+
 Node realms materialize backing buffers for fixed-length typed arrays larger
 than 64 bytes, matching the pinned native Node release. Passing
 `--js-immutable-arraybuffer` enables the immutable ArrayBuffer operations in
