@@ -204,7 +204,7 @@ JSContext* NewProcessContext(){
   JSContext* cx=JS_NewContext(UINT32_MAX);if(!cx)return nullptr;
   InitializeNativeContextMetadata(cx);
   if(!JS::InitSelfHostedCode(cx)){JS_DestroyContext(cx);return nullptr;}
-  InitializeNativeParserFormats(cx);
+  InitializeNativeDiagnosticFormats(cx);
   process.firstContextCreated=true;CHECK(process.contexts!=SIZE_MAX);++process.contexts;return cx;
 }
 void DestroyProcessContext(JSContext* cx){
