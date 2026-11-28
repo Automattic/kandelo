@@ -1,0 +1,20 @@
+{
+  "id": "symbol-string-errors",
+  "fixtures": [],
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-symbol-string-errors",
+      "file": "test/parallel/test-kandelo-symbol-string-errors.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:vm",
+        "node:worker_threads"
+      ],
+      "owners": [
+        "maintained SpiderMonkey engine bridge"
+      ],
+      "contract": "Compare Symbol coercion errors and successful explicit conversion in main, VM, and worker realms"
+    }
+  ]
+}

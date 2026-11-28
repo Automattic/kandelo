@@ -630,6 +630,18 @@ void ReportNodePrivateReadError(JSContext* cx, JS::HandleString name,
   }
 }
 
+void ReportNodeSymbolToStringError(JSContext* cx) {
+  auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+    static constexpr JSErrorFormatString error = {
+        "JSMSG_SYMBOL_TO_STRING",
+        "Cannot convert a Symbol value to a string",
+        0,
+        JSEXN_TYPEERR};
+    return &error;
+  };
+  JS_ReportErrorNumberASCII(cx, format, nullptr, JSMSG_SYMBOL_TO_STRING);
+}
+
 void ReportNodeStringRepeatError(JSContext* cx, double count) {
   if (count < 0 || !std::isfinite(count)) {
     JS::RootedValue value(cx, JS::DoubleValue(count));
@@ -706,8 +718,10 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
   options.creationOptions().setMaxLazyTypedArrayBytes(64);
   options.creationOptions().setTypedArrayLengthErrorReporter(ReportNodeTypedArrayLength);
   options.creationOptions().setStringRepeatErrorReporter(ReportNodeStringRepeatError);
+  options.creationOptions().setSymbolToStringErrorReporter(ReportNodeSymbolToStringError);
   options.creationOptions().setPrivateReadErrorReporter(ReportNodePrivateReadError);
   options.creationOptions().setCaptureCallReceivers(true);
+  options.creationOptions().setNodeNativeFunctionSource(true);
   JS::RootedObject global(frame.cx,JS_NewGlobalObject(frame.cx,
     intercepted?&nativeInterceptedGlobalClass:&nativeNodeGlobalClass,
     nullptr,JS::DontFireOnNewGlobalHook,options));
