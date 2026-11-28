@@ -7674,6 +7674,164 @@ matrix over arities × types × call/closure via `programs/libffi_full_test.c`)
 and `host/test/libffi-shim-unit.test.ts` (the PR1 Wayland arity gate, kept
 green through the rewrite).
 
+## Kernel GPU execution (kgpu)
+
+kgpu is the foundation of the Rust GPU driver
+([design](plans/2026-11-27-rust-gpu-driver-design.md)). This section
+describes slice 1, the part that is implemented. A guest program in a memory
+group creates a kernel GPU context and submits a low-level command stream.
+The kernel pins the memory the submission names and queues it. A
+kernel-owned GPU worker then runs it through a Rust executor on WebGL 2,
+and the kernel retires it. Slice 1's commands are viewport, clear color,
+clear and read pixels, on a fixed 4x4 surface per context. There is no GL
+or EGL driver over kgpu, no presentation, and no fences from kgpu work. No
+shipped program, image or demo uses kgpu. GL programs still use the
+existing graphics devices described under
+[Linux-compatible graphics devices](#linux-compatible-graphics-devices).
+
+### Who owns what
+
+| Component | Owns |
+|---|---|
+| Kernel device (`crates/runtime-core/src/dri/kgpu`) | Contexts, submission sequence numbers, translation and pinning, the submission outbox, completions, waits, context loss and device reset |
+| Memory-group storage (`crates/runtime-core/src/memory_group`) | Which backing frames a guest range names, device pins, and refusing to reuse a pinned frame |
+| Kernel Wasm boundary (`crates/kernel/src/wasm_api.rs`) | The `kernel_kgpu_*` and `kernel_device_pinned_frames` exports and the `host_kgpu_kick` import |
+| Formats (`crates/shared/src/kgpu.rs`, `crates/kgpu-stream`) | Argument structs, submission and completion records (`KGPU_PROTOCOL_VERSION = 1`), and the command stream (`KGPU_STREAM_VERSION = 1`) |
+| Executor (`crates/gpu-executor`, `kandelo_gpu_executor32.wasm`) | Decoding and validating every record and stream, per-context isolation, backend calls, and one completion per record |
+| GPU worker shell (`host/src/kgpu/gpu-worker.ts`) | Transport only: rings, doorbells, the single copy of stream bytes into executor memory, and writing read-back pixels at the extents a record names |
+| `KgpuHost` (`host/src/kgpu/kgpu-host.ts`, in the kernel worker) | The GPU worker's lifecycle and moving records between the kernel and the rings |
+| WebGL 2 backend (`host/src/kgpu/webgl2-backend.ts`) | GL objects for each context's surface; it decides nothing a guest can observe |
+
+The host moves records; Rust decides what they mean. The kernel validates a
+stream's header, and the executor validates the rest, because the stream is
+guest-written and only bytes copied into the executor's private memory are
+safe from a group member rewriting them.
+
+### The `kandelo.kgpu.v1` extension
+
+Programs reach kgpu through the required import
+`kandelo.kgpu.v1.__kandelo_kgpu_v1(arg, size, op) -> i32`, not through
+ioctls, so the frozen ABI-56 base program surface is unchanged. The four
+ops are create context, destroy context, submit and wait. The process
+worker serves the import with kernel-host request 602
+(`HOST_ADAPTER_VERSION` 42). It returns a non-negative result or a
+negative errno and never sets `errno`. A task outside a memory group gets
+`-95` (`EOPNOTSUPP`) from every op. A machine without a renderer answers
+context creation with `-19` (`ENODEV`). The op table, staging bounds,
+blocking and the host adapter contract are in
+[program extensions](program-extensions.md#gpu-command-submission-version-1).
+`programs/kgpu-clear.c` is the smallest complete client.
+
+### Extents and pins
+
+A submission names guest virtual ranges: its command stream and up to
+`KGPU_MAX_BUFFERS` buffers, each read or write. In one synchronous kernel
+entry, `MemoryGroups::device_translate_and_pin` translates them into
+physical extents and pins those frames. Each extent is an offset into the
+group's shared backing plus a length, and 64 KiB pages may be
+discontiguous. A pinned frame stays allocated even if the guest unmaps or
+frees the memory, so the executor never reads or writes a frame that has
+been given to someone else. Pins are released when the executor retires
+the submission. When the executor reports the context lost, the kernel
+unpins that context's in-flight work, since the executor promises never to
+touch it again. A device reset also unpins. `devicePinnedFrames` in the
+memory-group usage report counts the frames still pinned
+([shared memory groups](shared-memory-groups.md)).
+
+A process that exits with work in flight is published as exited only after
+that work is retired or the device is reset. The process's contexts are
+destroyed at the device's next kernel entry.
+
+### Rings and doorbells
+
+The kernel queues encoded records in a 256 KiB outbox. When the outbox goes
+from empty to non-empty, the kernel calls `host_kgpu_kick`. `KgpuHost`
+answers from a later kernel entry: it calls `kernel_kgpu_drain` and forwards
+the bytes through a 64 KiB shared byte ring
+(`host/src/device-worker/ring.ts`). It feeds 24-byte completion records back
+through a second ring to `kernel_kgpu_complete`. Payload-free
+`MessagePort` messages are the doorbells in both directions.
+
+Neither worker blocks on the other, and the GPU worker never calls
+`Atomics.wait`. A full ring leaves the bytes in the kernel outbox. A submit
+that finds the outbox full commits nothing and answers `EAGAIN` to the
+host, which re-executes the request once a drain frees room. Only the
+calling guest thread waits.
+
+### The GPU worker
+
+`KgpuHost` starts one disposable GPU worker per machine, on the first kick.
+It gives the worker the group's shared backing, the two rings, a doorbell
+port and the executor module. The worker reassembles whole records and
+copies each submit's stream bytes from the backing into executor memory,
+once, before the executor reads them. It then calls `ge_handle`, which must
+answer exactly one completion. The executor's memory is private, with a
+16 MiB ceiling that `host/src/runtime-memory-profile.ts` budgets as
+`GPU_EXECUTOR_RESERVATION_BYTES`.
+
+The executor checks every record and stream completely before running any
+command. A violation faults only the submitting context: it answers
+`ContextLost`, and no other context's state is consulted or changed. The
+executor drives a `Backend`. It uses the WebGL 2 backend through
+`kgpu_backend` imports, one import per backend call (a
+[measured choice](measurements/2026-11-27-kgpu-crossing.md)). Native
+`cargo test` uses a recording backend, and a host without a renderer uses
+a null backend.
+
+When the worker exits, throws, reports a fault or breaks the protocol, the
+host terminates it. This includes the loss of its WebGL context. Only once
+termination has completed does it call `kernel_kgpu_reset`. The reset
+loses every context and unpins all in-flight work, so those waits answer
+`-5` (`EIO`). It also discards the outbox and clears the renderer. The same
+reset happens when the group backing the worker was given is replaced.
+
+In browsers, `BrowserKernelOptions.gpuExecutorUrl` supplies the executor,
+and the worker draws with WebGL 2 on a 1x1 `OffscreenCanvas`, each context
+on its own framebuffer. `apps/browser-demos/test/kgpu-clear.spec.ts` runs
+`programs/kgpu-clear.c` this way in Playwright's Firefox, WebKit and
+Chromium builds.
+
+### The Node boundary
+
+On Node the same kernel device, `KgpuHost`, GPU worker and executor run,
+with the worker on `worker_threads` (`host/src/kgpu-node.ts`). Node has no
+WebGL 2. Unless the embedder passes `NodeKernelHostOptions.kgpuWebGL2Factory`,
+a module whose `createWebGL2Context()` returns `{ gl, canvas }`, the
+renderer is never set and context creation answers `-19`. The device does
+not pretend to draw. `host/test/kgpu-host.test.ts` runs the whole path on
+Node against a WebGL 2 test double. It covers backpressure, pins held
+across exit, worker crash and reset, and the no-renderer answer.
+
+### Known gaps in slice 1
+
+- **Restart is not public.** After a reset the device has no renderer until
+  the kernel worker's `restartKgpu()` runs. Neither `BrowserKernel` nor
+  `NodeKernelHost` exposes it yet, so in practice a reset leaves kgpu down
+  for the rest of the machine's life.
+- **Termination in browsers.** A browser worker is treated as "proven
+  gone" once `Worker.terminate()` has been called, and that call does not
+  report when the worker actually stopped. Node observes the worker's exit.
+- **One backing.** Records name backing offsets, not groups, so the device
+  works only while the machine has a single memory-group backing.
+- **Exit waits for the GPU.** A process's exit is not published until its
+  in-flight work retires or the device resets. Linux decouples the two.
+- **Error attribution.** The WebGL 2 backend reads `getError()` only when
+  it creates a surface and after read pixels. A GL error left by one
+  context can therefore fault another context's readback, and errors from
+  clears are never reported.
+- **Lost-context status.** The executor's errno for a lost context is not
+  passed on. A wait reports only `-5`.
+- **Bounds not yet tightened.** Context ids are never reused, so 2^32
+  creates exhaust them. Create and destroy records wait in an unbounded
+  backlog while the host is not draining. The 16 MiB executor ceiling is
+  budgeted, but no production caller checks the machine's declared
+  reservation against it.
+- **Evidence not yet gathered.** `./run.sh test browser-memory` has not
+  run against kgpu. It was waived for slice 1, because no shipped image
+  opens the device. In the browser, pins are checked only after each exit,
+  not while work is held; Node covers the held case. Native Safari and iOS
+  are unverified.
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:

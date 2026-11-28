@@ -249,6 +249,18 @@ The executor calls the platform through a Rust backend interface:
 The import crossing style (per call or batched) is chosen by measurement in
 the first slice. WebGPU and native (wgpu or Dawn) backends come later.
 
+**Crossing decision (slice 1, measured 2026-11-27):** one import per
+backend call. Over 10,000 viewport-and-clear pairs, a batched variant (one
+`run_batch(ptr, len)` import running a compact call list in JavaScript)
+was 0 to 4 ns per call slower on Firefox and Chromium. On WebKit it was 5
+to 11 ns faster, against 9 to 10 ns of run-to-run spread. The per-call
+medians were about 69 ns on Firefox and Chromium and 195 ns on WebKit,
+mostly the JavaScript backend's work and its WebGL 2 calls rather than the
+crossing. The batched variant was deleted. Method, engine versions and
+every run are in `docs/measurements/2026-11-27-kgpu-crossing.md`. Re-measure
+with `apps/browser-demos/test/kgpu-crossing-bench.spec.ts` once commands
+that carry more work per call (uploads and draws) exist.
+
 ### Node
 
 The kernel, rings, pinning, parking and executor run on Node. Without an
