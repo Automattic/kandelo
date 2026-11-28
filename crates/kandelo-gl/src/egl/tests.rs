@@ -73,6 +73,11 @@ fn error() -> EGLint {
     thread::get_error()
 }
 
+/// The diagnostic lines this thread wrote since the last call.
+fn diags() -> Vec<String> {
+    crate::sys::take_diagnostics()
+}
+
 #[test]
 fn initialize_reports_1_5() {
     let mut e = Egl::new();
@@ -95,7 +100,8 @@ fn initialize_reports_1_5() {
 fn initialize_without_renderer_is_not_initialized() {
     // -ENODEV (no renderer) and -EOPNOTSUPP (outside a memory group) are
     // quiet; -EINVAL is a driver defect, reported, with the same answer.
-    for errno in [-19, -95, -22] {
+    for (errno, line) in [(-19, None), (-95, None), (-22, Some("kandelo-gl: eglInitialize: kgpu context create failed: EINVAL\n"))] {
+        diags();
         let mut e = Egl::new();
         e.dev.fail_next(FakeOp::ContextCreate, errno);
         let mut major = -7;
@@ -108,6 +114,7 @@ fn initialize_without_renderer_is_not_initialized() {
         assert_eq!(e.drv.get_configs(DISPLAY, None, Some(&mut n)), F);
         assert_eq!(error(), EGL_NOT_INITIALIZED);
         assert_eq!(e.dev.log(), [Call::ContextCreate]);
+        assert_eq!(diags(), line.into_iter().collect::<Vec<_>>(), "errno {errno}");
     }
 }
 
@@ -252,7 +259,7 @@ fn choose_config_rejects_depth_request() {
         &[EGL_DEPTH_SIZE, -2],
         &[EGL_SURFACE_TYPE, 0x10_0000],
         &[EGL_COLOR_BUFFER_TYPE, 5],
-        &[EGL_MATCH_NATIVE_PIXMAP, 0x1000],
+        &[EGL_MATCH_NATIVE_PIXMAP, EGL_DONT_CARE],
         &[EGL_RED_SIZE],
     ] {
         let mut list = bad.to_vec();
@@ -262,6 +269,11 @@ fn choose_config_rejects_depth_request() {
         assert_eq!(choose(&mut e, &list).0, F, "{bad:x?}");
         assert_eq!(error(), EGL_BAD_ATTRIBUTE);
     }
+    // §3.4.1.1: a native pixmap handle, and the surfaceless platform has
+    // no native pixmaps (§3.1.2).
+    assert_eq!(choose(&mut e, &[EGL_MATCH_NATIVE_PIXMAP, 0x1000, EGL_NONE]).0, F);
+    assert_eq!(error(), EGL_BAD_NATIVE_PIXMAP);
+    assert_eq!(choose(&mut e, &with(&[EGL_MATCH_NATIVE_PIXMAP, EGL_NONE])), (T, 1));
     // configs = NULL counts.
     let mut n = 0;
     assert_eq!(e.drv.choose_config(DISPLAY, &PBUFFER_ES2, None, Some(&mut n)), T);
@@ -555,6 +567,7 @@ fn destroying_an_idle_surface_flushes_its_context() {
 
 #[test]
 fn surface_with_second_context_bad_match() {
+    diags();
     let mut e = Egl::init();
     let (a, b) = (e.context(), e.context());
     let s = e.pbuffer(4, 4);
@@ -571,6 +584,16 @@ fn surface_with_second_context_bad_match() {
     assert_eq!(e.make_current(s, b), F);
     assert_eq!(error(), EGL_BAD_MATCH);
     assert_eq!(e.make_current(NO_HANDLE, b), T);
+    // Each refusal names the limitation once.
+    let shared = format!(
+        "kandelo-gl: eglMakeCurrent: surface {s:#x} is bound to another context's GPU storage; \
+         sharing a surface between contexts is not implemented yet\n"
+    );
+    let lost = format!(
+        "kandelo-gl: eglMakeCurrent: surface {s:#x} lost its GPU storage with its destroyed context; \
+         moving a surface to another context is not implemented yet\n"
+    );
+    assert_eq!(diags(), [shared.clone(), shared, lost]);
 }
 
 #[test]
@@ -611,6 +634,7 @@ fn swap_pbuffer_submits_without_wait() {
 
 #[test]
 fn lost_context_fails_swap_and_bind() {
+    diags();
     let mut e = Egl::init();
     let c = e.context();
     let s = e.pbuffer(4, 4);
@@ -629,6 +653,91 @@ fn lost_context_fails_swap_and_bind() {
     // It can still be destroyed.
     assert_eq!(e.drv.destroy_context(&mut e.dev, DISPLAY, c), T);
     assert_eq!(e.dev.log().last(), Some(&Call::ContextDestroy { context: 2 }));
+    assert_eq!(diags(), ["kandelo-gl: eglSwapBuffers: GPU context lost\n"], "one line for the loss");
+}
+
+#[test]
+fn create_context_maps_every_kgpu_error_and_reports_it() {
+    for (errno, egl, line) in [
+        (-28, EGL_BAD_ALLOC, "kgpu context create failed: ENOSPC"),
+        (-12, EGL_BAD_ALLOC, "kgpu context create failed: ENOMEM"),
+        (-19, EGL_CONTEXT_LOST, "kgpu context create failed: ENODEV"),
+        (-5, EGL_CONTEXT_LOST, "GPU context lost"),
+        (-22, EGL_BAD_ALLOC, "kgpu context create failed: EINVAL"),
+    ] {
+        let mut e = Egl::init();
+        let config = e.config();
+        diags();
+        e.dev.fail_next(FakeOp::ContextCreate, errno);
+        assert_eq!(e.drv.create_context(&mut e.dev, DISPLAY, config, NO_HANDLE, &ES2), NO_HANDLE);
+        assert_eq!(error(), egl, "errno {errno}");
+        assert_eq!(diags(), [format!("kandelo-gl: eglCreateContext: {line}\n")]);
+        // The failure leaves nothing behind: the next create succeeds.
+        assert_ne!(e.drv.create_context(&mut e.dev, DISPLAY, config, NO_HANDLE, &ES2), NO_HANDLE);
+    }
+}
+
+#[test]
+fn wait_client_with_a_deleted_current_surface_bad_current_surface() {
+    let mut e = Egl::init();
+    let c = e.context();
+    let s = e.pbuffer(4, 4);
+    // §3.8: surfaceless is not an invalid surface.
+    assert_eq!(e.make_current(NO_HANDLE, c), T);
+    assert_eq!(e.drv.wait_client(&mut e.dev), T);
+    assert_eq!(error(), EGL_SUCCESS);
+    assert_eq!(e.make_current(s, c), T);
+    assert_eq!(e.drv.wait_client(&mut e.dev), T);
+    assert_eq!(e.drv.destroy_surface(&mut e.dev, DISPLAY, s), T);
+    assert_eq!(e.drv.wait_client(&mut e.dev), F);
+    assert_eq!(error(), EGL_BAD_CURRENT_SURFACE);
+    assert_eq!(e.release(), T);
+    // No current context: no effect, and success.
+    assert_eq!(e.drv.wait_client(&mut e.dev), T);
+    assert_eq!(error(), EGL_SUCCESS);
+}
+
+#[test]
+fn terminate_while_another_thread_has_a_context_current() {
+    let shared = Arc::new(Mutex::new(Egl::init()));
+    let (a, s) = {
+        let mut e = shared.lock().unwrap();
+        (e.context(), e.pbuffer(4, 4))
+    };
+    let (bound_tx, bound_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let shared = &shared;
+        let other = scope.spawn(move || {
+            assert_eq!(shared.lock().unwrap().make_current(s, a), T);
+            bound_tx.send(()).unwrap();
+            go_rx.recv().unwrap();
+            // §3.2: still current to this thread after the terminate.
+            let mut guard = shared.lock().unwrap();
+            let e = &mut *guard;
+            assert_eq!(e.drv.get_current_context(), a);
+            assert_eq!(e.drv.get_current_surface(EGL_DRAW), s);
+            assert!(!e.dev.log().iter().any(|c| matches!(c, Call::ContextDestroy { context: 2 })));
+            // Releasing completes the deletion: the surface storage goes
+            // with its context.
+            assert_eq!(e.release(), T);
+            assert_eq!(e.dev.log().last(), Some(&Call::ContextDestroy { context: 2 }));
+        });
+        bound_rx.recv().unwrap();
+        {
+            let mut guard = shared.lock().unwrap();
+            let e = &mut *guard;
+            assert_eq!(e.drv.terminate(&mut e.dev, DISPLAY), T);
+            assert_eq!(e.drv.get_current_context(), NO_HANDLE, "this thread had none current");
+            let mut v = 0;
+            assert_eq!(e.drv.query_context(DISPLAY, a, EGL_CONFIG_ID, Some(&mut v)), F);
+            assert_eq!(error(), EGL_NOT_INITIALIZED);
+        }
+        go_tx.send(()).unwrap();
+        other.join().unwrap();
+    });
+    let e = shared.lock().unwrap();
+    assert!(e.drv.surface(s).is_none());
 }
 
 #[test]

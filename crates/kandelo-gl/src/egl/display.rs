@@ -139,12 +139,12 @@ impl Driver {
 fn probe(dev: &mut impl Device) -> Result<()> {
     let context = dev.context_create().map_err(|errno| {
         if -errno != ENODEV && -errno != EOPNOTSUPP {
-            crate::diag(format_args!("eglInitialize: kgpu context create failed: {errno}"));
+            crate::diag(format_args!("eglInitialize: kgpu context create failed: {}", crate::Errno(errno)));
         }
         EGL_NOT_INITIALIZED
     })?;
     dev.context_destroy(context).map_err(|errno| {
-        crate::diag(format_args!("eglInitialize: kgpu context destroy failed: {errno}"));
+        crate::diag(format_args!("eglInitialize: kgpu context destroy failed: {}", crate::Errno(errno)));
         EGL_NOT_INITIALIZED
     })
 }

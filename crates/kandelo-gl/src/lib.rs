@@ -23,4 +23,4 @@ pub mod egl;
 pub mod kgpu;
 mod sys;
 
-pub use sys::diag;
+pub use sys::{Errno, diag};

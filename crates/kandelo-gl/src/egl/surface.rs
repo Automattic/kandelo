@@ -10,6 +10,7 @@
 
 use super::config::{self, MAX_PBUFFER_DIM};
 use super::*;
+use crate::kgpu::Device;
 
 /// Where a surface's executor storage is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,5 +236,3 @@ impl Driver {
         thread::report(result, EGL_FALSE as EGLBoolean)
     }
 }
-
-use crate::kgpu::Device;

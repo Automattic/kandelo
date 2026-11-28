@@ -126,11 +126,7 @@ impl Context {
     /// renderer's loss; anything else is a driver defect, never swallowed.
     pub(crate) fn fail(&mut self, call: &str, op: &str, errno: i32) {
         if !self.lost {
-            if errno == -EIO {
-                crate::diag(format_args!("{call}: GPU context lost"));
-            } else {
-                crate::diag(format_args!("{call}: kgpu {op} failed: {errno}"));
-            }
+            report_kgpu_failure(call, op, errno);
         }
         self.lost = true;
     }
@@ -161,6 +157,16 @@ impl Context {
             self.pending.push(Command::SurfaceBind { surface: name });
             self.bound_name = name;
         }
+    }
+}
+
+/// Writes the one diagnostic line for a kgpu error on a context: `-EIO` is
+/// the renderer's loss; anything else names the operation and the errno.
+pub(crate) fn report_kgpu_failure(call: &str, op: &str, errno: i32) {
+    if errno == -EIO {
+        crate::diag(format_args!("{call}: GPU context lost"));
+    } else {
+        crate::diag(format_args!("{call}: kgpu {op} failed: {}", crate::Errno(errno)));
     }
 }
 
@@ -248,14 +254,17 @@ impl Driver {
                 return Err(EGL_BAD_MATCH);
             }
             let handle = next_handle(&mut self.next_context, TAG_CONTEXT)?;
-            let kgpu = dev.context_create().map_err(|errno| match -errno {
-                ENOSPC | ENOMEM => EGL_BAD_ALLOC,
-                // The renderer went away after initialization (a device
-                // reset): a power-management-like event (EGL 1.5 §2.7).
-                EIO | ENODEV => EGL_CONTEXT_LOST,
-                _ => {
-                    crate::diag(format_args!("eglCreateContext: kgpu context create failed: {errno}"));
-                    EGL_BAD_ALLOC
+            let kgpu = dev.context_create().map_err(|errno| {
+                // Every kgpu error is reported (plan ruling S8); the EGL
+                // error says what the program can do about it.
+                report_kgpu_failure("eglCreateContext", "context create", errno);
+                match -errno {
+                    // The kernel's context limit or memory: out of resources.
+                    ENOSPC | ENOMEM => EGL_BAD_ALLOC,
+                    // The renderer went away after initialization (a device
+                    // reset): a power-management-like event (EGL 1.5 §2.7).
+                    EIO | ENODEV => EGL_CONTEXT_LOST,
+                    _ => EGL_BAD_ALLOC,
                 }
             })?;
             self.contexts.insert(handle, Context {
@@ -497,7 +506,7 @@ impl Driver {
             // A lost context is already gone from the executor; the kernel
             // still holds its id until destroyed.
             if let Err(errno) = dev.context_destroy(c.kgpu) {
-                crate::diag(format_args!("{call}: kgpu context destroy failed: {errno}"));
+                crate::diag(format_args!("{call}: kgpu context destroy failed: {}", crate::Errno(errno)));
             }
         }
     }

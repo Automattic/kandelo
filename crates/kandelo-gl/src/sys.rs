@@ -8,11 +8,13 @@
 //! way a failed C assertion would. Nothing here unwinds: the library is
 //! built with `panic = abort`.
 
+#[cfg(not(test))]
 use core::ffi::c_int;
 #[cfg(all(target_arch = "wasm32", not(test)))]
 use core::ffi::c_void;
 use core::fmt::{self, Write};
 
+#[cfg(not(test))]
 unsafe extern "C" {
     fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
 }
@@ -117,12 +119,38 @@ fn format_line<const N: usize>(args: fmt::Arguments, sink: impl FnMut(&[u8])) {
     line.flush();
 }
 
+/// A negative errno as a kgpu call returned it, displayed by name
+/// (`ENOSPC`) when it is one, else as the number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Errno(pub i32);
+
+impl fmt::Display for Errno {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match u32::try_from(-i64::from(self.0)).ok().and_then(wasm_posix_shared::Errno::from_u32) {
+            Some(name) => write!(f, "{name:?}"),
+            None => write!(f, "{}", self.0),
+        }
+    }
+}
+
 /// Writes one `kandelo-gl: <args>` line to standard error.
 ///
 /// It formats on the stack, never allocates, and ignores write failures:
 /// it is the path that reports allocation failures and driver defects,
 /// so it must not depend on the heap or fail in turn.
+///
+/// Test builds capture the line for the calling thread instead
+/// (`take_diagnostics`), so tests can assert on it and libtest's output
+/// stays clean.
 pub fn diag(args: fmt::Arguments) {
+    #[cfg(test)]
+    {
+        let mut line = std::vec::Vec::new();
+        format_line::<256>(args, |bytes| line.extend_from_slice(bytes));
+        let line = std::string::String::from_utf8(line).expect("diagnostics are UTF-8");
+        CAPTURED.with(|c| c.borrow_mut().push(line));
+    }
+    #[cfg(not(test))]
     format_line::<256>(args, |bytes| {
         let mut rest = bytes;
         while !rest.is_empty() {
@@ -133,6 +161,19 @@ pub fn diag(args: fmt::Arguments) {
             rest = &rest[n as usize..];
         }
     });
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static CAPTURED: core::cell::RefCell<std::vec::Vec<std::string::String>> =
+        const { core::cell::RefCell::new(std::vec::Vec::new()) };
+}
+
+/// The diagnostic lines this thread wrote since the last call, each with
+/// its `kandelo-gl: ` prefix and newline.
+#[cfg(test)]
+pub(crate) fn take_diagnostics() -> std::vec::Vec<std::string::String> {
+    CAPTURED.with(|c| core::mem::take(&mut *c.borrow_mut()))
 }
 
 #[cfg(all(target_arch = "wasm32", not(test)))]
@@ -162,6 +203,21 @@ mod tests {
     fn a_short_line_is_one_write() {
         assert_eq!(collect::<64>(format_args!("glClear {:#x} not implemented", 0x100)),
             [b"kandelo-gl: glClear 0x100 not implemented\n".to_vec()]);
+    }
+
+    #[test]
+    fn errnos_display_by_name() {
+        assert_eq!(super::Errno(-28).to_string(), "ENOSPC");
+        assert_eq!(super::Errno(-5).to_string(), "EIO");
+        assert_eq!(super::Errno(-4095).to_string(), "-4095");
+        assert_eq!(super::Errno(i32::MIN).to_string(), "-2147483648");
+    }
+
+    #[test]
+    fn a_test_build_captures_diagnostics() {
+        super::diag(format_args!("x {}", 1));
+        assert_eq!(super::take_diagnostics(), ["kandelo-gl: x 1\n"]);
+        assert!(super::take_diagnostics().is_empty());
     }
 
     #[test]

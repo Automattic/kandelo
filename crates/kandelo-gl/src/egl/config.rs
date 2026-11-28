@@ -200,6 +200,13 @@ impl Request {
         for pair in attrib_pairs(list) {
             let (attribute, value) = pair?;
             let i = RULES.iter().position(|r| r.attribute == attribute).ok_or(EGL_BAD_ATTRIBUTE)?;
+            // §3.4.1.1: the value is a native pixmap handle, and the
+            // surfaceless platform has none, so any handle is invalid
+            // (§3.1.2: EGL_BAD_NATIVE_PIXMAP where it can tell). §3.4.1
+            // forbids EGL_DONT_CARE for it, an out-of-range value.
+            if matches!(RULES[i].values, Values::NoPixmap) && value != EGL_NONE && value != EGL_DONT_CARE {
+                return Err(EGL_BAD_NATIVE_PIXMAP);
+            }
             if !valid(RULES[i].values, value) {
                 return Err(EGL_BAD_ATTRIBUTE);
             }
