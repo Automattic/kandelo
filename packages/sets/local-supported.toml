@@ -21,6 +21,7 @@ dependency_only = [
   "wordpress-sqlite-integration-source",
 ]
 registry_non_roots = [
+  { name = "toywasm-core", reason = "portable interpreter validation library; resolve explicitly until an installed package consumes it" },
   { name = "node-native-lifetime-tests", reason = "unshipped native Node lifetime qualification fixture; resolved explicitly by diagnostic runs" },
   { name = "flang-browser-bundle", reason = "optional Fortran compiler; resolve explicitly instead of blocking the standard shell and automatic builds" },
 ]
