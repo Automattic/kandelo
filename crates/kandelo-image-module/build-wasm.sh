@@ -87,7 +87,9 @@ shrink_module() {
   # Binaryen 133's constraint-analysis pass, which aborts on some LLVM 23
   # code and measured no worthwhile win; Kandelo skips it everywhere until
   # a re-measured decision (docs/future-improvements.md) says otherwise.
-  wasm-opt -Oz --skip-pass=constraint-analysis --enable-bulk-memory \
+  # The shared KIFS block digest uses per-function SIMD128 in both image
+  # builders. Binaryen needs the same feature when validating the linked code.
+  wasm-opt -Oz --skip-pass=constraint-analysis --enable-bulk-memory --enable-simd \
     -o "$wasm.opt" "$wasm"
   mv "$wasm.opt" "$wasm"
   after="$(wc -c < "$wasm" | tr -d ' ')"

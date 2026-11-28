@@ -27,7 +27,9 @@ if ! cargo -V | grep -q 'nightly'; then
 fi
 
 # --locked: never rewrite the checkout's Cargo.lock from a package build.
-cargo build --locked --release -p kandelo -Z build-std=core,alloc
+# KIFS authenticates every data block and index page. Optimize the compression
+# rounds for throughput within the otherwise size-optimized kernel.
+cargo --config 'profile.release.package.sha2.opt-level=3' build --locked --release -p kandelo -Z build-std=core,alloc
 
 if [ ! -f "$OUT" ]; then
     echo "build-kernel: expected output not found: $OUT" >&2
@@ -78,6 +80,7 @@ wasm_require_exports "$OUT" \
     kernel_get_fd_path \
     kernel_get_parent_pid \
     kernel_get_process_exec_generation \
+    kernel_get_process_exit_published \
     kernel_get_process_exit_signal \
     kernel_get_process_state \
     kernel_get_socket_timeout_ms \
@@ -124,6 +127,7 @@ wasm_require_exports "$OUT" \
     kernel_reap_exited_child \
     kernel_remove_process \
     kernel_reset_tcp_connection \
+    kernel_rootfs_deferred_transfer_size_address \
     kernel_rootfs_take_compaction_request \
     kernel_set_current_tid \
     kernel_set_cwd \

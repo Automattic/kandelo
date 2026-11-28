@@ -89,6 +89,26 @@ pub mod klog_v1 {
     ];
 }
 
+/// Try a cached result for an ordinary memory32 stat-family request.
+///
+/// `(path: pointer, output: i32, request: i32) -> i32`. The low bits of
+/// request encode the base syscall number, and the remaining bits encode
+/// fstatat flags. Only AT_FDCWD can use this interface. One means the
+/// existing guest stat record was written, zero means take the ordinary
+/// syscall path and the output is untouched.
+pub mod stat_cache_v1 {
+    pub const MODULE: &str = "kandelo.stat-cache.v1";
+    pub const IMPORT: &str = "__kandelo_stat_cache_v1";
+    pub const SYSCALL_BITS: u32 = 8;
+    pub const SYSCALL_MASK: u32 = (1 << SYSCALL_BITS) - 1;
+    pub const FLAGS_MAX: u32 = u32::MAX >> SYSCALL_BITS;
+    pub const WIRE: &[(&str, u32)] = &[
+        ("SYSCALL_BITS", SYSCALL_BITS),
+        ("SYSCALL_MASK", SYSCALL_MASK),
+        ("FLAGS_MAX", FLAGS_MAX),
+    ];
+}
+
 /// The grouped SDK delegates private frame allocation to the actual kernel.
 /// This required namespace is independent of both the base ABI and the physical
 /// memory layout namespace; no ordinary executable requests it.
@@ -103,6 +123,7 @@ pub mod memory_group_growth_v1 {
 pub const EXTENSIONS: &[(&str, &str)] = &[
     (stack_v1::MODULE, stack_v1::IMPORT),
     (klog_v1::MODULE, klog_v1::IMPORT),
+    (stat_cache_v1::MODULE, stat_cache_v1::IMPORT),
 ];
 
 /// The function import a known extension module supplies.

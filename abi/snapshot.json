@@ -12,11 +12,13 @@
       "host_adapter",
       "kernel_exports",
       "kernel_imports",
+      "kifs_stat_certificate_wire",
       "kms_cursor_transport",
       "memory_group_contract",
       "pcm_transport_abi",
       "process_metadata_contract",
       "process_snapshot_wire",
+      "record_completion_wire",
       "select_bitmap_channel",
       "wait_completion_wire",
       "wakeup_event_wire"
@@ -2501,7 +2503,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 41,
+      "required_host_adapter_version": 42,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2586,7 +2588,9 @@
       "kernel_group_owned_mapping_validate",
       "kernel_group_retirement_control",
       "kernel_group_root_control",
+      "kernel_handle_channel_record_complete",
       "kernel_initial_group_exec_target_admit",
+      "kernel_rootfs_stat_lease",
       "kernel_memory_group_capabilities",
       "kernel_memory_group_configure",
       "kernel_memory_group_create",
@@ -2610,6 +2614,15 @@
       "kernel_owned_mapping_finish",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
+      "kernel_rootfs_activate_kifs_handoff",
+      "kernel_rootfs_cancel_kifs_handoff",
+      "kernel_rootfs_compact_kifs_v3",
+      "kernel_rootfs_format_version",
+      "kernel_rootfs_kifs_compaction_needed",
+      "kernel_rootfs_mount_kifs_v3",
+      "kernel_rootfs_prepare_kifs_handoff",
+      "kernel_rootfs_stage_saved_kifs_v3",
+      "kernel_rootfs_supports_stat_lease",
       "kernel_rootfs_rename_file",
       "kernel_set_max_addr",
       "kernel_set_mmap_base",
@@ -2711,6 +2724,7 @@
       "kernel_reap_exited_child",
       "kernel_remove_process",
       "kernel_reset_tcp_connection",
+      "kernel_rootfs_deferred_transfer_size_address",
       "kernel_rootfs_take_compaction_request",
       "kernel_set_current_tid",
       "kernel_set_cwd",
@@ -2733,7 +2747,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 41,
+    "version": 42,
     "wasm_indirect_call_traps": {
       "nullOrSignatureMismatch": 2,
       "signatureMismatch": 1
@@ -4609,6 +4623,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_handle_channel_record_complete",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_handle_guest_io",
       "signature": "(i32,i32,i32,i64) -> (i32)"
     },
@@ -5109,7 +5128,17 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_activate_kifs_handoff",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_activate_persistence_compaction",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_cancel_kifs_handoff",
       "signature": "() -> (i32)"
     },
     {
@@ -5124,12 +5153,22 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_compact_kifs_v3",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_convert_unindexed_fixed_persistence",
       "signature": "() -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_rootfs_convert_unindexed_resizable_persistence",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_deferred_transfer_size_address",
       "signature": "() -> (i32)"
     },
     {
@@ -5169,6 +5208,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_format_version",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_inspect_directory",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -5204,6 +5248,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_kifs_compaction_needed",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_lazy_resource_limits",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -5229,8 +5278,18 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_mount_kifs_v3",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_persistence_recovery_is_pristine",
       "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_prepare_kifs_handoff",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -5274,8 +5333,23 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_stage_saved_kifs_v3",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_stat_lease",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_stat_mode",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_supports_stat_lease",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -6407,6 +6481,28 @@
       "shared": true
     }
   ],
+  "kifs_stat_certificate_wire": {
+    "BUCKET_OFFSET": 48,
+    "BYTES": 2320,
+    "FLAGS_OFFSET": 56,
+    "GENERATIONS_OFFSET": 272,
+    "INODE_BUCKETS": 256,
+    "INODE_GENERATION_OFFSET": 40,
+    "LENGTH_OFFSET": 4,
+    "MAGIC": 827542603,
+    "MAGIC_OFFSET": 0,
+    "PATHNAME_GENERATION_OFFSET": 32,
+    "PATH_BYTES": 96,
+    "PATH_LENGTH_OFFSET": 60,
+    "PATH_OFFSET": 64,
+    "PID_OFFSET": 8,
+    "ROUTE_OFFSET": 24,
+    "SCOPE_OFFSET": 16,
+    "STAT_BYTES": 112,
+    "STAT_OFFSET": 160,
+    "SYSCALL_OFFSET": 52,
+    "TID_OFFSET": 12
+  },
   "kms_cursor_transport": {
     "byte_order": "little-endian",
     "disabled_image": "zero-bo-framebuffer-dimensions-and-hotspot",
@@ -11128,6 +11224,9 @@
       }
     ],
     "transport": "ordinary syscall channel; arguments are 32-bit object ids or counts"
+  },
+  "record_completion_wire": {
+    "exit_signal_base": 256
   },
   "select_bitmap_channel": {
     "max_nfds": 8388611,

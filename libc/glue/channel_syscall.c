@@ -35,6 +35,7 @@
 #include <sys/soundcard.h>
 #include <sys/uio.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/select.h>
 #include <sys/epoll.h>
 #include <sys/msg.h>
@@ -45,6 +46,7 @@
 #include <bits/kandelo_syscall_marshal.h>
 #include <bits/kandelo_thread_syscalls.h>
 #include "abi_constants.h"
+#include "kandelo-stat-cache.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -1927,9 +1929,26 @@ restart_wait_syscall:
     return result;
 }
 
+#if __SIZEOF_POINTER__ == 4
+__attribute__((import_module(KANDELO_STAT_CACHE_MODULE), import_name(KANDELO_STAT_CACHE_IMPORT)))
+extern int __kandelo_stat_cache_v1(const void *path, uint32_t output, uint32_t request);
+#endif
+
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6)
 {
+#if __SIZEOF_POINTER__ == 4
+    if ((n == SYS_stat || n == SYS_lstat)
+        && __kandelo_stat_cache_v1((const void *)(uintptr_t)a1, (uint32_t)a2, (uint32_t)n) == 1) {
+        return 0;
+    }
+    if (n == SYS_fstatat && a1 == AT_FDCWD && (uint64_t)a4 <= KANDELO_STAT_CACHE_FLAGS_MAX) {
+        uint32_t request = (uint32_t)n | ((uint32_t)a4 << KANDELO_STAT_CACHE_SYSCALL_BITS);
+        if (__kandelo_stat_cache_v1((const void *)(uintptr_t)a2, (uint32_t)a3, request) == 1) {
+            return 0;
+        }
+    }
+#endif
     return __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 0, 0u);
 }
 

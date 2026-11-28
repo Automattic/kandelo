@@ -106,6 +106,7 @@ export interface NodeKernelHostOptions {
   experimentalFixedPersistencePath?: string;
   /** Opt-in resizable image-file persistence at this absolute journal path. */
   experimentalResizablePersistencePath?: string;
+  kifsUpgradeProfile?: import("./vfs/overlay-generation-selection").SavedKifsProfile;
   requireExistingRootfsPersistence?: boolean;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
@@ -208,6 +209,8 @@ export interface NodeKernelHostOptions {
   exchange?: { activation?: "on-demand" | "off" };
   /** Absolute path to a decoded, quiescent VFSI image read in bounded pages. */
   rootfsImageFile?: string;
+  /** Identity of an explicitly selected disposable KIFS v3 volume at rootfsImageFile. */
+  experimentalKifsV3Identity?: string;
   /** Optional chunk hashes from a verified staged image. */
   rootfsImageIntegrity?: OpfsImageIntegrity;
   rootfsPersistentImageBinding?: PersistentImageReadBinding;
@@ -565,6 +568,7 @@ export class NodeKernelHost {
           },
           rootfsImage: rootfsImage ?? undefined,
           rootfsImageFile: this.options.rootfsImageFile,
+          experimentalKifsV3Identity: this.options.experimentalKifsV3Identity,
           rootfsImageIntegrity: this.options.rootfsImageIntegrity,
           rootfsPersistentImageBinding: persistentImageBinding,
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
@@ -572,6 +576,7 @@ export class NodeKernelHost {
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           experimentalFixedPersistencePath: this.options.experimentalFixedPersistencePath,
           experimentalResizablePersistencePath: this.options.experimentalResizablePersistencePath,
+          kifsUpgradeProfile: this.options.kifsUpgradeProfile,
           requireExistingRootfsPersistence: this.options.requireExistingRootfsPersistence,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssetDirectory: this.options.rootfsLazyAssetDirectory,

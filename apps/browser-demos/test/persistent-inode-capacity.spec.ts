@@ -10,6 +10,7 @@ import { startDeferredArchiveServer } from "../../../host/test/fixtures/deferred
 import { oversizedDeferredMetadataImage } from "../../../host/test/fixtures/oversized-metadata-image";
 import { wideDirectoryImage } from "../../../host/test/fixtures/wide-directory-image";
 import { hostTransportMetadataImage } from "../../../host/test/fixtures/host-transport-metadata-image";
+import { developmentInodeCapacityImage, developmentInodeCapacityScript } from "../../../host/test/fixtures/development-inode-capacity";
 import type { OpfsImageIntegrity } from "../../../host/src/vfs/image-integrity";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
@@ -60,6 +61,186 @@ const test = baseTest.extend<{
       rmSync(profile, { recursive: true, force: true });
     }
   },
+});
+
+test("OPFS keeps the source after a verified pre-activation cut and reclaims staging on retry", async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  if (kernelPath === null || coreutilsPath === null) throw new Error("The built kernel and coreutils are required");
+  const filesystem = KandeloImageFs.create();
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/coreutils", readFileSync(coreutilsPath), 0o755);
+  const image = await filesystem.saveImage();
+  const kernelUrl = new URL("/preactivation-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/preactivation-base.vfs", baseURL).href;
+  const moduleUrl = new URL("/@fs/" + join(repoRoot, "host/src/browser-kernel-host.ts"), baseURL).href;
+  const leaseUrl = new URL("/@fs/" + join(repoRoot, "host/src/browser-persistence-journal-lease.ts"), baseURL).href;
+  await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(kernelPath) }));
+  await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(image) }));
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+
+  const result = await page.evaluate(async ({ kernelUrl, imageUrl, moduleUrl, leaseUrl }) => {
+    const { BrowserKernel } = await import(moduleUrl);
+    const { browserPersistenceJournalLockName } = await import(leaseUrl);
+    const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+    const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+    const name = `preactivation-${crypto.randomUUID()}`;
+    const base = await directory.getFileHandle(`${name}.base`, { create: true });
+    const writer = await base.createWritable();
+    await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+    await writer.close();
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    const boot = async (phase: "seed" | "recover" | "reopen") => {
+      let output = "";
+      const kernel = new BrowserKernel({ kernelOwnedFs: true,
+        onStdout: bytes => { output += decoder.decode(bytes); },
+        onStderr: bytes => { output += decoder.decode(bytes); },
+      });
+      const command = async (...argv: string[]) => {
+        output = "";
+        const { exit } = await kernel.spawnFromVfs("/bin/coreutils", argv, { uid: 0, gid: 0 });
+        const status = await exit;
+        if (status !== 0) throw new Error(`${argv[0]} returned ${status}: ${output}`);
+        return output.trim();
+      };
+      try {
+        await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: base, persistentComputerName: name,
+          experimentalResizablePersistenceName: name, requireExistingRootfsPersistence: phase !== "seed" });
+        if (phase === "seed") {
+          await kernel.writeFileToVfs("/state", encoder.encode("synced before staging"), 0o640);
+          await command("ln", "/state", "/alias");
+          await command("sync");
+        }
+        const identities = await command("stat", "-c", "%i %h %a %u %g", "/state", "/alias");
+        const state = decoder.decode(await kernel.readFileFromVfs("/state"));
+        const alias = decoder.decode(await kernel.readFileFromVfs("/alias"));
+        if (phase === "recover") {
+          await kernel.writeFileToVfs("/after-cut", encoder.encode("acknowledged on the source"));
+          await command("sync");
+        }
+        let afterCut: string | null = null;
+        if (phase === "reopen") {
+          afterCut = decoder.decode(await kernel.readFileFromVfs("/after-cut"));
+          await kernel.writeFileToVfs("/after-activation", encoder.encode("acknowledged on the target"));
+          await command("sync");
+        }
+        return { identities, state, alias, afterCut };
+      } finally {
+        await kernel.destroy();
+        const failure = kernel.getPersistenceShutdownFailure();
+        if (failure !== null) throw new Error(failure);
+      }
+    };
+
+    const compact = async (interrupt: boolean) => {
+      const worker = new Worker("/test/fixtures/opfs-preactivation-cut-worker.ts", { type: "module" });
+      try {
+        return await new Promise((resolve, reject) => {
+          worker.onmessage = ({ data }) => data.error === undefined ? resolve(data) : reject(new Error(data.error));
+          worker.onerror = event => reject(new Error(event.message));
+          worker.postMessage({ name, kernelWasm, base, interrupt });
+        });
+      } finally {
+        worker.terminate();
+        await navigator.locks.request(browserPersistenceJournalLockName(name), () => {});
+      }
+    };
+    const readGenerationFile = async (file: string) => (await directory.getFileHandle(`${name}.${file}`)).getFile();
+    const fingerprint = async (file: string) => Array.from(new Uint8Array(await crypto.subtle.digest(
+      "SHA-256", await (await readGenerationFile(file)).arrayBuffer(),
+    ))).join(",");
+    const stagedFiles = ["g0.journal", "g0.index", "g0.seal"];
+    const seeded = await boot("seed");
+    const cut = await compact(true);
+    const stagedSizes = await Promise.all(stagedFiles.map(async file => (await readGenerationFile(file)).size));
+    const staged = await Promise.all(stagedFiles.map(fingerprint));
+    const oldSourceSize = (await readGenerationFile("journal")).size;
+    const recovered = await boot("recover");
+    const nextSourceSize = (await readGenerationFile("journal")).size;
+    const afterFallback = await Promise.all(stagedFiles.map(fingerprint));
+    const retried = await compact(false);
+    const activatedSize = (await readGenerationFile("g0.journal")).size;
+    const reopened = await boot("reopen");
+    const finalSourceSize = (await readGenerationFile("journal")).size;
+    const finalTargetSize = (await readGenerationFile("g0.journal")).size;
+    return { seeded, cut, stagedSizes, staged, afterFallback, oldSourceSize, nextSourceSize, recovered, retried,
+      activatedSize, reopened, finalSourceSize, finalTargetSize };
+  }, { kernelUrl, imageUrl, moduleUrl, leaseUrl });
+
+  expect(result.cut).toEqual({ stage: "verified-before-activation", source: "legacy" });
+  expect(result.stagedSizes.every(size => size > 0)).toBe(true);
+  expect(result.seeded.identities).toMatch(/^(\d+) 2 640 0 0\n\1 2 640 0 0$/);
+  expect(result.seeded.state).toBe("synced before staging");
+  expect(result.seeded.alias).toBe(result.seeded.state);
+  expect(result.recovered).toEqual(result.seeded);
+  expect(result.nextSourceSize).toBeGreaterThan(result.oldSourceSize);
+  expect(result.afterFallback).toEqual(result.staged);
+  expect(result.retried).toEqual({ stage: "activated", source: "legacy", target: "g0",
+    reclaimed: ["g0.index", "g0.journal", "g0.seal"] });
+  expect(result.reopened).toEqual({ ...result.seeded, afterCut: "acknowledged on the source" });
+  expect(result.finalSourceSize).toBe(result.nextSourceSize);
+  expect(result.finalTargetSize).toBeGreaterThan(result.activatedSize);
+});
+
+test("OPFS creates and recovers more small files than the old shell headroom", async ({ page, baseURL }, testInfo) => {
+  test.setTimeout(180_000);
+  if (kernelPath === null || bashPath === null || coreutilsPath === null) {
+    throw new Error("The built kernel, Bash, and coreutils are required");
+  }
+  const image = await developmentInodeCapacityImage(readFileSync(bashPath), readFileSync(coreutilsPath));
+  const kernelUrl = new URL("/development-inodes-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/development-inodes.vfs", baseURL).href;
+  const moduleUrl = new URL("/@fs/" + join(repoRoot, "host/src/browser-kernel-host.ts"), baseURL).href;
+  await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(kernelPath) }));
+  await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(image) }));
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const observations = await page.evaluate(async ({ kernelUrl, imageUrl, moduleUrl, script }) => {
+    const { BrowserKernel } = await import(moduleUrl);
+    const root = await navigator.storage.getDirectory();
+    const name = "development-inodes-" + crypto.randomUUID();
+    const base = await root.getFileHandle(name, { create: true });
+    const writer = await base.createWritable();
+    await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+    await writer.close();
+    const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+    const observations: { phase: string; code: number; output: string; bootPages: number; finalPages: number }[] = [];
+    for (const phase of ["create", "recover"]) {
+      let output = "";
+      const decoder = new TextDecoder();
+      const kernel = new BrowserKernel({
+        kernelOwnedFs: true,
+        kernelMaxPages: 2048,
+        onStdout: bytes => { output += decoder.decode(bytes); },
+        onStderr: bytes => { output += decoder.decode(bytes); },
+      });
+      try {
+        await kernel.initFromOpfsImage({
+          kernelWasm, vfsImageFile: base, persistentComputerName: name,
+          experimentalResizablePersistenceName: name, requireExistingRootfsPersistence: phase === "recover",
+        });
+        const bootPages = await kernel.getKernelMemoryPages();
+        const { exit } = await kernel.spawnFromVfs("/bin/bash", ["bash", "-c", script, "bash", phase], { uid: 0, gid: 0 });
+        observations.push({ phase, code: await exit, output, bootPages, finalPages: await kernel.getKernelMemoryPages() });
+      } finally {
+        await kernel.destroy();
+      }
+      const failure = kernel.getPersistenceShutdownFailure();
+      if (failure !== null) throw new Error(failure);
+    }
+    return observations;
+  }, { kernelUrl, imageUrl, moduleUrl, script: developmentInodeCapacityScript });
+  await testInfo.attach("development-inode-capacity", { body: JSON.stringify(observations), contentType: "application/json" });
+  const stats = observations.map(({ phase, code, output, bootPages, finalPages }) => {
+    expect(code, output).toBe(0);
+    expect(bootPages).toBeGreaterThan(0);
+    expect(finalPages).toBeLessThanOrEqual(1024);
+    const match = output.match(new RegExp(`INODE_WORKLOAD_OK ${phase} (.*)`));
+    expect(match, output).not.toBeNull();
+    return match![1];
+  });
+  expect(stats[1]).toBe(stats[0]);
+  console.info(`${testInfo.project.name} development inode workload (64 KiB kernel pages):`, JSON.stringify(observations));
 });
 
 for (const scenario of [

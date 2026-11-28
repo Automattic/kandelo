@@ -3,7 +3,7 @@ import "../../../../host/src/browser-kernel-worker-entry";
 const open = FileSystemFileHandle.prototype.createSyncAccessHandle;
 FileSystemFileHandle.prototype.createSyncAccessHandle = async function (...parameters: Parameters<typeof open>) {
   const handle = await open.apply(this, parameters);
-  if (!this.name.endsWith(".journal")) return handle;
+  if (!this.name.endsWith(".journal") && !this.name.endsWith(".volume")) return handle;
   const name = this.name;
   let observed = false;
   const report = (operation: string, error: unknown) => {

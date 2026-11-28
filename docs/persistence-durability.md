@@ -178,7 +178,7 @@ Automatic journal compaction creates a separate journal/index/seal target.
 New writes and metadata mutations wait for immediate host compaction when the
 active tail reaches its admission bound. This maintenance pressure is not
 reported as `ENOSPC`; logical filesystem capacity and actual host quota still
-produce `ENOSPC`. Waiting does not acknowledge data or alter the existing
+produce `ENOSPC`. When the underlying storage refuses a write, flush or truncate for lack of space, the host emits a `storage-capacity` diagnostic once per boot. Logical capacity refusals occur in the kernel. Waiting does not acknowledge data or alter the existing
 checkpoint/activation publication order. Already accepted dirty data can
 still flush while new mutations wait.
 Activation controls identify the acknowledged writable generation. A valid
@@ -240,6 +240,176 @@ unrepresentable file growth is `EFBIG`; memory admission can fail with
 Host quota errors must remain distinguishable from integrity failure and
 must not trigger automatic rollback, format conversion or reset.
 
+Legacy KIFS images store separate block and inode ceilings. Shell images declare 512 MiB
+and 65,536 inode slots, with a build gate of 32,768 free slots. A byte-only
+rebase of an imported image preserves its inode capacity when the tree fits.
+The serialized image reserves 128 bytes per inode slot as part of its block
+geometry. The image writer materializes inode table pages as it needs them,
+and the mounted namespace allocates resident entries as objects are loaded
+or created. The logical ceilings do not change the runtime memory budgets.
+
+Legacy saved computers store their checked base image, KOVL version 1
+journal and any checkpoint on disk. The kernel reconstructs the live
+namespace in memory during boot. The
+[KIFS v3 design](plans/2026-11-25-disk-backed-rootfs-metadata.md)
+uses one authenticated on-disk tree for the namespace and file-block
+references. The shared Node and browser boot path can select a standalone
+volume for a new or saved computer.
+This path covers guest lookup, directory listing, file and symlink reads,
+regular-file creation, writes, truncation, sync, hard links, regular-file
+rename and unlink, directory and symlink creation, permissions, ownership,
+and timestamps. Descriptor-based file metadata changes address the pinned
+inode after rename or unlink. Shrinking a sparse file releases the removed
+blocks and clears any discarded bytes in its last retained block. Growing it
+again exposes zeroes in that range. Open directory descriptions pin their
+v3 inodes. Renaming an ancestor updates the paths used for descriptor-relative
+lookup. Replacing or removing an open directory detaches its last name.
+The descriptor can still stat the original inode until close. Removing the last name, including replacement by rename, keeps
+the old inode readable through its open descriptor. Its data remains
+charged until the last descriptor or mapping releases it. KIFS records
+that inode in an indexed orphan set in the same commit that removes its
+last name. Final release removes the marker and reclaims the inode in one
+commit. A fresh exclusive writable mount checks this set and finishes
+interrupted releases. A read-only open leaves the volume untouched.
+A failed reclaim preserves the storage error for sync and stops writes
+until the next mount. Logical reclamation makes space reusable inside the
+filesystem. Compaction recovers physical space in the backing file.
+On the standalone mount, opening a deferred file reads its declaration from the
+authenticated tree. The shared Rust reader verifies declared file or archive
+digests, streams ZIP members, and serves ordinary reads and private file
+mappings. A mismatch returns `EIO`. Host adapter version 9 carries the
+resource length with the positioned read, so the first fetch can use bounded
+disk staging without enumerating the volume's deferred files at boot.
+
+A quiescent standalone v3 computer can export a compact KIFS snapshot
+to an empty positioned file on Node or in OPFS. The Rust writer copies
+reachable records, verifies both new superblocks and reads back the
+authenticated tree and file blocks. The host returns the physical length
+and SHA-256 digest. A failed export leaves the mounted computer authoritative.
+A writer with an uncertain published root must reopen before exporting.
+The byte-returning API stages the same snapshot on temporary storage,
+allocates its result at the compact file length and checks the returned
+bytes against the digest. On Node the temporary file is unlinked after
+opening. OPFS uses the existing scratch-file owner lock and orphan cleanup.
+Both export APIs leave the original generation active.
+
+### Upgrading a saved computer
+
+The shared Node and browser boot protocol accepts an explicit upgrade
+profile for checked resizable computers. The development profile selects
+at least 1 GiB. The custom profile keeps a computer's declared capacity.
+The Kandelo app uses the development profile automatically when it first
+initializes a Library computer. It marks the filesystem initialized after
+the v3 mount succeeds. An interrupted initialization can retry with the
+same checked base. Existing computers reopen their saved format. The app
+shows the mounted version in Internals → Config. An activated KIFS volume takes
+precedence over every profile. Raw images without a checked binding retain
+their existing default. Fixed computers keep their declared geometry. On v3,
+live metadata and allocated data draw from the same capacity. The volume
+grows as records are written, and `statvfs` reports zero for the separate
+inode-limit fields.
+
+### Live writes, synchronization and power failure
+
+A mounted KIFS v3 transaction combines adjacent appends in an optional
+16 KiB buffer charged to the kernel I/O budget. The first buffered
+append attempts admission and falls back to direct writes when memory
+is unavailable. The transaction still writes every file block to
+positioned storage before returning success.
+
+Within a publication group, the kernel can retain up to 2,048 changed
+index keys in an admitted edit map. Ordinary reads see those edits.
+Publication builds the corresponding index pages before publishing
+either root replica. An operation that outgrows the edit map can
+materialize the group during its own transaction. Until publication,
+recovery uses the previous durable root. A failed write or partial append
+can leave storage beyond that root available for reuse.
+
+KIFS v3 groups publication to amortize the three host flushes required
+for a durable root. A successful ordinary `write` makes its returned bytes
+visible through the live root. Namespace operations and allocation counters
+advance with that root. A worker crash or power failure can lose several
+successful, unsynced operations together. Eager v3 published each mutation
+before returning success and exposed a smaller window of unsynced work.
+
+A successful guest `fsync` on this volume covers the root containing
+that change. To publish pending work, the kernel waits for the host to
+acknowledge the appended pages, then each root replica in turn. A clean
+sync can return without further I/O. After writing A, syncing successfully, and then
+writing B, a crash can recover A or a subsequently published B. This
+guarantee depends on the host and device preserving acknowledged flushes.
+Tests cover interrupted publication and abrupt worker termination. Physical
+power cuts and hosts that reorder or lose acknowledged writes belong to
+the [durability follow-up](plans/2026-11-25-disk-backed-rootfs-metadata.md#durability-follow-up).
+
+The next mutation publishes the current group once it has accumulated
+64 operations or 1 MiB of appended pages. A metadata operation may
+succeed in the live edit map and a later `fsync` can report host
+`ENOSPC` during index construction. The previous durable root and
+live edits remain available if index construction fails before either
+root replica is written. Kernel workers also request
+publication every two seconds while runnable. Suspension can delay that
+timer indefinitely. Explicit synchronization, clean shutdown and
+compaction publish pending changes. If flushing appended data fails, the
+live root remains available for retry. A failure writing or flushing a
+root replica leaves publication uncertain and stops the writer until reopen.
+
+### Upgrade activation and retirement
+
+Boot replays the source under its exclusive lease. Rust copies the effective
+namespace into a separate positioned file and opens the result for a
+read-only comparison with the source. It checks inode numbers, contents,
+metadata, sparse blocks, deferred descriptors and allocator state. Upgrade
+diagnostics cover the copy and the handoff. Ordinary v3 boots open the
+selected generation directly.
+
+The two existing KOGA activation controls authenticate a 136-byte KIFG v1
+seal. The seal binds the predecessor's sequence, generation, slot, base
+digest and seal digest, the new slot and a fresh nonce. Its SHA-256 is also
+the expected identity of the v3 volume. Legacy conversion also stages
+a 72- or 104-byte KIFR v1 retirement receipt. Its SHA-256 supplies the
+KIFG nonce. It binds fresh randomness and SHA-256 digests of the complete
+source journal and optional index. The predecessor activation already
+binds its checkpoint seal. The `.volume`, `.volume-seal` and `.retirement`
+files in slots g0 and g1 belong to this protocol. The checked base,
+source journal and checkpoint remain available through publication.
+
+Before activation the current controls continue to name the source. A retry
+reuses the inactive staging files after confirming that
+authority. A host space refusal, native logical-space refusal or memory
+admission failure during candidate staging releases the partial target and
+reports why the upgrade was deferred. The verified source can continue
+serving the current session. A storage error during activation requires
+recovery before another write. Once either control durably names the successor, restart checks
+the successor and repairs the other replica. A KOVL-only reader refuses
+the published successor. Conflicting controls or an absent active volume
+fail recovery. Boot with no controls and leftover v3 staging also requires
+recovery.
+
+During use, the runtime requests compaction when the committed file exceeds
+both 32 MiB and three times the live allocation. Node and browser workers
+check periodically. Compaction copies reachable records and verifies them
+under a new seal. Mutations are held through publication. The running kernel
+keeps open descriptions and mapping pins while switching backing files. Once
+both controls and the mount select the new volume, the worker closes the
+previous v3 handle and removes its two owned files. Compaction requires space
+for the candidate alongside the source.
+
+After the first upgrade the worker compares each remaining predecessor
+file against the authenticated retirement evidence under the same lease.
+It removes the exact journal, index and seal, then removes the receipt.
+A crash between unlinks leaves the receipt for the next owner. Boot skips
+files already removed and verifies the rest before continuing cleanup.
+A changed source is preserved and reported. An invalid receipt cannot
+authorize deletion. The immutable checked base stays bound to the computer.
+After cleanup ordinary boots probe for the small receipt and open the
+active generation without scanning the original journal or its directory.
+
+Resizable development shells use the development profile described above to
+stage their first v3 generation. The plan records the functional cutover
+and the remaining work.
+[Power-loss qualification and recovery](plans/2026-11-25-disk-backed-rootfs-metadata.md#durability-follow-up).
+
 OPFS is local to a browser origin/profile. Browser eviction, explicit site
 data removal, private-browsing lifecycle or profile/device loss can remove
 it. The source candidate does not promise eviction immunity or a successful
@@ -261,6 +431,7 @@ report open workload failures separately from historical evidence.
 | --- | --- |
 | Dirty-cache visibility and failed writeback | `host/test/fixed-rootfs-persistence.test.ts` and `apps/browser-demos/test/fixed-rootfs-persistence.spec.ts` cover write, partial-write, eviction and flush failures, retained dirty reads, sync errors and reopening. Guest write success and sync success remain distinct. |
 | Compaction publication crash cuts | `host/test/overlay-compaction-crash.test.ts` interrupts operations before and after their effects under both flush-only and write-through storage models. It reopens through real seal/selection policy, but its simulated mount callback does not prove native journal replay. Native replay and real OPFS guest cases are separate coverage. |
+| OPFS fallback and staging reuse | `apps/browser-demos/test/persistent-inode-capacity.spec.ts` terminates the owner after the journal, index and seal pass storage verification and before activation. It checks native v1 replay, guest inode identities, writes to the source after fallback, and reuse of the abandoned slot when compaction is retried. |
 | Activation and lost acknowledgements | `host/test/overlay-generation-activation.test.ts` covers conflicting/damaged replicas, repaired authority, publication cuts, lost close proof and rollback refusal. `host/test/overlay-generation-seal.test.ts` covers target preparation, source protection and retirement. |
 | Cancellation and uncertain owners | `host/test/storage-close-ledger.test.ts`, the composer/codec client tests and `apps/browser-demos/test/persistent-boot-quarantine.spec.ts` cover draining admitted work, failed close, superseded boots and retained ownership. A timeout never grants reuse authority. |
 | Immutable-image checking and large images | The persistent-image binding/base/boot-I/O tests and checked-pressure fixtures cover both policies, demand reads, corrupted input, bounded caches and larger-than-kernel images. A demand-verified mount is not a complete scrub of untouched blocks. |
@@ -280,14 +451,16 @@ are different evidence; neither establishes OS power-loss correctness.
 Desktop WebKit is not physical iPhone validation.
 
 The Chromium quota-manager cases lower the origin's browser-managed quota
-without filling the host disk. An observer records original OPFS journal
-methods throwing `QuotaExceededError`; it does not inject that exception.
-Both checking policies preserve previously durable data through failed writes,
-orderly shutdown and reopening the same stored computer after quota is lifted.
-The imported source route is blocked during recovery. These cases establish
-neither browser-process crash recovery nor guarantees for an unacknowledged
-partial write. Other engines retain explicit injected-quota coverage because
-this browser-managed override is a Chromium protocol feature.
+without filling the host disk. An observer records the native OPFS
+`QuotaExceededError` on the active KIFS volume. The host reports the
+storage-capacity diagnostic and its VFS write call returns `ENOSPC`.
+Both checking policies preserve previously durable data through the failed
+write and reopening the stored computer after quota is lifted. Shutdown
+while quota is still limited can report `ENOSPC`. With the imported source
+route blocked, the fixture retries the same write, shuts down cleanly,
+and reopens to verify both files. Other engines use injected-quota cases.
+The browser-managed override is a Chromium protocol feature.
+[Packaged results](measurements/2026-11-27-kifs-stat-cache-associativity.md#compatibility-and-release-scope)
 
 Per-cache limits and kernel page counts are not an aggregate host-memory
 bound. A large-image fixture may use more memory while being constructed

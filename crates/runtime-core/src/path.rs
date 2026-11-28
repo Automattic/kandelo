@@ -1,5 +1,6 @@
 extern crate alloc;
 use alloc::vec::Vec;
+use wasm_posix_shared::Errno;
 
 /// Make a pathname absolute without interpreting any of its components.
 ///
@@ -67,6 +68,20 @@ pub fn normalize_path(path: &[u8]) -> Vec<u8> {
         result.extend_from_slice(component);
     }
     result
+}
+
+pub(crate) fn validate_dirent_name(parent: u64, name: &[u8]) -> Result<(), Errno> {
+    if parent != 0
+        && !name.is_empty()
+        && name.len() <= 255
+        && name != b"."
+        && name != b".."
+        && !name.iter().any(|byte| *byte == 0 || *byte == b'/')
+    {
+        Ok(())
+    } else {
+        Err(Errno::EINVAL)
+    }
 }
 
 #[cfg(test)]

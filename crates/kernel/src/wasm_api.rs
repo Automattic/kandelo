@@ -20,6 +20,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::slice;
+use core::sync::atomic::{AtomicU64, Ordering};
 use sha2::{Digest, Sha256};
 
 use wasm_posix_shared::{
@@ -467,9 +468,13 @@ fn checked_host_transfer_result(result: i32, capacity: usize) -> Result<usize, E
 /// before any request is made, because the filesystem is the layer that knows
 /// an image described a file and said nothing about where its bytes are. A
 /// second check here would be a guard that cannot fail.
-fn fetch_deferred_uri(uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+fn fetch_deferred_uri(uri: &[u8], buf: &mut [u8], offset: u64, size: u64) -> Result<usize, Errno> {
     let capacity = checked_host_buffer_len(buf.len())?;
     let uri_len = u32::try_from(uri.len()).map_err(|_| Errno::EIO)?;
+    if size == u64::MAX {
+        return Err(Errno::EOVERFLOW);
+    }
+    DEFERRED_TRANSFER_SIZE.store(size, Ordering::Relaxed);
     let result = unsafe {
         host_fetch_deferred(
             uri.as_ptr(),
@@ -480,7 +485,19 @@ fn fetch_deferred_uri(uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, 
             (offset >> 32) as u32,
         )
     };
+    DEFERRED_TRANSFER_SIZE.store(u64::MAX, Ordering::Relaxed);
     checked_host_transfer_result(result, buf.len())
+}
+
+static DEFERRED_TRANSFER_SIZE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Publish the address of a read-only transport word during host setup.
+/// The owning worker serializes kernel entry. This little-endian u64 holds the
+/// exact transfer bound for the synchronous deferred read, or MAX when idle.
+/// Reading it during the import needs no second entry into the kernel.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_deferred_transfer_size_address() -> *const u64 {
+    DEFERRED_TRANSFER_SIZE.as_ptr()
 }
 
 fn checked_host_i64_result(result: i64) -> Result<i64, Errno> {
@@ -580,8 +597,8 @@ impl HostIO for WasmHostIO {
         checked_host_transfer_result(result, buf.len())
     }
 
-    fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
-        fetch_deferred_uri(uri, buf, offset)
+    fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64, size: u64) -> Result<usize, Errno> {
+        fetch_deferred_uri(uri, buf, offset, size)
     }
 
     fn discard_deferred(&mut self, uri: &[u8]) {
@@ -2427,7 +2444,7 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
     let mut host = WasmHostIO;
     match crate::rootfs::load_image(image_len, |req, b| match req {
-        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
         crate::rootfs::ByteReq::DiscardDeferred { uri } => {
             host.discard_deferred(&uri);
             Ok(0)
@@ -2444,8 +2461,94 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
 
 struct HostOverlayStorage;
 
+/// Open an explicitly selected standalone KIFS v3 root using the active
+/// positioned-storage imports. No legacy loader is consulted.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_mount_kifs_v3(
+    identity0: u32,
+    identity1: u32,
+    identity2: u32,
+    identity3: u32,
+    identity4: u32,
+    identity5: u32,
+    identity6: u32,
+    identity7: u32,
+) -> i32 {
+    let identity = volume_identity([identity0, identity1, identity2, identity3, identity4, identity5, identity6, identity7]);
+    match crate::rootfs::mount_kifs_v3(Box::new(HostOverlayStorage), identity) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+fn volume_identity(words: [u32; 8]) -> [u8; 32] {
+    let mut identity = [0; 32];
+    for (word, bytes) in words.into_iter().zip(identity.chunks_exact_mut(4)) {
+        bytes.copy_from_slice(&word.to_le_bytes());
+    }
+    identity
+}
+
+/// Stage and trial a quiescent saved computer while retaining its mounted journal.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_stage_saved_kifs_v3(
+    target_slot: u32, development_volume: u32,
+    identity0: u32, identity1: u32, identity2: u32, identity3: u32,
+    identity4: u32, identity5: u32, identity6: u32, identity7: u32,
+) -> i32 {
+    if development_volume > 1 { return -(Errno::EINVAL as i32); }
+    let identity = volume_identity([identity0, identity1, identity2, identity3, identity4, identity5, identity6, identity7]);
+    let result = persistent_storage_slot(target_slot).and_then(|target| {
+        crate::rootfs::stage_saved_kifs_v3(target, development_volume == 1, identity, |request, bytes| match request {
+            crate::rootfs::ByteReq::Image { offset } => WasmHostIO.image_read(bytes, offset),
+            _ => Err(Errno::ENOTSUP),
+        })
+    });
+    match result { Ok(()) => 0, Err(error) => -(error as i32) }
+}
+
 fn read_physical_persistent_image(offset: u64, destination: &mut [u8]) -> Result<usize, Errno> {
     WasmHostIO.image_read(destination, offset)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_kifs_compaction_needed() -> i32 {
+    match crate::rootfs::kifs_compaction_needed() {
+        Ok(needed) => i32::from(needed), Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_prepare_kifs_handoff(
+    id0: u32, id1: u32, id2: u32, id3: u32, id4: u32, id5: u32, id6: u32, id7: u32,
+) -> i32 {
+    let identity = volume_identity([id0, id1, id2, id3, id4, id5, id6, id7]);
+    let result = fence_all_mapped_files().and_then(|()| {
+        crate::rootfs::prepare_kifs_handoff(Box::new(HostOverlayTargetStorage), identity)
+    });
+    match result { Ok(()) => 0, Err(error) => -(error as i32) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_activate_kifs_handoff() -> i32 {
+    match crate::rootfs::activate_kifs_handoff(Box::new(HostOverlayStorage)) {
+        Ok(()) => 0, Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_cancel_kifs_handoff() -> i32 {
+    match crate::rootfs::cancel_kifs_handoff() { Ok(()) => 0, Err(error) => -(error as i32) }
+}
+
+/// Copy the quiescent mounted KIFS v3 namespace to an empty, positioned target.
+/// The active volume stays attached to its original storage.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_compact_kifs_v3() -> i32 {
+    match fence_all_mapped_files().and_then(|()| crate::rootfs::compact_kifs_v3(HostOverlayTargetStorage)) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -2479,7 +2582,7 @@ pub extern "C" fn kernel_rootfs_load_persistent_image(
         cache,
         read_physical_persistent_image,
         |request, bytes| match request {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, bytes, offset),
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, bytes, offset, size),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
                 Ok(0)
@@ -2766,27 +2869,24 @@ fn flush_rootfs_file_mappings(fd: i32) -> Result<(), Errno> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_checkpoint_prepared_persistence(index_slot: u32) -> i32 {
-    let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match index_slot {
-        0 => Box::new(HostOverlayStorage),
-        1 => Box::new(HostOverlayTargetStorage),
-        2 => Box::new(HostOverlayCompactionStorage),
-        _ => return -(Errno::EINVAL as i32),
-    };
-    match crate::rootfs::checkpoint_prepared_persistence(storage) {
+    match persistent_storage_slot(index_slot).and_then(crate::rootfs::checkpoint_prepared_persistence) {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
 }
 
+fn persistent_storage_slot(slot: u32) -> Result<Box<dyn crate::persistent_overlay::OverlayStorage + Send>, Errno> {
+    match slot {
+        0 => Ok(Box::new(HostOverlayStorage)),
+        1 => Ok(Box::new(HostOverlayTargetStorage)),
+        2 => Ok(Box::new(HostOverlayCompactionStorage)),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_prepare_persistence_compaction(target_slot: u32) -> i32 {
-    let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match target_slot {
-        0 => Box::new(HostOverlayStorage),
-        1 => Box::new(HostOverlayTargetStorage),
-        2 => Box::new(HostOverlayCompactionStorage),
-        _ => return -(Errno::EINVAL as i32),
-    };
-    match crate::rootfs::prepare_persistence_compaction(storage) {
+    match persistent_storage_slot(target_slot).and_then(crate::rootfs::prepare_persistence_compaction) {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
@@ -3012,7 +3112,7 @@ pub extern "C" fn kernel_rootfs_read_file(
     }
     let mut host = WasmHostIO;
     match crate::rootfs::read_file_at(path, offset, buf, |req, b| match req {
-        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
         crate::rootfs::ByteReq::DiscardDeferred { uri } => {
             host.discard_deferred(&uri);
             Ok(0)
@@ -3077,7 +3177,7 @@ pub extern "C" fn kernel_rootfs_write_file(
         mode,
         truncate != 0,
         |req, b| match req {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
                 Ok(0)
@@ -3449,7 +3549,7 @@ pub extern "C" fn kernel_rootfs_export_container_read(
     let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
     let mut host = WasmHostIO;
     match crate::rootfs::export_container_read(offset, buf, &mut |req, b| match req {
-        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
         crate::rootfs::ByteReq::DiscardDeferred { uri } => {
             host.discard_deferred(&uri);
             Ok(0)
@@ -6435,6 +6535,53 @@ pub extern "C" fn kernel_handle_channel_record(
         pid,
         0,
         ChannelTransport::Record,
+    )
+}
+
+/// Run one opaque request and prepare its signal handoff without leaving the
+/// kernel. The host still owns channel publication and may retain an earlier
+/// prepared signal by using the ordinary record export.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_handle_channel_record_complete(
+    scratch_ptr: usize,
+    capacity: u32,
+    pid: u32,
+    tid: u32,
+    deliver: u32,
+) -> i32 {
+    use wasm_posix_shared::{channel, kernel_scratch_wire};
+    use wasm_posix_shared::abi::RECORD_COMPLETION_EXIT;
+
+    if capacity as usize != channel::MIN_CHANNEL_SIZE || deliver > 1 {
+        unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
+        return -(Errno::EINVAL as i32);
+    }
+    if scratch_ptr == 0 || scratch_ptr.checked_add(capacity as usize).is_none() {
+        unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
+        return -(Errno::EFAULT as i32);
+    }
+    let bind = kernel_set_current_tid(pid, tid);
+    if bind < 0 {
+        return bind;
+    }
+    // The ordinary export writes syscall failures to the response header and
+    // consumes task binding, including when record validation fails.
+    let syscall = unsafe { ((scratch_ptr + channel::SYSCALL_OFFSET) as *const u32).read_unaligned() };
+    let capture = syscalls::stat_lease::begin(u32::from_le(syscall), deliver);
+    kernel_handle_channel_record(scratch_ptr, capacity, pid);
+    drop(capture);
+    let exit = kernel_get_process_exit_signal(pid);
+    if exit > 0 {
+        return RECORD_COMPLETION_EXIT + exit;
+    }
+    if deliver == 0 {
+        return 0;
+    }
+    kernel_dequeue_signal(
+        pid,
+        tid,
+        (scratch_ptr + channel::SIG_BASE) as *mut u8,
+        kernel_scratch_wire::SIGNAL_DELIVERY_BYTES,
     )
 }
 
@@ -19188,6 +19335,47 @@ pub extern "C" fn kernel_drain_fs_changes(out_ptr: *mut u8, out_len: u32) -> i32
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     match crate::fs_changes::drain(out) {
         Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// The mounted KIFS format version, or zero when no KIFS image or volume is mounted.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_format_version() -> u32 {
+    crate::rootfs::mounted_format_version().unwrap_or(0)
+}
+
+/// Whether the active root filesystem can certify cached stat results.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_supports_stat_lease() -> i32 {
+    i32::from(crate::rootfs::is_enabled() && crate::rootfs::supports_stat_certification())
+}
+
+/// Take the certificate for the exact successful stat record request.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_stat_lease(
+    out_ptr: *mut u8,
+    capacity: u32,
+    pid: u32,
+    tid: u32,
+    syscall: u32,
+) -> i32 {
+    let len = capacity as usize;
+    if len != wasm_posix_shared::stat_cache_wire::BYTES
+        || out_ptr.is_null()
+        || (out_ptr as usize).checked_add(len).is_none()
+    {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else {
+        return 0;
+    };
+    let output = unsafe { core::slice::from_raw_parts_mut(out_ptr, len) };
+    match syscalls::stat_lease::take(proc, tid, syscall, output) {
+        Ok(true) => capacity as i32,
+        Ok(false) => 0,
         Err(error) => -(error as i32),
     }
 }

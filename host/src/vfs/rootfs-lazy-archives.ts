@@ -189,7 +189,7 @@ function report(
  * failed guest read never starts an unbounded new fetch.
  */
 export function buildRootfsLazyWiring(
-  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array | DeferredByteSource>,
+  fetcher: (url: string, onProgress?: DeferredByteProgress, size?: number) => Promise<Uint8Array | DeferredByteSource>,
   onProgress?: DeferredProgress,
   metadataBudget = new StorageMemoryBudget(),
 ): {
@@ -197,6 +197,7 @@ export function buildRootfsLazyWiring(
     uri: string,
     offset: bigint,
     dest: Uint8Array,
+    size?: number,
   ) => number;
   /**
    * A promise that settles the next time a fetch in flight settles, or `null`
@@ -229,6 +230,7 @@ export function buildRootfsLazyWiring(
     uri: string,
     offset: bigint,
     dest: Uint8Array,
+    size?: number,
   ): number => {
     // An empty address is the kernel telling us the image declared none. There
     // is no table to guess from, and guessing would make the host a second
@@ -265,7 +267,7 @@ export function buildRootfsLazyWiring(
       const settled = fetchDeferred(uri, fetcher, (loadedBytes, totalBytes) => {
         if (disposed) return;
         report(onProgress, { ...base, status: "progress", loadedBytes, totalBytes });
-      }).then((bytes) => {
+      }, size).then((bytes) => {
         if (disposed) return;
         if (bytes === undefined) {
           slots.set(uri, { state: "failed", errno: EIO });
@@ -304,6 +306,10 @@ export function buildRootfsLazyWiring(
     if (slot.state === "pending") return EAGAIN;
     if (slot.state === "failed") return slot.errno;
 
+    // A URI can be named by multiple inodes. Compare the complete cached
+    // response with this inode's declaration before copying even one byte.
+    const length = slot.bytes instanceof Uint8Array ? slot.bytes.byteLength : slot.bytes.length;
+    if (size !== undefined && size !== length) return EIO;
     const at = Number(offset);
     if (!Number.isSafeInteger(at) || at < 0) return EIO;
     if (!(slot.bytes instanceof Uint8Array)) {
@@ -389,9 +395,10 @@ export async function waitForDeferredFetch(
  */
 async function fetchDeferred(
   uri: string,
-  fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array | DeferredByteSource>,
+  fetcher: (url: string, onProgress?: DeferredByteProgress, size?: number) => Promise<Uint8Array | DeferredByteSource>,
   onProgress: DeferredByteProgress,
+  size?: number,
 ): Promise<Uint8Array | DeferredByteSource | undefined> {
   // Preserve the actual rejection for the provider's diagnostic.
-  return fetcher(uri, onProgress);
+  return fetcher(uri, onProgress, size);
 }

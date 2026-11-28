@@ -10,7 +10,6 @@ import { ERRNO } from "../../../../../host/src/generated/abi";
 import { ImageManifestMemoryScope, imageJsonOperationMemory, MAX_IMAGE_MANIFEST_BYTES } from "../../../../../host/src/vfs/image-manifest-memory";
 import { StorageMemoryBudget, storageMetadataError } from "../../../../../host/src/vfs/storage-memory-budget";
 import { selectImageBinding, validateImageBindingState, UnprovenImageFreshnessError, type ImageBindingIdentity, type ImageBindingState, type ImageBindingPolicyCall } from "../../../../../host/src/vfs/image-binding-state";
-import { parseSealedGenerationSlot } from "../../../../../host/src/vfs/overlay-generation-seal";
 export { UnprovenImageFreshnessError } from "../../../../../host/src/vfs/image-binding-state";
 import { sha256 as incrementalSha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -448,7 +447,7 @@ async function selectSavedImage(
   let saved: SavedImage;
   try {
     saved = await openSavedImage(parent, name, metadata);
-    if (plan.repair) await verifySavedBinding(parent, saved);
+    if (plan.repair) await verifySavedBinding(saved);
   } catch (error) {
     if (!isImageMetadataDamage(error)) throw error;
     if (choice !== "target" || active.value?.state.phase !== "prepared" || active.value.source === null) {
@@ -457,7 +456,7 @@ async function selectSavedImage(
     choice = "source";
     metadata = active.value.source;
     saved = await openSavedImage(parent, name, metadata);
-    await verifySavedBinding(parent, saved);
+    await verifySavedBinding(saved);
   }
   return { saved, repair: plan.repair || choice === "source", choice };
 }
@@ -470,14 +469,15 @@ async function readSavedImage(
 }
 
 async function verifySavedBinding(
-  parent: FileSystemDirectoryHandle,
   saved: NonNullable<Awaited<ReturnType<typeof readSavedImageAt>>>,
+  requireJournal = saved.manifest.journalInitialized,
 ): Promise<string> {
   const { manifest, imageFile } = saved;
   let geometry: { payloadLength: number };
   try {
     geometry = await inspectPersistentImageFile(imageFile, await loadPositionedImageWriterModuleBytes(),
-      manifest.length, manifest.imageIdentitySha256!, manifest.integrityPolicy);
+      manifest.length, manifest.imageIdentitySha256!, manifest.integrityPolicy,
+      { journalName: requireJournal ? manifest.journalName : undefined });
   } catch (error) {
     const errno = (error as { errno?: number } | null)?.errno;
     if (errno === ERRNO.EIO || errno === ERRNO.EINVAL) {
@@ -487,9 +487,6 @@ async function verifySavedBinding(
   }
   if (geometry.payloadLength !== manifest.payloadLength) {
     throw new Error("experimental persistence image geometry is damaged; refusing to boot");
-  }
-  if (manifest.journalInitialized) {
-    await verifyJournalHeader(parent, manifest.journalName!, manifest.imageIdentitySha256!);
   }
   return manifest.imageIdentitySha256!;
 }
@@ -572,7 +569,7 @@ export async function loadFixedPersistenceImageHandle(
     const selected = await selectSavedImage(parent, name, identity);
     if (selected === null) return null;
     let handle: FixedPersistenceImageHandle | null;
-    try { handle = await imageHandleFromSaved(parent, name, selected.saved); }
+    try { handle = await imageHandleFromSaved(name, selected.saved); }
     catch (error) {
       if (!isImageMetadataDamage(error)) throw error;
       throw new UnprovenImageFreshnessError(undefined, { cause: error });
@@ -600,8 +597,8 @@ export async function loadPreviousFixedPersistenceImageHandle(
     const target = await openSavedImage(parent, name, active.target);
     if (!(await target.imageFile.isSameEntry(failed.file))) return null;
     const source = await openSavedImage(parent, name, active.source);
-    await verifySavedBinding(parent, source);
-    const handle = await imageHandleFromSaved(parent, name, source);
+    await verifySavedBinding(source);
+    const handle = await imageHandleFromSaved(name, source);
     if (handle !== null) handle.recovery = await recoverySelection(parent, name, source, "source");
     return handle;
   });
@@ -628,7 +625,7 @@ async function normalizeSavedManifest(
   identity: string,
   saved: SavedImage,
 ): Promise<ImageManifest> {
-  const handle = await imageHandleFromSaved(parent, name, saved);
+  const handle = await imageHandleFromSaved(name, saved);
   if (handle === null) throw new UnprovenImageFreshnessError("Persistent image has no verified boot metadata");
   return manifestForStagedImage(name, identity, handle, saved.manifest.journalInitialized === true);
 }
@@ -640,7 +637,7 @@ async function commitImageSelection(
   saved: SavedImage,
   assertCurrent?: () => void,
 ): Promise<void> {
-  await verifySavedBinding(parent, saved);
+  await verifySavedBinding(saved);
   const names = fileNames(name);
   const manifest = await normalizeSavedManifest(parent, name, identity, saved);
   const metadata = await validateImageManifest(name, identity, manifest);
@@ -704,14 +701,14 @@ export async function promoteFixedPersistenceRecovery(
   });
 }
 async function imageHandleFromSaved(
-  parent: FileSystemDirectoryHandle,
   name: string,
   saved: NonNullable<Awaited<ReturnType<typeof readSavedImageAt>>>,
+  requireJournal = saved.manifest.journalInitialized,
 ): Promise<FixedPersistenceImageHandle | null> {
   if (saved.composition === undefined || !saved.lazyAssetsRecorded) {
     throw new Error("experimental persistence base image lacks boot metadata; refusing to boot");
   }
-  const imageIdentitySha256 = await verifySavedBinding(parent, saved);
+  const imageIdentitySha256 = await verifySavedBinding(saved, requireJournal);
   return {
     file: saved.imageFile,
     imageFileName: saved.manifest.imageFileName,
@@ -749,8 +746,7 @@ export async function markFixedPersistenceJournalInitialized(
       if (selected!.repair) await commitImageSelection(parent, name, identity, saved);
       return;
     }
-    await verifyJournalHeader(parent, installed.journalName, saved.manifest.imageIdentitySha256!);
-    const handle = await imageHandleFromSaved(parent, name, saved);
+    const handle = await imageHandleFromSaved(name, saved, true);
     if (handle === null) throw new UnprovenImageFreshnessError();
     const manifest = await manifestForStagedImage(name, identity, handle, true);
     await writeManifest(parent, names.previousManifest, manifest);
@@ -764,30 +760,6 @@ export async function markFixedPersistenceJournalInitialized(
       throw new Error("experimental persistence journal initialization was not published");
     }
   });
-}
-async function verifyJournalHeader(
-  parent: FileSystemDirectoryHandle,
-  journalName: string,
-  imageIdentitySha256: string,
-): Promise<void> {
-  const matches = async (fileName: string): Promise<boolean> => {
-    const file = await existingFile(parent, fileName);
-    const journal = file === null ? null : await file.getFile();
-    if (journal === null || journal.size < 72) return false;
-    const header = new Uint8Array(await journal.slice(0, 72).arrayBuffer());
-    return header.byteLength === 72 && new TextDecoder().decode(header.subarray(0, 4)) === "KOVL"
-      && new DataView(header.buffer).getUint32(4, true) === 1
-      && bytesToHex(header.subarray(8, 40)) === imageIdentitySha256
-      && await sha256(header.subarray(0, 40)) === bytesToHex(header.subarray(40, 72));
-  };
-  if (await matches(journalName + ".journal")) return;
-  const prefix = journalName + ".";
-  for await (const fileName of parent.keys()) {
-    if (!fileName.startsWith(prefix) || !fileName.endsWith(".journal")) continue;
-    const slot = fileName.slice(prefix.length, -".journal".length);
-    if (parseSealedGenerationSlot(slot) !== null && await matches(fileName)) return;
-  }
-  throw new Error("experimental persistence journal does not belong to this image or is not initialized");
 }
 async function writeFixedPersistenceImageStream(
   name: string,

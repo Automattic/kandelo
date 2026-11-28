@@ -1,3 +1,5 @@
+import { CERT_BYTES, importsStatCache, StatLeasePublisher, type StatLeaseBinding } from "./stat-lease";
+import { RECORD_COMPLETION_EXIT } from "./generated/abi";
 import { createGroupedWorkerCancellation } from './grouped-worker-initialization';
 import { assertInitialExecutionBackend, type ExecutionBackend } from './execution-backend';
 import { sharedMemoryProgramPath, memoryGroupSourceDigest } from './shared-memory-program';
@@ -26,6 +28,7 @@ import { MEMORY_GROUP_MAXIMUM_PAGES, MEMORY_GROUP_SECTION } from "./generated/pr
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
+import { hostFilePositionToSafeNumber } from "./file-offset";
 import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba, ScanoutEncoding } from "./dri/scanout-format";
 import { kmsCrtcOutput, type KmsGamma } from "./dri/kms-gamma";
@@ -65,8 +68,12 @@ import { isProcessMemoryCreatorAdmissionClosed } from "./process-memory-creator-
 import { selectRootfsHostMetadataBytes, selectRootfsIoBytes, selectRootfsJournalStateBytes, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
 import { StorageMemoryBudget, type StorageMetadataMap } from "./vfs/storage-memory-budget";
 import { persistentImageIdentityWords, snapshotPersistentImageReadBinding, type PersistentImageReadBinding } from "./vfs/image-integrity";
-import { RejectedOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { bootOverlayPersistence, bootResizableComputer, liveKifsCompactor, type SavedKifsGeneration, type PersistenceBootReport, RejectedOverlayGenerationError, type OverlayGenerationFiles, type SavedKifsProfile } from "./vfs/overlay-generation-selection";
 import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
+import {
+  hashStagedRootfsImage, materializeTemporaryImage, writeAndVerifyRootfsImage,
+  type StagedRootfsImageStorage, type StagedRootfsImageProgress, type TemporaryImageStorage,
+} from "./vfs/staged-rootfs-image";
 import { createOverlayActivationCodec, type OverlayActivationCodec } from "./vfs/overlay-activation-codec";
 import { createOverlaySealCodec, type OverlaySealCodec } from "./vfs/overlay-seal-codec";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
@@ -2031,7 +2038,13 @@ function encodeStdioKind(kind: RegisterProcessStdioKind): number {
 
 type ChannelOutputWrite = { ptr: number; bytes: Uint8Array };
 
+interface StatLeaseRequest {
+  token: bigint;
+  tid: number;
+}
+
 interface PreparedChannelCompletion {
+  statLease?: { token: bigint; ticket: object; bytes: Uint8Array };
   kind: "marshalled" | "raw";
   outputWrites: ChannelOutputWrite[];
   retVal: ChannelScalarValue;
@@ -3172,6 +3185,46 @@ export class CentralizedKernelWorker {
 
   #kernel: WasmPosixKernel;
   #kernelEntryGate: KernelEntryGate;
+  #statLeasePublisher?: StatLeasePublisher;
+  #statLeaseSupported = false;
+  #statLeaseToken = 0n;
+  #statLeaseBindings = new WeakMap<WebAssembly.Memory, { pid: number; token: bigint }>();
+
+  #statLeaseTokenFor(pid: number, memory: WebAssembly.Memory): bigint | undefined {
+    const binding = this.#statLeaseBindings.get(memory);
+    return binding?.pid === pid ? binding.token : undefined;
+  }
+
+  #revokeStatLeaseBinding(pid: number, memory: WebAssembly.Memory): void {
+    if (this.#statLeaseTokenFor(pid, memory) === undefined) return;
+    this.#statLeaseBindings.delete(memory);
+    this.#statLeasePublisher?.close();
+  }
+
+  createStatLeaseBinding(
+    pid: number,
+    memory: WebAssembly.Memory,
+    ptrWidth: 4 | 8,
+    module: WebAssembly.Module | undefined,
+  ): StatLeaseBinding | undefined {
+    if (!this.#statLeaseSupported || ptrWidth !== 4 || !module || !importsStatCache(module)
+        || this.#statLeaseToken >= (1n << 64n) - 1n) return;
+    if (!this.#statLeasePublisher) {
+      try {
+        this.#statLeasePublisher = new StatLeasePublisher();
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+        this.#statLeaseSupported = false;
+        return;
+      }
+      this.#kernelEntryGate.setStatLeaseFence(() => this.#statLeasePublisher?.close());
+    }
+    this.#statLeasePublisher.close();
+    const token = ++this.#statLeaseToken;
+    this.#statLeaseBindings.set(memory, { pid, token });
+    return { buffer: this.#statLeasePublisher.buffer, token };
+  }
+
   #kernelInstance: WebAssembly.Instance | null = null;
   #kernelMemory: WebAssembly.Memory | null = null;
   #kernelPointerWidth: 4 | 8 = 4;
@@ -3194,6 +3247,7 @@ export class CentralizedKernelWorker {
       uri: string,
       offset: bigint,
       dest: Uint8Array,
+      size: number,
     ) => number)
     | null = null;
   /**
@@ -3241,7 +3295,15 @@ export class CentralizedKernelWorker {
    * reader remains available after load for image-backed file content.
    */
   #rootfsImageLength = 0;
+  #rootfsFormatVersion: number | undefined;
   #rootfsPersistentImageBinding: PersistentImageReadBinding | null = null;
+  #rootfsWritebackTimer?: ReturnType<typeof setInterval>;
+  #positionedRootfs: {
+    storage: PersistentOverlayStorage;
+    identity: readonly number[];
+    snapshot: "positioned" | "container";
+    writebackIntervalMs: number;
+  } | null = null;
   /**
    * A positioned reader over the `/` image, in container coordinates. The
    * worker entry backs it with memory or a positioned storage handle.
@@ -5533,9 +5595,11 @@ export class CentralizedKernelWorker {
   }
 
   #failKernelInstance(error: Error): void {
+    this.#statLeasePublisher?.close();
     if (this.#kernelFatalError !== null) return;
     this.#kernelEntryGate.fail(error);
     this.#kernelFatalError = error;
+    this.stopRootfsWriteback();
     this.#httpAdmission.close(error);
     for (const refuse of this.#httpRequests) refuse(error);
     this.#initialized = false;
@@ -5594,6 +5658,7 @@ export class CentralizedKernelWorker {
       uri: string,
       offset: bigint,
       dest: Uint8Array,
+      size: number,
     ) => number,
     foreignMountPrefixes: string[] | undefined,
     rootNosuid: boolean | undefined,
@@ -5610,13 +5675,8 @@ export class CentralizedKernelWorker {
     persistentImageBinding?: PersistentImageReadBinding,
   ): void {
     const binding = persistentImageBinding === undefined ? null : snapshotPersistentImageReadBinding(persistentImageBinding);
-    this.#rootfsTransportDispose?.();
-    this.#rootfsTransportDispose = deferredDispose;
-    this.#rootfsDeferredProvider = deferredProvider;
-    this.#rootfsDeferredSettled = deferredSettled ?? null;
-    this.#rootfsDeferredInvalidator = deferredInvalidator;
-    this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
-    this.#rootfsNosuid = rootNosuid === true;
+    this.configureRootfsTransport(deferredProvider, foreignMountPrefixes, rootNosuid, deferredSettled,
+      deferredInvalidator, deferredDispose);
     if (!Number.isSafeInteger(imageLength) || imageLength <= 0) {
       throw new Error("rootfs image length must be a positive safe integer");
     }
@@ -5625,8 +5685,90 @@ export class CentralizedKernelWorker {
     this.#rootfsPersistentImageBinding = binding;
   }
 
+  configureRootfsTransport(
+    deferredProvider: (uri: string, offset: bigint, destination: Uint8Array, size: number) => number,
+    foreignMountPrefixes: string[] | undefined,
+    rootNosuid: boolean | undefined,
+    deferredSettled?: DeferredFetchSettled,
+    deferredInvalidator?: (uri: string) => void,
+    deferredDispose?: () => void,
+  ): void {
+    this.#rootfsTransportDispose?.();
+    this.#rootfsTransportDispose = deferredDispose;
+    this.#rootfsDeferredProvider = deferredProvider;
+    this.#rootfsDeferredSettled = deferredSettled ?? null;
+    this.#rootfsDeferredInvalidator = deferredInvalidator;
+    this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
+    this.#rootfsNosuid = rootNosuid === true;
+  }
+
   rootfsTransportMetadataBudget(): StorageMemoryBudget {
     return this.#rootfsTransportMetadata;
+  }
+
+  bootComputerPersistence(
+    files: OverlayGenerationFiles, resizable: boolean, requireExisting: boolean | undefined,
+    report: PersistenceBootReport, profile: SavedKifsProfile | undefined, afterLegacyMount: () => void,
+  ) {
+    if (resizable) return bootResizableComputer(this, files, requireExisting, profile,
+      this.#rootfsPersistentImageBinding?.identitySha256, report, afterLegacyMount);
+    if (profile !== undefined) throw new Error("KIFS upgrade requires a resizable computer");
+    return bootOverlayPersistence(this, files, false, requireExisting, report);
+  }
+
+  loadConfiguredRootfs(): void {
+    let failure: Error | undefined;
+    this.#runImmediateKernelEntry("mount selected boot filesystem", entry => {
+      failure = this.#maybeLoadKernelRootfs(this.#kernelInstanceForEntry(entry));
+    });
+    if (failure !== undefined) throw failure;
+  }
+
+  mountSavedKifsV3(storage: PersistentOverlayStorage, identity: string): void {
+    this.configureKifsV3Root(storage, identity, this.#rootfsNosuid);
+    this.loadConfiguredRootfs();
+    this.#kernel.setPersistentOverlayTargetStorage(null);
+    this.#kernel.setPersistentOverlayCompactionStorage(null);
+    this.#persistentOverlayActiveStorage = null;
+    this.#persistentOverlayIndexSlot = null;
+  }
+
+  configureKifsV3Root(
+    storage: PersistentOverlayStorage,
+    identity: string,
+    nosuid: boolean,
+  ): void {
+    this.#positionedRootfs = {
+      storage,
+      identity: persistentImageIdentityWords(identity),
+      snapshot: "positioned",
+      writebackIntervalMs: 2000,
+    };
+    this.#rootfsNosuid = nosuid;
+  }
+
+  hasRootfs(): boolean {
+    return this.#rootfsImageLength !== 0 || this.#positionedRootfs !== null;
+  }
+
+  getRootfsFormatVersion(): number | undefined {
+    return this.#rootfsFormatVersion;
+  }
+
+  startRootfsWriteback(): void {
+    const interval = this.#positionedRootfs?.writebackIntervalMs;
+    if (interval === undefined || this.#rootfsWritebackTimer !== undefined) return;
+    this.#rootfsWritebackTimer = this.#registerInterval(() => {
+      try { this.syncRootfsPersistence(); }
+      catch (error) {
+        this.callbacks.onHostDiagnostic?.({ pid: 0, source: "Persistent rootfs", message: `rootfs writeback failed: ${error}` });
+      }
+    }, interval);
+  }
+
+  stopRootfsWriteback(): void {
+    if (this.#rootfsWritebackTimer !== undefined) this.#cancelRegisteredInterval(this.#rootfsWritebackTimer);
+    this.#rootfsWritebackTimer = undefined;
   }
 
   disposeRootfsDeferredTransport(): void {
@@ -5831,6 +5973,88 @@ export class CentralizedKernelWorker {
     return slot;
   }
 
+  stageSavedKifsV3(target: PersistentOverlayStorage, identity: string, developmentVolume: boolean): void {
+    if (this.#persistentOverlayActiveStorage === null || this.#preparedOverlayImportSlot !== null) {
+      throw new Error("KIFS upgrade requires a mounted journal without a pending handoff");
+    }
+    const targetSlot = this.#freePersistentOverlaySlot();
+    const words = persistentImageIdentityWords(identity);
+    const profile = developmentVolume ? 1 : 0;
+    const observed = { failure: null as { cause: unknown } | null };
+    let status: number | undefined;
+    this.#setPersistentOverlaySlot(targetSlot, this.#monitorPersistentOverlayStorage(target, observed));
+    try {
+      this.#runImmediateKernelEntry("stage and trial saved KIFS volume", entry => {
+        const stage = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_stage_saved_kifs_v3;
+        if (typeof stage !== "function") throw new Error("kernel lacks saved KIFS upgrade support");
+        status = stage(targetSlot, profile, ...words);
+      });
+    } finally { this.#setPersistentOverlaySlot(targetSlot, null); }
+    if (observed.failure !== null) throw observed.failure.cause;
+    if (status !== 0) {
+      const errno = -(status ?? -ERRNO.EIO);
+      throw new KernelScratchError(`KIFS upgrade staging failed (errno ${errno})`, errno);
+    }
+  }
+
+  createLiveKifsCompactor(
+    active: SavedKifsGeneration, files: OverlayGenerationFiles,
+    onGeneration: (volume: PersistentOverlayStorage) => void, onError: (error: unknown) => void,
+  ) {
+    return liveKifsCompactor(active, files, this, onGeneration, onError);
+  }
+
+  kifsCompactionNeeded(): boolean {
+    let result = false;
+    this.#runImmediateKernelEntry("check KIFS compaction", entry => {
+      const needed = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_kifs_compaction_needed;
+      if (typeof needed !== "function") throw new Error("kernel lacks KIFS compaction support");
+      const status = needed();
+      if (status < 0) throw new KernelScratchError("KIFS compaction check failed", -status);
+      result = status === 1;
+    });
+    return result;
+  }
+
+  prepareKifsHandoff(target: PersistentOverlayStorage, identity: string): void {
+    const words = persistentImageIdentityWords(identity);
+    const observed = { failure: null as { cause: unknown } | null };
+    this.#kernel.setPersistentOverlayTargetStorage(this.#monitorPersistentOverlayStorage(target, observed));
+    try {
+      let status: number = -ERRNO.EIO;
+      this.#runImmediateKernelEntry("prepare KIFS handoff", entry => {
+        const prepare = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_prepare_kifs_handoff;
+        if (typeof prepare !== "function") throw new Error("kernel lacks KIFS generation handoff");
+        status = prepare(...words);
+      });
+      if (observed.failure !== null) throw observed.failure.cause;
+      if (status !== 0) throw new KernelScratchError("KIFS compaction preparation failed", -status);
+    } finally { this.#kernel.setPersistentOverlayTargetStorage(null); }
+  }
+
+  cancelKifsHandoff(): void {
+    this.#runImmediateKernelEntry("cancel KIFS handoff", entry => {
+      const cancel = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_cancel_kifs_handoff;
+      if (typeof cancel !== "function") throw new Error("kernel lacks KIFS generation handoff");
+      const status = cancel();
+      if (status !== 0) throw new KernelScratchError("KIFS handoff cancellation failed", -status);
+    });
+  }
+
+  activateKifsHandoff(target: PersistentOverlayStorage, identity: string): void {
+    const volume = this.#positionedRootfs;
+    if (volume === null) throw new Error("KIFS generation handoff requires a mounted volume");
+    const words = persistentImageIdentityWords(identity);
+    this.#runImmediateKernelEntry("activate KIFS handoff", entry => {
+      const activate = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_activate_kifs_handoff;
+      if (typeof activate !== "function") throw new Error("kernel lacks KIFS generation handoff");
+      this.#kernel.setPersistentOverlayStorage(target);
+      const status = activate();
+      if (status !== 0) throw new KernelScratchError("KIFS handoff activation failed", -status);
+      this.#positionedRootfs = { ...volume, storage: target, identity: words };
+    });
+  }
+
   prepareRootfsPersistenceCompaction(target: PersistentOverlayStorage): void {
     if (this.#preparedOverlayImportSlot !== null) throw new Error("rootfs persistence compaction is already prepared");
     const targetSlot = this.#freePersistentOverlaySlot();
@@ -5931,7 +6155,7 @@ export class CentralizedKernelWorker {
   }
 
   syncRootfsPersistence(): void {
-    if (this.#rootfsImageLength === 0) return;
+    if (!this.hasRootfs()) return;
     let status: number | undefined;
     this.#runImmediateKernelEntry("sync rootfs persistence", (entry) => {
       const sync = this.#kernelInstanceForEntry(entry).exports
@@ -5987,11 +6211,14 @@ export class CentralizedKernelWorker {
    * become a `/`-less boot: it throws, and the boot fails at the real cause.
    */
   #maybeLoadKernelRootfs(instance: WebAssembly.Instance): Error | undefined {
+    this.#statLeaseSupported = false;
+    this.#rootfsFormatVersion = undefined;
     const imageLength = this.#rootfsImageLength;
     const imageRead = this.#rootfsImageRead;
     const provider = this.#rootfsDeferredProvider;
-    if (imageLength === 0 || provider === null) return;
-    if (imageRead === null) throw new Error("rootfs image has no byte reader");
+    const volume = this.#positionedRootfs;
+    if (volume === null && (imageLength === 0 || provider === null)) return;
+    if (volume === null && imageRead === null) throw new Error("rootfs image has no byte reader");
     const memory = this.#kernelMemory;
     if (memory === null) return;
 
@@ -6054,17 +6281,29 @@ export class CentralizedKernelWorker {
 
     // The image byte window is installed FIRST, because
     // `kernel_rootfs_load_image` calls straight back out through it.
-    this.#kernel.setRootfsImageProvider((offset, dest) => {
-      const start = Number(offset);
-      if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
-      if (start >= imageLength) return 0; // end of image
-      return imageRead(start, dest);
-    });
+    if (imageRead !== null) {
+      this.#kernel.setRootfsImageProvider((offset, dest) => {
+        const start = Number(offset);
+        if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
+        if (start >= imageLength) return 0; // end of image
+        return imageRead(start, dest);
+      });
+    }
     const imageLenLo = imageLength >>> 0;
     const imageLenHi = Math.floor(imageLength / 0x1_0000_0000);
     let loaded: number;
     const binding = this.#rootfsPersistentImageBinding;
-    if (binding === null) {
+    if (volume !== null) {
+      const mountVolume = instance.exports.kernel_rootfs_mount_kifs_v3 as
+        ((...identity: number[]) => number) | undefined;
+      if (typeof mountVolume !== "function") return new Error("kernel lacks KIFS v3 root support");
+      this.#kernel.setPersistentOverlayStorage(volume.storage);
+      loaded = mountVolume(...volume.identity);
+      if (loaded < 0) {
+        this.#kernel.setPersistentOverlayStorage(null);
+        return Object.assign(new Error(`kernel refused the KIFS v3 root volume (errno ${-loaded})`), { errno: -loaded });
+      }
+    } else if (binding === null) {
       loaded = loadImage(imageLenLo, imageLenHi);
     } else {
       const loadPersistentImage = instance.exports.kernel_rootfs_load_persistent_image as
@@ -6094,8 +6333,10 @@ export class CentralizedKernelWorker {
           : "";
       return Object.assign(new Error(`kernel refused the \`/\` VFS image (errno ${-loaded})${hint}`), { errno: -loaded });
     }
-    this.#kernel.setRootfsDeferredProvider(provider);
-    this.#kernel.setRootfsDeferredInvalidator(this.#rootfsDeferredInvalidator);
+    if (provider !== null) {
+      this.#kernel.setRootfsDeferredProvider(provider);
+      this.#kernel.setRootfsDeferredInvalidator(this.#rootfsDeferredInvalidator);
+    }
     // Tell the overlay which sibling mounts still live under `/` so it does not
     // greedily claim their paths (which would shadow session-seed host mounts
     // and extra HostFileSystem mounts, since the overlay is the sole `/`
@@ -6128,6 +6369,14 @@ export class CentralizedKernelWorker {
       setNosuid(this.#rootfsNosuid ? 1 : 0);
     }
     enable(1);
+    const rootfsFormatVersion = instance.exports.kernel_rootfs_format_version;
+    if (typeof rootfsFormatVersion === "function") {
+      this.#rootfsFormatVersion = rootfsFormatVersion() >>> 0 || undefined;
+    }
+    const supportsStatLease = instance.exports.kernel_rootfs_supports_stat_lease;
+    this.#statLeaseSupported = typeof supportsStatLease === "function"
+      && typeof instance.exports.kernel_rootfs_stat_lease === "function"
+      && supportsStatLease() === 1;
 
     // The positioned reader remains installed for image-backed files and
     // the fixed-persistence digest of the complete container.
@@ -6308,6 +6557,13 @@ export class CentralizedKernelWorker {
     return output;
   }
 
+  async exportRootfsImageBytes(openTemporary: () => TemporaryImageStorage | Promise<TemporaryImageStorage>) {
+    if (this.#positionedRootfs?.snapshot === "positioned") {
+      return materializeTemporaryImage(await openTemporary(), storage => this.writeRootfsImageTo(storage));
+    }
+    return this.rootfsExportContainerRead();
+  }
+
   /**
    * Stream the FINISHED `/` image the overlay would export.
    *
@@ -6349,6 +6605,41 @@ export class CentralizedKernelWorker {
 
   rootfsExportContainerVisitBorrowed(visit: (offset: number, bytes: Uint8Array) => void): number {
     return this.#rootfsExportContainerVisit(visit, true);
+  }
+
+  writeRootfsImageTo(storage: StagedRootfsImageStorage, onProgress?: (progress: StagedRootfsImageProgress) => void) {
+    if (this.#positionedRootfs?.snapshot !== "positioned") {
+      return writeAndVerifyRootfsImage(visit => this.rootfsExportContainerVisitBorrowed(visit), storage, onProgress);
+    }
+    if (storage.getSize() !== 0) throw new Error("rootfs snapshot requires an empty staging file");
+    onProgress?.({ phase: "writing", completed: 0 });
+    const observed = { failure: null as { cause: unknown } | null };
+    this.#kernel.setPersistentOverlayTargetStorage(this.#monitorPersistentOverlayStorage({
+      len: () => storage.getSize(),
+      readExactAt: (offset, bytes) => storage.readExactAt(hostFilePositionToSafeNumber(offset), bytes),
+      writeAllAt: (offset, bytes) => storage.writeAllAt(hostFilePositionToSafeNumber(offset), bytes),
+      truncate: length => storage.setSize(hostFilePositionToSafeNumber(length)),
+      flush: () => storage.flush(),
+      close() {}, // The host owns the staging file for the full snapshot.
+    }, observed));
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("write positioned rootfs snapshot", entry => {
+        const compact = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_compact_kifs_v3;
+        if (typeof compact !== "function") throw new Error("kernel lacks positioned rootfs snapshot support");
+        status = compact();
+      });
+    } finally {
+      this.#kernel.setPersistentOverlayTargetStorage(null);
+    }
+    if (observed.failure !== null) throw observed.failure.cause;
+    if (status !== 0) {
+      const errno = -(status ?? -ERRNO.EIO);
+      throw new KernelScratchError(`rootfs snapshot failed (errno ${errno})`, errno);
+    }
+    const length = storage.getSize();
+    onProgress?.({ phase: "writing", completed: length, total: length });
+    return hashStagedRootfsImage(storage, length, onProgress);
   }
 
   #rootfsExportContainerVisit(visit: (offset: number, bytes: Uint8Array) => void, borrowed: boolean): number {
@@ -6530,7 +6821,7 @@ export class CentralizedKernelWorker {
       },
     );
     if (failErrno !== 0) {
-      throw new KernelScratchError("rootfs write failed", failErrno);
+      throw new KernelScratchError(`rootfs write failed: ${path} (errno ${failErrno})`, failErrno);
     }
   }
 
@@ -6940,7 +7231,7 @@ export class CentralizedKernelWorker {
    * Initialize the kernel.
    * Loads kernel Wasm and validates the host adapter ABI.
    */
-  async init(kernelWasmBytes: BufferSource): Promise<void> {
+  async init(kernelWasmBytes: BufferSource, deferRootfsMount = false): Promise<void> {
     if (this.#kernelFatalError !== null) {
       throw new Error("cannot reinitialize a failed kernel worker");
     }
@@ -7025,7 +7316,7 @@ export class CentralizedKernelWorker {
         // Hand scratch-mount ownership to the in-kernel tmpfs, and the `/`
         // tree to the in-kernel rootfs, before any guest filesystem op runs.
         enableKernelTmpfs(instance);
-        rootfsLoadFailure = this.#maybeLoadKernelRootfs(instance);
+        if (!deferRootfsMount) rootfsLoadFailure = this.#maybeLoadKernelRootfs(instance);
         if (rootfsLoadFailure !== undefined) return undefined;
         this.#initExchange(instance);
 
@@ -11085,6 +11376,7 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
+    this.#revokeStatLeaseBinding(pid, registration.memory);
 
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
@@ -11610,6 +11902,7 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
+    this.#revokeStatLeaseBinding(pid, registration.memory);
     if (registration.grouped) {
       const reply = registration.grouped.store.retirementControl(registration.grouped.store.receipt(registration.grouped.handle),
         MEMORY_GROUP_PROTOCOL.retirement_control.commands.prepareDeactivation, entry);
@@ -12933,6 +13226,7 @@ export class CentralizedKernelWorker {
       return false;
     }
     if (registration) {
+      this.#revokeStatLeaseBinding(pid, registration.memory);
       this.releaseProcessViews(pid, registration.memory, "exec");
     }
     this.execHandoffExitSignals?.delete(pid);
@@ -17364,7 +17658,7 @@ export class CentralizedKernelWorker {
           retVal = -1;
           publicationRetVal = -1;
           errVal = -flushStatus;
-        } else if ((origArgs[2] & MS_SYNC) !== 0 && this.#rootfsImageLength !== 0) {
+        } else if ((origArgs[2] & MS_SYNC) !== 0 && this.hasRootfs()) {
           const sync = this.#kernelInstanceForEntry(entry).exports
             .kernel_rootfs_sync_persistence as (() => number) | undefined;
           if (typeof sync !== "function") throw new Error("kernel lacks rootfs persistence sync export");
@@ -17712,9 +18006,18 @@ export class CentralizedKernelWorker {
     let rawRetVal = -1n;
     let errVal = EIO;
     let recordOut: Uint8Array | null = null;
-    // Bind before leasing the reusable mailbox, as #executeCapacityOwnedChannel
-    // does: the binding export can invoke synchronous host hooks.
-    this.#bindKernelTidForChannel(channel, entry);
+    // Grouped channels publish signals and results through their Rust-owned
+    // completion protocol. The combined export prepares ordinary memory.
+    const combined = !(channel.source instanceof GroupProcessAddressSpace)
+      && !this.resumePreparedSignals?.has(channel)
+      && typeof this.#kernelInstanceForEntry(entry).exports.kernel_handle_channel_record_complete === "function";
+    const deliver = combined && ((this.activeChannelRequests.get(channel)?.requestFlags
+      ?? new DataView(channel.memory.buffer, channel.channelOffset).getUint32(CH_REQUEST_FLAGS, true))
+      & CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY) === 0;
+    const tid = combined ? this.guestTidForChannel(channel) : 0;
+    let completion = 0;
+    let signalBytes: Uint8Array | undefined;
+    if (!combined) this.#bindKernelTidForChannel(channel, entry);
     this.currentHandlePid = channel.pid;
     try {
       recordOut = this.#requireMainScratchRegion().withLease((lease) => {
@@ -17730,16 +18033,25 @@ export class CentralizedKernelWorker {
         // never mistakes staged or stale data-region bytes for a record. A
         // missing, malformed, or contradictory record comes back as EINVAL in
         // the channel header like any other syscall result.
-        this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_handle_channel_record",
-          [
-            lease.exportPointer(0, CH_TOTAL_SIZE),
-            CH_TOTAL_SIZE,
-            channel.pid,
-          ],
-        );
+        if (combined) {
+          completion = this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            "kernel_handle_channel_record_complete",
+            [lease.exportPointer(0, CH_TOTAL_SIZE), CH_TOTAL_SIZE, channel.pid, tid, Number(deliver)],
+          ) as number;
+          if (completion < 0 || completion >= RECORD_COMPLETION_EXIT) return null;
+          if (completion > 0) {
+            signalBytes = lease.copyOut(CH_SIG_BASE, KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES);
+          }
+        } else {
+          this.#invokeEntryScratchExport(
+            entry,
+            lease,
+            "kernel_handle_channel_record",
+            [lease.exportPointer(0, CH_TOTAL_SIZE), CH_TOTAL_SIZE, channel.pid],
+          );
+        }
         const view = lease.dataView(0, CH_DATA);
         rawRetVal = view.getBigInt64(CH_RETURN, true);
         errVal = view.getUint32(CH_ERRNO, true);
@@ -17783,7 +18095,11 @@ export class CentralizedKernelWorker {
 
     // A terminating signal action may have marked the process dead inside the
     // kernel call; do not post-process an execution that must not resume.
-    if (this.#getProcessExitSignal(channel.pid, entry) > 0) {
+    if (combined && completion < 0) {
+      throw new KernelTaskBindingError(channel.pid, tid, -completion);
+    }
+    // The combined export encodes termination with the signal number.
+    if (combined ? completion > RECORD_COMPLETION_EXIT : this.#getProcessExitSignal(channel.pid, entry) > 0) {
       this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
       return;
     }
@@ -17800,7 +18116,15 @@ export class CentralizedKernelWorker {
 
     // Deliver any pending caught signal into the process channel exactly as the
     // descriptor path does; the guest invokes the handler after waking.
-    this.#dequeueSignalForDelivery(channel, entry);
+    if (!combined) {
+      this.#dequeueSignalForDelivery(channel, entry);
+    } else if (deliver) {
+      const signalArea = new Uint8Array(
+        channel.memory.buffer, channel.channelOffset + CH_SIG_BASE, CH_SIG_AREA_SIZE,
+      );
+      if (signalBytes) signalArea.set(signalBytes);
+      else signalArea.fill(0);
+    }
 
     if (logEntry) {
       console.error(
@@ -17808,6 +18132,10 @@ export class CentralizedKernelWorker {
           + this.formatSyscallReturn(syscallNr, publicationRetVal, normErr),
       );
     }
+    const token = deliver && completion === 0 && rawRetVal === 0n && normErr === 0
+      && (syscallNr === ABI_SYSCALLS.Stat || syscallNr === ABI_SYSCALLS.Lstat || syscallNr === ABI_SYSCALLS.Fstatat)
+      ? this.#statLeaseTokenFor(channel.pid, channel.memory)
+      : undefined;
     this.completeChannel(
       channel,
       syscallNr,
@@ -17818,6 +18146,7 @@ export class CentralizedKernelWorker {
       [],
       undefined,
       entry,
+      token === undefined ? undefined : { token, tid },
     );
   }
 
@@ -17966,6 +18295,7 @@ export class CentralizedKernelWorker {
     detachedOutput?: ChannelOutputWrite[],
     deferredClone?: PreparedChannelCompletion["deferredClone"],
     entry?: KernelWorkerEntryContext,
+    statLeaseRequest?: StatLeaseRequest,
   ): void {
     if (channel.source instanceof GroupProcessAddressSpace && !entry) {
       this.#runOrDeferKernelEntry('grouped syscall completion', next => {
@@ -18092,6 +18422,26 @@ export class CentralizedKernelWorker {
     if (channel.source instanceof GroupProcessAddressSpace) {
       this.#completeGroupChannel(channel, prepared.retVal, prepared.errVal, entry!);
     } else if (entry) {
+      // Certify after wake processing and shared-backing materialization, while
+      // the kernel can still check signal state, scope, and inode generations.
+      const publisher = this.#statLeasePublisher;
+      if (statLeaseRequest && publisher && prepared.errVal === 0
+          && !this.#terminalProcessTeardown && !this.stoppedPids?.has(channel.pid)
+          && !this.pendingResumePids.has(channel.pid) && !this.execHandoffPids.has(channel.pid)
+          && this.isRegisteredChannel(channel)
+          // These processes need the ordinary shared-mapping boundary.
+          && this.sharedMappings.size === 0 && !this.#processOwnsKernelSharedMappings(channel.pid)
+          && publisher.canOffer(statLeaseRequest.token)) {
+        const { token, tid } = statLeaseRequest;
+        this.#requireMainScratchRegion().withLease(lease => {
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_stat_lease", [
+            lease.exportPointer(0, CERT_BYTES), CERT_BYTES, channel.pid, tid, syscallNr,
+          ]);
+          if (count === CERT_BYTES) {
+            prepared.statLease = { token, ticket: publisher.prepareTicket(), bytes: lease.copyOut(0, CERT_BYTES) };
+          }
+        });
+      }
       // WHY: Atomics.notify releases guest execution and relistening can invoke
       // host scheduling hooks. The kernel wake snapshot is already owned, so
       // publish only after the scoped capability is revoked.
@@ -18172,6 +18522,15 @@ export class CentralizedKernelWorker {
     // dequeue another signal after this boundary has actually been observed.
     this.resumePreparedSignals?.delete(channel);
     this.#noteGuestMayRun(channel.source);
+    const statLease = prepared.statLease;
+    if (statLease) {
+      const publisher = this.#statLeasePublisher;
+      if (publisher?.ticket() === statLease.ticket && this.isRegisteredChannel(channel)
+          && prepared.errVal === 0 && (prepared.retVal === 0 || prepared.retVal === 0n)
+          && this.#statLeaseTokenFor(channel.pid, channel.memory) === statLease.token) {
+        publisher.publish(statLease.token, statLease.bytes);
+      }
+    }
     const i32View = new KernelEntryIntrinsicInt32Array(
       buffer,
       channel.channelOffset,

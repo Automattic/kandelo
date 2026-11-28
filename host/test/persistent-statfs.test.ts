@@ -6,6 +6,7 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import { startDeferredByteServer } from "./fixtures/deferred-byte-server";
 import { startDeferredArchiveServer } from "./fixtures/deferred-archive-server";
 import { hostTransportMetadataImage } from "./fixtures/host-transport-metadata-image";
+import { developmentInodeCapacityImage, developmentInodeCapacityScript } from "./fixtures/development-inode-capacity";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 
@@ -19,6 +20,43 @@ const mappingProgram = join(repoRoot, "local-binaries/test-fixtures/wasm32/persi
 const available = [shellImage, coreutils, bash, kernel, mappingProgram].every(existsSync);
 const denseImage = process.env.KANDELO_DENSE_VFSI_FIXTURE;
 const sparseImage = process.env.KANDELO_SPARSE_VFSI_FIXTURE;
+
+it("creates and recovers more small files than the old shell headroom on Node", async () => {
+  const image = await developmentInodeCapacityImage(readFileSync(bash), readFileSync(coreutils));
+  const directory = mkdtempSync(join(tmpdir(), "kandelo-development-inodes-"));
+  const observations: { phase: string; stats: string; bootPages: number; finalPages: number }[] = [];
+  try {
+    for (const phase of ["create", "recover"]) {
+      const output: string[] = [];
+      const host = new NodeKernelHost({
+        rootfsImage: image,
+        kernelMaxPages: 2048,
+        experimentalResizablePersistencePath: join(directory, "journal"),
+        requireExistingRootfsPersistence: phase === "recover",
+        onStdout: (_pid, bytes) => output.push(new TextDecoder().decode(bytes)),
+        onStderr: (_pid, bytes) => output.push(new TextDecoder().decode(bytes)),
+      });
+      try {
+        await host.init(new Uint8Array(readFileSync(kernel)).buffer);
+        const bootPages = await host.getKernelMemoryPages();
+        const { exit } = await host.spawnFromVfs("/bin/bash",
+          ["bash", "-c", developmentInodeCapacityScript, "bash", phase], { uid: 0, gid: 0 });
+        expect(await exit, output.join("")).toBe(0);
+        const match = output.join("").match(new RegExp(`INODE_WORKLOAD_OK ${phase} (.*)`));
+        expect(match, output.join("")).not.toBeNull();
+        observations.push({ phase, stats: match![1]!, bootPages, finalPages: await host.getKernelMemoryPages() });
+      } finally {
+        await host.destroy();
+      }
+      expect(host.getPersistenceShutdownFailure()).toBeNull();
+    }
+    expect(observations[1]!.stats).toBe(observations[0]!.stats);
+    expect(observations.every(({ finalPages }) => finalPages <= 1024)).toBe(true);
+    console.info("Development inode workload (64 KiB kernel pages):", JSON.stringify(observations));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 120_000);
 
 describe.skipIf(!available)("persistent root filesystem statistics", () => {
   it("refuses host transport metadata before opening a journal and permits a smaller-image retry", async () => {

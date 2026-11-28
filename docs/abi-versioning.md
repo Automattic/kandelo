@@ -16,6 +16,26 @@ this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Positioned root filesystem
+
+Host-adapter 42 publishes the address of a read-only, little-endian u64
+through `kernel_rootfs_deferred_transfer_size_address()`. During the
+six-argument `host_fetch_deferred` import, that word holds the resource's
+declared length. The kernel clears it to `u64::MAX` when the import returns.
+The host snapshots the length before invoking its byte provider and uses it to
+bound deferred storage. The snapshot requires no reentrant kernel call or
+full namespace walk. Rust verifies the resource before use. Rebuild the
+kernel and host together. Program ABI 56 and its digest are unchanged.
+
+The optional rootfs stat lease is gated by
+`kernel_rootfs_supports_stat_lease()`. A mounted filesystem that supports it
+can certify an ordinary stat result through `kernel_rootfs_stat_lease()`.
+Grouped-memory programs use the ordinary stat syscall.
+
+`kernel_rootfs_compact_kifs_v3()` writes a verified compact snapshot of
+the quiescent volume through the positioned target storage imports. It
+returns zero or a negative errno.
+
 ## Integrated grouped and ordinary host contracts
 
 Host-adapter 38 combines the grouped ownership interfaces below with develop's
@@ -1856,11 +1876,14 @@ imports 77 host functions, down from 82.
   atime_nsec, mtime_sec, mtime_nsec, flags)`.
 - Added, the byte pipe for the kernel-owned `/`: `host_image_read(buf, len,
   off_lo, off_hi)`, a positioned read of the boot image, and
-  `host_fetch_deferred(uri_ptr, uri_len, buf, len, off_lo, off_hi)`, a
+  `host_fetch_deferred(uri_ptr, uri_len, buf, len, off_lo, off_hi, size_lo, size_hi)`, a
   positioned read of a resource the image names by URI but does not carry
   (a URL-backed lazy file or a lazy archive). The kernel relays the image's
   URI unread; the host fetches it and answers `EAGAIN` while the fetch is in
-  flight.
+  flight. The size words carry the filesystem's declared resource size so
+  the host can bound transport storage without a resident manifest.
+  A host without a deferred provider returns `ENOSYS`. Rust verifies
+  the resource contents.
 - Added `host_discard_deferred(uri_ptr, uri_len)`: native length or digest
   rejection evicts the completed transport cache entry. The failed read
   returns `EIO`; a later explicit read may fetch fresh bytes. Transport
@@ -2056,6 +2079,41 @@ resulting secure-exec state. It cannot replace a registered running image or
 consume a guest spawn target. The by-reference anonymous host-program path
 is unchanged. This is another kernel-host-only change within this unmerged
 adapter-4 batch, not a program ABI or disk-format change.
+
+### Optional KIFS v3 boot entry
+
+`kernel_rootfs_mount_kifs_v3` accepts the selected volume identity as eight
+little-endian 32-bit words. The adapter installs one positioned volume through
+the existing `env.host_overlay_*` imports before it calls the entry. The kernel
+validates the format and identity before mounting it. An adapter requesting
+this explicit boot mode refuses an older kernel that lacks the entry. Existing
+adapters and program binaries keep their existing interfaces.
+
+The optional scalar `kernel_rootfs_format_version()` reports the mounted
+KIFS format version. It returns zero when the root has no mounted KIFS
+image or volume. Hosts can omit the display when the export is absent.
+
+The optional `kernel_rootfs_stage_saved_kifs_v3(slot, profile, id0 … id7)`
+entry stages the effective legacy mount into a distinct positioned target
+and trial-reads it before returning zero. Profile 0 preserves capacity and
+profile 1 applies the development floor. Negative errno leaves publication
+to the caller. The native activation codec uses operations 26–28 to encode
+a KIFG lineage seal and verify the predecessor and successor. Operations
+29–30 encode and authenticate a KIFR v1 retirement receipt. Its eight-byte
+magic/version header precedes a 32-byte random nonce, the complete journal
+SHA-256 and an optional index SHA-256. For a legacy conversion the KIFG
+nonce field holds the SHA-256 of this 72- or 104-byte record. Operation 30
+returns the bound digests only after verifying the active KOGA and KIFG. The
+stored KOGA control encoding and guest ABI are unchanged.
+
+The optional `kernel_rootfs_kifs_compaction_needed` query reads committed
+counters. `kernel_rootfs_prepare_kifs_handoff` takes eight identity words,
+fences shared mappings, stages and verifies the compact tree, then holds
+source mutations. `kernel_rootfs_cancel_kifs_handoff` releases a prepared
+source before publication. After durable publication the adapter points
+the active I/O import at the verified target and calls
+`kernel_rootfs_activate_kifs_handoff`. That entry retains the live VFS
+pins and switches to the prepared tree without reading storage.
 
 ### ABI 55 persistent image storage and bounded admission
 

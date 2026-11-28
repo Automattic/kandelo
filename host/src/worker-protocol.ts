@@ -1,3 +1,4 @@
+import type { StatLeaseBinding } from "./stat-lease";
 import type { MemoryGroupTaskReceipt } from "./memory-group-protocol";
 import type { ThreadTlsAllocation } from "./thread-allocator";
 import type { WasmIndirectCallTrap } from "./trap-signals";
@@ -37,6 +38,7 @@ export type HostToWorkerMessage =
  * to communicate with the CentralizedKernelWorker.
  */
 export interface CentralizedWorkerInitMessage {
+  statLeaseBinding?: StatLeaseBinding;
   type: "centralized_init";
   pid: number;
   /** Per-image startup arbitration for ordinary exec replacements. */

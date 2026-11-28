@@ -514,10 +514,14 @@ impl<Key: Ord, Value> PreparedMap<Key, Value> {
     pub fn keys(&self) -> impl ExactSizeIterator<Item = &Key> + Clone { self.iter().map(|(key, _)| key) }
 
     pub(crate) fn range(&self, range: Range<Key>) -> MapRange<'_, Key, Value> {
-        let mut iterator = MapRange { stack: [None; ITERATOR_DEPTH], depth: 0, end: range.end };
+        self.range_between(Some(&range.start), Some(range.end))
+    }
+
+    pub(crate) fn range_between(&self, start: Option<&Key>, end: Option<Key>) -> MapRange<'_, Key, Value> {
+        let mut iterator = MapRange { stack: [None; ITERATOR_DEPTH], depth: 0, end };
         let mut current = self.root.as_deref();
         while let Some(node) = current {
-            if node.key >= range.start {
+            if start.is_none_or(|start| &node.key >= start) {
                 iterator.stack[iterator.depth] = Some(node);
                 iterator.depth += 1;
                 current = node.left.as_deref();
@@ -568,7 +572,7 @@ impl<Key, Value> core::iter::FusedIterator for MapIter<'_, Key, Value> {}
 pub(crate) struct MapRange<'a, Key, Value> {
     stack: [Option<&'a Node<Key, Value>>; ITERATOR_DEPTH],
     depth: usize,
-    end: Key,
+    end: Option<Key>,
 }
 
 impl<'a, Key: Ord, Value> Iterator for MapRange<'a, Key, Value> {
@@ -577,7 +581,7 @@ impl<'a, Key: Ord, Value> Iterator for MapRange<'a, Key, Value> {
         if self.depth == 0 { return None; }
         self.depth -= 1;
         let node = self.stack[self.depth].take().expect("prepared map range missing node");
-        if node.key >= self.end { self.depth = 0; return None; }
+        if self.end.as_ref().is_some_and(|end| &node.key >= end) { self.depth = 0; return None; }
         let mut current = node.right.as_deref();
         while let Some(child) = current {
             self.stack[self.depth] = Some(child);

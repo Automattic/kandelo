@@ -1,0 +1,177 @@
+# KIFS guest watch qualification after the develop merge
+
+The reconciled kernel uses the mounted VFS for both saved formats. Directory
+watches use inode identities, so a write can notify the correct names after
+a directory rename or through another hard link. Watchers on the same
+positioned directory share an alias index. It loads on the first write,
+updates on successful namespace changes, and shares a 2 MiB budget with
+resident directory indexes. The kernel reuses committed inode identities
+for create, rename and removal notifications.
+
+## Saved-shell comparisons
+
+Two independent rounds on Node 24.22.1, Chromium 153, Firefox 155 and
+WebKit 26.6 used both filesystem orders. Each pair seeded separate
+computers and verified Bash execution, permissions, directory watch events,
+and saved inode identities before and after explicit activation. The clocks
+exclude fixture seeding and watch registration. The watched times include
+reading and checking each event. Each pair used three samples per mode.
+
+KIFS v3 beat v2 in 63 of 80 ordinary I/O comparisons and 17 of 48
+watcher comparisons. It met the 0.75× stretch target in 53 and 13 of those
+comparisons, respectively. Watched namespace churn was faster in 14 of
+16 pairs. The table shows the largest v3/v2 median elapsed-time ratio across
+the four pairs on each host. A ratio above 1 means v3 took longer.
+
+| Host | First watched write | 512 writes with a watch | 128 create/write/rename/unlink sequences with a watch |
+| --- | ---: | ---: | ---: |
+| Node | 4.03× | 1.75× | 0.22× |
+| Chromium | 2.29× | 2.65× | 0.43× |
+| Firefox | 2.35× | 4.88× | 1.27× |
+| WebKit | 3.29× | 1.53× | 1.10× |
+
+The highest first-write v3 median was 1.65 ms. The repeated-write workload
+opens existing files and grows their initially empty contents. It was also
+as much as 4.36× slower on Firefox with the watch off. The timings therefore
+include a difference in the underlying write path. Other local builds were
+active during the runs. The raw samples preserve each pair’s elapsed times
+and machine load. The current matrix falls short of the rollout requirement.
+[Raw samples and input hashes](2026-11-27-kifs-develop-watchers.json)
+
+On WebKit, a separate comparison against the earlier integration kernel
+reduced v3’s median time for the 512 watched writes from 152.48 to 99.96 ms
+in v2-first order and from 192.22 to 91.14 ms in v3-first order. Unwatched
+times improved in the same runs. The timings reflect both kernels and the
+machine load over the run.
+
+A separate instrumented Firefox run counted positioned operations around
+513 guest writes to already-created files. V2 issued 14 host writes and
+21 flushes in each sample. V3 issued 544–547 host writes and 24–27 flushes.
+The v3 runs with watches issued 545 writes and 24 flushes. All four v3
+samples read one 4 KiB page. The repeated-write gap warrants work on how
+v3 submits file data to storage.
+
+## Capacity, correctness and artifacts
+
+The timed kernel was built with the normal kernel package recipe from
+`660c210bdb`. Its SHA-256 was
+`f4fa247bbddebe995d6beea97d09be1597001c9cf3802461c97ab038d287dc6f`.
+The guest fixture was rebuilt with the Kandelo SDK, fork instrumenter and
+program ABI stamp check. Both formats used the same frozen partial package
+shell built earlier in this checkout. The browser comparison fixture pinned
+the kernel and served the saved image’s matching Coreutils bytes directly
+after the current Vite resolver rejected stale packaged artifacts. Rust
+still checked the length and digest declared by the image. These runs
+qualify the saved-shell path with those inputs.
+
+The v2 control had 512 MiB and 65,536 file entries. The upgraded v3 shell
+reported 1 GiB and a shared logical budget for data and metadata. Kernel
+Wasm memory at boot was 32 pages (2.00 MiB) for v2 and 27 pages (1.69 MiB)
+for v3 in every timed pair. Separate capacity runs on Node and all three
+browsers started with 2.42 MiB of physical v3 storage, created 12,000
+one-byte files, and retained 972.3 MiB of logical free space. Kernel memory
+grew to 163 pages (10.19 MiB) and the host transport metadata tracker peaked
+at 3 KiB on each host. The saved volumes and their exported snapshots
+reopened successfully.
+
+The native runtime suite passed 4,156 tests after the merge. The final
+watcher changes passed all 307 rootfs tests, including two observers,
+hard links, and same-inode rename. The packaged kernel matched the generated
+ABI snapshot and passed the program ABI 56 baseline check. The exact
+kernel passed Node and browser guest identity and interrupted-upgrade checks,
+including quota refusal and retry. The host passed 14 scratch and stat-lease
+checks and 19 grouped-memory tests against the exact kernel.
+
+## Fresh package and app
+
+The normal partial-shell build published kernel SHA-256
+`45d3e03d2ee091c57573114666fa1ebb1f838315173f88228a4a2aab86ad3a38`
+and shell SHA-256
+`5e9ed5ddb7e796842ee6a4d4466077687cc6d7a1298a52164124b41fee2d9a50`.
+The fresh kernel also passed the ABI snapshot check. The package pipeline
+succeeded after an isolated resolver retry of the initial `gawk` failure.
+
+The fresh Node shell exposed a grouped-channel completion error at the
+combined ordinary syscall export. That export is now selected only for
+ordinary memory. Node passed the four partial-shell tests and the
+19 grouped-memory kernel and worker tests after the change. A separate
+packaged KIFS v3 boot ran the grouped Bash, grep and sed pipeline.
+
+The app opened both saved formats and displayed their versions on Chromium,
+Firefox and WebKit through the normal artifact resolver. The legacy boot
+ignored the retired URL parameter. The v3 boot followed an explicitly
+staged upgrade. The first WebKit run reported a module-link error. The
+package-resolved rerun passed.
+
+Two additional Firefox pairs used the fresh package and normal lazy-asset
+resolution. V3’s 512 watched writes took 1.06–1.11× v2’s time, and the
+unwatched writes took 1.23–1.40×. Watched namespace churn took 0.35–0.50×.
+These runs had lower machine load than the frozen-image matrix.
+
+## Deferred transport build
+
+The normal `./run.sh partial shell bash coreutils git --jobs 1` build from
+`ffddaa9507` published kernel SHA-256
+`e6b4a88e0d427ba7f13345d3495bc9b8639e724760f0a6196fe0dbf536adc283`.
+The shell hash stayed
+`5e9ed5ddb7e796842ee6a4d4466077687cc6d7a1298a52164124b41fee2d9a50`.
+The pipeline refused the first run because the checked kernel recipe changed
+while it was building. The rerun used the final guards from the start.
+The published artifact matched the ABI snapshot and preserved the supported
+program ABI 56 baseline.
+
+With those artifacts, 49 Node integration tests passed and the comparison
+case was reserved for the timing run. Chromium, Firefox, and WebKit each
+passed eight checks. These runs exercised regular and grouped shell launch,
+bounded deferred reads and integrity retry, the app’s version display,
+permissions and live handles, recovery at seven upgrade interruption
+points, and capacity reuse after an injected quota refusal. The 12,000
+one-byte files again left 972.3 MiB free, with kernel memory at 27 pages
+on boot and 163 after creation. The saved volume and its export reopened.
+
+## Final packaged comparison
+
+Two new rounds used the published kernel and shell, with normal lazy-asset
+resolution. Node, Chromium, Firefox, and WebKit each ran both filesystem
+orders in each round. All 16 pairs passed the event and saved-identity
+checks. V3 beat v2 in 78 of 80 ordinary I/O comparisons and met the 0.75×
+stretch target in 73. The two ordinary misses were Node random stat
+(1.00724×) and WebKit deletion (1.00209×), both in round two.
+
+V3 won 20 of 48 watched comparisons and met the stretch target in 17.
+Watched namespace churn was faster in 15 of 16 pairs. The table gives
+the minimum and maximum median v3/v2 elapsed-time ratio across four pairs
+per host. Each workload used three samples per mode.
+
+| Host | First watched write | 512 writes with watch | Same writes without watch | Watched namespace churn |
+| --- | ---: | ---: | ---: | ---: |
+| Node | 0.41–2.65× | 0.74–1.76× | 0.50–2.03× | 0.07–0.16× |
+| Chromium | 1.50–2.66× | 1.16–1.68× | 1.21–1.99× | 0.18–0.41× |
+| Firefox | 1.06–2.82× | 1.56–2.17× | 1.85–2.72× | 0.28–0.68× |
+| WebKit | 1.33–2.07× | 0.99–1.45× | 1.00–1.87× | 0.68–1.17× |
+
+The largest v3 first-watched-write median was 1.32 ms. The relative cost
+added by the watch to repeated writes varied with the run and filesystem
+order. Chromium, for example, added about 28 ms more on v3 than on v2 in
+round one and about 15 ms less in round two. The slowdown also appeared
+without a watch. Together with the positioned I/O counts, this locates the
+sustained performance gap in repeated writes to existing files. Other
+builds were active, and the raw records include the run load and timings.
+[Final samples and input hashes](2026-11-27-kifs-packaged-watchers.json)
+
+## Rollout
+
+The Rust-first host boundary check against `6072965d43` passes. The
+six-argument `host_fetch_deferred` import uses a read-only transfer
+length published by Rust. The host reads it during the import to bound
+storage. The kernel retains verification and filesystem decisions.
+Adapter version 42 requires a matching kernel and host. The product
+launcher and packaging checks now match the required export inventory,
+including the exit-publication export from develop.
+[ABI notes](../abi-versioning.md#positioned-root-filesystem)
+
+The comparison missed parity under the original rollout gate. The app
+now selects v3 for new Library computers. Existing computers open their
+saved format, and upgrades still use the explicit shared host API.
+Physical power loss and the pinned guest Node/npm install remain outside
+this qualification.

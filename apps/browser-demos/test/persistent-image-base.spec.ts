@@ -55,7 +55,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
           const boot = async (existing: boolean) => {
             active = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, maxMemoryPages: 1024, memoryProfile: "constrained" });
             await active.initFromOpfsImage({ kernelWasm, vfsImageFile: base, persistentImageBinding: parameters.binding,
-              experimentalResizablePersistenceName: name, persistentComputerName: name, requireExistingRootfsPersistence: existing });
+              kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: name, persistentComputerName: name, requireExistingRootfsPersistence: existing });
             return active;
           };
           const first = await boot(false);
@@ -139,7 +139,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
           for (let phase = 0; phase < 3; phase++) {
             active = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, maxMemoryPages: 1024, memoryProfile: "constrained" });
             await active.initFromOpfsImage({ kernelWasm, vfsImageFile: base, persistentImageBinding: parameters.binding,
-              experimentalResizablePersistenceName: name, persistentComputerName: name,
+              kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: name, persistentComputerName: name,
               requireExistingRootfsPersistence: phase !== 0 });
             const certificate = new TextDecoder().decode((await active.readFileFromVfs(parameters.caPath)) ?? new Uint8Array());
             if (!certificate.startsWith("-----BEGIN CERTIFICATE-----")) throw new Error("boot certificate is missing");
@@ -209,7 +209,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
             active = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, maxMemoryPages: 1024, memoryProfile: "constrained",
               onHostDiagnostic: diagnostic => diagnostics.push(diagnostic) });
             await active.initFromOpfsImage({ kernelWasm, vfsImageFile: base, persistentImageBinding: parameters.binding,
-              experimentalResizablePersistenceName: name, persistentComputerName: name, requireExistingRootfsPersistence: phase !== 0 });
+              kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: name, persistentComputerName: name, requireExistingRootfsPersistence: phase !== 0 });
             if (phase === 0) {
               if (!await active.unlinkFileFromVfs(parameters.caPath)) throw new Error("bootstrap certificate was not installed");
               let refused = false;
@@ -287,7 +287,7 @@ for (const policy of ["crc32c", "sha256"] as const) {
           active = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, maxMemoryPages: 1024, memoryProfile: "constrained" });
           await active.initFromOpfsImage({
             kernelWasm, vfsImageFile: file, persistentImageBinding: identity,
-            experimentalResizablePersistenceName: name, persistentComputerName: name,
+            kifsUpgradeProfile: "legacy", experimentalResizablePersistenceName: name, persistentComputerName: name,
             requireExistingRootfsPersistence: requireExisting,
           });
           return active;

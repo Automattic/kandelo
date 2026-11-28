@@ -1,6 +1,7 @@
 import { ERRNO } from "../generated/abi";
 
 export const OVERLAY_ACTIVATION_BYTES = 128;
+export const KIFS_GENERATION_SEAL_BYTES = 136;
 const WIRE_BYTES = 120;
 
 export interface OverlayActivationRecord {
@@ -27,6 +28,11 @@ export class InvalidOverlayActivationError extends Error {
 export interface OverlayActivationCodec {
   encode(record: OverlayActivationRecord): Uint8Array;
   decode(bytes: Uint8Array): OverlayActivationRecord;
+  kifsGenerationSeal(source: OverlayActivationRecord, entropy: Uint8Array): Uint8Array;
+  kifsGenerationSource(active: OverlayActivationRecord, seal: Uint8Array): OverlayActivationRecord;
+  kifsGenerationNext(source: OverlayActivationRecord, seal: Uint8Array): OverlayActivationRecord;
+  retirementReceipt(nonce: Uint8Array, journal: Uint8Array, index?: Uint8Array): Uint8Array;
+  retirementDigests(active: OverlayActivationRecord, seal: Uint8Array, receipt: Uint8Array): { journal: Uint8Array; index?: Uint8Array };
   next(current: OverlayActivationRecord | null, identity: Omit<OverlayActivationRecord, "sequence">): OverlayActivationRecord;
   select(records: readonly [OverlayActivationRecord | null, OverlayActivationRecord | null], invalid: boolean): OverlayActivationRecord | null;
   compareGenerations(left: OverlayGenerationRef, right: OverlayGenerationRef, newestFirst?: boolean): number;
@@ -120,7 +126,30 @@ export function createOverlayActivationCodec(call: OverlayActivationCodecCall): 
     if (result > 1) throw new Error("Native generation policy returned invalid retention transport");
     return result === 1;
   };
+  const generationCall = (op: number, record: OverlayActivationRecord, payload: Uint8Array) => {
+    const input = new Uint8Array(WIRE_BYTES + payload.length);
+    input.set(recordWire(record));
+    input.set(payload, WIRE_BYTES);
+    return invoke(op, input);
+  };
   return Object.freeze({
+    kifsGenerationSeal: (source: OverlayActivationRecord, entropy: Uint8Array) => generationCall(26, source, entropy),
+    kifsGenerationSource: (active: OverlayActivationRecord, seal: Uint8Array) => wireRecord(generationCall(27, active, seal)),
+    kifsGenerationNext: (source: OverlayActivationRecord, seal: Uint8Array) => wireRecord(generationCall(28, source, seal)),
+    retirementReceipt(nonce: Uint8Array, journal: Uint8Array, index?: Uint8Array) {
+      if (nonce.length !== 32 || journal.length !== 32 || index && index.length !== 32) throw new InvalidOverlayActivationError();
+      const input = new Uint8Array(index ? 96 : 64);
+      input.set(nonce); input.set(journal, 32);
+      if (index) input.set(index, 64);
+      return invoke(29, input);
+    },
+    retirementDigests(active: OverlayActivationRecord, seal: Uint8Array, receipt: Uint8Array) {
+      const input = new Uint8Array(seal.length + receipt.length);
+      input.set(seal); input.set(receipt, seal.length);
+      const result = generationCall(30, active, input);
+      if (result.length !== 32 && result.length !== 64) throw new InvalidOverlayActivationError();
+      return { journal: result.slice(0, 32), index: result.length === 64 ? result.slice(32) : undefined };
+    },
     mayReclaimUnpublished: (active: OverlayActivationRecord | null, selected: Omit<OverlayActivationRecord, "sequence">,
       protectedSource: OverlayGenerationRef, candidate: OverlayGenerationRef) => {
       const input = new Uint8Array(328);

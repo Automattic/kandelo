@@ -3637,6 +3637,9 @@ impl PathResolveOptions {
 struct ResolvedNamespacePath {
     path: Vec<u8>,
     stat: Option<WasmStat>,
+    // All canonical ancestors were searched in this same kernel entry.
+    // Magic links and parent traversal retain the canonical recheck.
+    searched_ancestors: bool,
 }
 
 fn dev_fd_path_stat(proc: &Process) -> WasmStat {
@@ -3821,14 +3824,14 @@ fn pop_path_component(path: &mut Vec<u8>) {
     }
 }
 
-fn substituted_path_len(target: &[u8], pending: &VecDeque<Vec<u8>>) -> Option<usize> {
+fn substituted_path_len(target: &[u8], pending_lengths: impl Iterator<Item = usize>) -> Option<usize> {
     let mut len = target.len();
     let mut needs_separator = target.last() != Some(&b'/');
-    for component in pending {
+    for length in pending_lengths {
         if needs_separator {
             len = len.checked_add(1)?;
         }
-        len = len.checked_add(component.len())?;
+        len = len.checked_add(length)?;
         needs_separator = true;
     }
     Some(len)
@@ -3852,28 +3855,24 @@ fn resolve_namespace_path_from(
         return Err(Errno::ENAMETOOLONG);
     }
 
-    let absolute = crate::path::make_absolute(path, base);
-    if absolute.first() != Some(&b'/') {
+    let base = if path.first() == Some(&b'/') { b"" } else { base };
+    if !base.is_empty() && base.first() != Some(&b'/') {
         return Err(Errno::ENOENT);
     }
-
-    let mut require_directory = absolute.len() > 1 && absolute.last() == Some(&b'/');
-    let mut pending: VecDeque<Vec<u8>> = absolute
+    let mut input = base
         .split(|&byte| byte == b'/')
+        .chain(path.split(|&byte| byte == b'/'))
         .filter(|component| !component.is_empty())
-        .map(|component| component.to_vec())
-        .collect();
-    if pending
-        .iter()
-        .any(|component| component.len() > NAMESPACE_NAME_MAX)
-    {
-        return Err(Errno::ENAMETOOLONG);
+        .peekable();
+    let mut require_directory = path.len() > 1 && path.last() == Some(&b'/');
+    let mut last = None;
+    for component in input.clone() {
+        if component.len() > NAMESPACE_NAME_MAX {
+            return Err(Errno::ENAMETOOLONG);
+        }
+        last = Some(component);
     }
-    if pending.back().map(Vec::as_slice) == Some(b".")
-        || pending.back().map(Vec::as_slice) == Some(b"..")
-    {
-        require_directory = true;
-    }
+    require_directory |= matches!(last, Some(b"." | b".."));
 
     let root_stat = namespace_lstat_raw(proc, host, b"/")?;
     if root_stat.st_mode & S_IFMT != S_IFDIR {
@@ -3892,18 +3891,29 @@ fn resolve_namespace_path_from(
         X_OK,
     )?;
 
-    let mut resolved = alloc::vec![b'/'];
+    let mut resolved = Vec::with_capacity(base.len() + path.len() + 1);
+    resolved.push(b'/');
+    // Ordinary path components borrow their input. Only symlink expansions
+    // own components and are consumed before the remaining original input.
+    let mut expansion: VecDeque<Vec<u8>> = VecDeque::new();
     let mut final_stat = Some(root_stat);
     let mut symlink_count = 0u32;
+    let mut searched_ancestors = true;
 
-    while let Some(component) = pending.pop_front() {
+    loop {
+        let owned = expansion.pop_front();
+        let Some(component) = owned.as_deref().or_else(|| input.next()) else {
+            break;
+        };
+        let is_final = expansion.is_empty() && input.peek().is_none();
         if component == b"." {
             continue;
         }
         if component == b".." {
+            searched_ancestors = false;
             pop_path_component(&mut resolved);
             let stat = namespace_lstat_raw(proc, host, &resolved)?;
-            if !pending.is_empty() {
+            if !is_final {
                 if stat.st_mode & S_IFMT != S_IFDIR {
                     return Err(Errno::ENOTDIR);
                 }
@@ -3919,18 +3929,17 @@ fn resolve_namespace_path_from(
             continue;
         }
 
-        let is_final = pending.is_empty();
-        let mut candidate = resolved.clone();
-        append_path_component(&mut candidate, &component);
-        let stat = match namespace_lstat_raw(proc, host, &candidate) {
+        let parent_len = resolved.len();
+        append_path_component(&mut resolved, component);
+        let stat = match namespace_lstat_raw(proc, host, &resolved) {
             Ok(stat) => stat,
             Err(Errno::ENOENT) if is_final && options.allow_missing_final => {
                 let bindable_devfs_name = options.create_bindable_devfs_socket
-                    && crate::devfs::is_bindable_socket_path(&candidate);
-                if is_procfs_namespace_path(&candidate)
-                    || crate::sysfs::is_namespace_path(&candidate)
-                    || (is_devfs_namespace_path(&candidate)
-                        && !is_delegated_devfs_path(&candidate)
+                    && crate::devfs::is_bindable_socket_path(&resolved);
+                if is_procfs_namespace_path(&resolved)
+                    || crate::sysfs::is_namespace_path(&resolved)
+                    || (is_devfs_namespace_path(&resolved)
+                        && !is_delegated_devfs_path(&resolved)
                         && !bindable_devfs_name)
                 {
                     return Err(Errno::EROFS);
@@ -3939,8 +3948,9 @@ fn resolve_namespace_path_from(
                     return Err(Errno::ENOENT);
                 }
                 return Ok(ResolvedNamespacePath {
-                    path: candidate,
+                    path: resolved,
                     stat: None,
+                    searched_ancestors,
                 });
             }
             Err(error) => return Err(error),
@@ -3949,11 +3959,12 @@ fn resolve_namespace_path_from(
         let follow_symlink = stat.st_mode & S_IFMT == S_IFLNK
             && (!is_final || options.follow_final_symlink || require_directory);
         if follow_symlink {
+            searched_ancestors = false;
             symlink_count += 1;
             if symlink_count > 40 {
                 return Err(Errno::ELOOP);
             }
-            let procfs_entry = crate::procfs::match_procfs(&candidate, proc.pid);
+            let procfs_entry = crate::procfs::match_procfs(&resolved, proc.pid);
             // Kandelo currently models thread-self process files through the
             // process-level procfs entries rather than a separate
             // `/proc/<pid>/task/<tid>` tree. Resolve the link to that truthful
@@ -3986,24 +3997,28 @@ fn resolve_namespace_path_from(
                 if !is_final || require_directory {
                     return Err(Errno::ENOTDIR);
                 }
-                resolved = candidate;
                 final_stat = Some(stat);
                 continue;
             }
-            let target = namespace_readlink_raw(proc, host, &candidate)?;
-            if substituted_path_len(&target, &pending).ok_or(Errno::ENAMETOOLONG)?
+            let target = namespace_readlink_raw(proc, host, &resolved)?;
+            let remainder = expansion
+                .iter()
+                .map(Vec::len)
+                .chain(input.clone().map(<[u8]>::len));
+            if substituted_path_len(&target, remainder).ok_or(Errno::ENAMETOOLONG)?
                 >= NAMESPACE_PATH_MAX
             {
                 return Err(Errno::ENAMETOOLONG);
             }
-            let had_remainder = !pending.is_empty();
-            if !had_remainder && target.len() > 1 && target.last() == Some(&b'/') {
+            if is_final && target.len() > 1 && target.last() == Some(&b'/') {
                 require_directory = true;
             }
             if target.first() == Some(&b'/') {
                 resolved.clear();
                 resolved.push(b'/');
                 final_stat = Some(root_stat);
+            } else {
+                resolved.truncate(parent_len);
             }
             let target_components: Vec<Vec<u8>> = target
                 .split(|&byte| byte == b'/')
@@ -4017,7 +4032,7 @@ fn resolve_namespace_path_from(
                 return Err(Errno::ENAMETOOLONG);
             }
             for part in target_components.into_iter().rev() {
-                pending.push_front(part);
+                expansion.push_front(part);
             }
             continue;
         }
@@ -4034,7 +4049,6 @@ fn resolve_namespace_path_from(
                 X_OK,
             )?;
         }
-        resolved = candidate;
         final_stat = Some(stat);
     }
 
@@ -4048,6 +4062,7 @@ fn resolve_namespace_path_from(
     Ok(ResolvedNamespacePath {
         path: resolved,
         stat: Some(stat),
+        searched_ancestors,
     })
 }
 
@@ -4144,8 +4159,8 @@ pub fn inspect_namespace_read_file(
     }
     if crate::rootfs::claims_path(path) {
         return crate::rootfs::read_file_at(path, offset, out, |request, buffer| match request {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => {
-                host.fetch_deferred(&uri, buffer, offset)
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => {
+                host.fetch_deferred(&uri, buffer, offset, size)
             }
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
@@ -4432,6 +4447,29 @@ fn check_may_delete(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     check_sticky_child(proc, host, path)
 }
 
+/// Reuse the ancestry search from this same kernel entry for a rootfs removal.
+/// The parent still needs write permission and the sticky-directory owner check.
+fn check_resolved_rootfs_delete(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &ResolvedNamespacePath,
+) -> Result<(), Errno> {
+    if !resolved.searched_ancestors {
+        return check_may_delete(proc, host, &resolved.path);
+    }
+    let parent = parent_path(&resolved.path);
+    let parent_stat = namespace_lstat_raw(proc, host, &parent)?;
+    check_access(proc, &parent_stat, W_OK | X_OK)?;
+    let uid = proc.effective_uid();
+    if parent_stat.st_mode & S_ISVTX != 0 && uid != 0 {
+        let child_stat = resolved.stat.ok_or(Errno::ENOENT)?;
+        if uid != parent_stat.st_uid && uid != child_stat.st_uid {
+            return Err(Errno::EPERM);
+        }
+    }
+    Ok(())
+}
+
 /// The permission checks for `rename(old, new)`: remove the old name, create
 /// the new one, and (when `new` exists) remove what it replaces.
 fn check_may_rename(
@@ -4508,6 +4546,24 @@ fn check_open_permissions(
         }
         Err(Errno::ENOENT) => Ok(false),
         Err(e) => Err(e),
+    }
+}
+
+fn check_resolved_rootfs_open(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    flags: u32,
+    searched_for_creation: bool,
+) -> Result<(), Errno> {
+    if searched_for_creation {
+        // The current resolution proved the name absent and searched every
+        // ancestor with the effective credentials used for this open.
+        let parent = parent_path(path);
+        let parent_stat = namespace_lstat_raw(proc, host, &parent)?;
+        check_access(proc, &parent_stat, W_OK | X_OK)
+    } else {
+        check_open_permissions(proc, host, path, flags).map(|_| ())
     }
 }
 
@@ -4898,9 +4954,10 @@ fn bind_vfs_events(proc: &Process, device: &crate::ofd::OpenFileDesc, buf: &[u8]
     let identity = target.file_id.ok_or(Errno::ENOTSUP)?;
     let handle = target.host_handle;
     let directory = if target.file_type == FileType::Directory && handle == crate::tmpfs::TMPFS_DIR_SENTINEL {
-        Some(crate::tmpfs::watch_directory(&target.path, identity)?)
-    } else if target.file_type == FileType::Directory && handle == crate::rootfs::ROOTFS_DIR_SENTINEL {
-        Some(crate::rootfs::watch_directory(&target.path, identity)?)
+        Some(crate::vfs_events::WatchedDirectory::Resident(crate::tmpfs::watch_directory(&target.path, identity)?))
+    } else if target.file_type == FileType::Directory
+        && (handle == crate::rootfs::ROOTFS_DIR_SENTINEL || crate::rootfs::is_rootfs_file_handle(handle)) {
+        Some(crate::rootfs::watch_directory(&target.path, handle, identity)?)
     } else if target.file_type == FileType::Regular && (crate::tmpfs::is_tmpfs_file_handle(handle) || crate::rootfs::is_rootfs_file_handle(handle)) {
         None
     } else {
@@ -5023,6 +5080,7 @@ pub fn sys_open(
             return Err(Errno::ELOOP);
         }
     }
+    let searched_for_missing_name = resolved_entry.searched_ancestors && resolved_entry.stat.is_none();
     let resolved = resolved_entry.path;
 
     // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
@@ -5195,11 +5253,12 @@ pub fn sys_open(
     // reads or deferred fetches, via the read path). Permission checks are host-free
     // (fs_stat is rootfs-aware and rootfs owns every parent of a `/` path).
     if crate::rootfs::claims_path(&resolved) {
-        check_open_permissions(proc, host, &resolved, oflags)?;
+        let creating = oflags & O_CREAT != 0 && searched_for_missing_name;
+        check_resolved_rootfs_open(proc, host, &resolved, oflags, creating)?;
         if oflags & O_CREAT != 0 {
             tmpfs_stamp_now(host)?;
         }
-        if crate::rootfs::is_dir(&resolved) {
+        if !creating && crate::rootfs::is_dir(&resolved) {
             if oflags & O_ACCMODE != O_RDONLY {
                 return Err(Errno::EISDIR);
             }
@@ -5380,16 +5439,24 @@ fn open_rootfs(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effective_mod
     open_kernel_file(proc, resolved, oflags, effective_mode, KernelExecFs::Rootfs)
 }
 
-/// Open a rootfs directory for iteration. Mirrors `open_scratch_tmpfs_dir`: a
-/// `FileType::Directory` OFD carrying the rootfs directory sentinel; getdents
-/// regenerates entries from the live store, so there is no host handle.
+/// Open the directory through the mounted filesystem. Backends can retain an
+/// inode pin for the shared directory cookie.
 fn open_rootfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
     proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
-        let (handle, stat) = crate::rootfs::retain_directory(&resolved)?;
-        description.set_directory_inode(handle);
+        let handle = crate::rootfs::open_directory_handle(&description.path)?;
+        // Standalone KIFS already retains the directory in host_handle.
+        let stat = if crate::rootfs::is_rootfs_file_handle(handle) {
+            crate::rootfs::fstat(handle).inspect_err(|_| {
+                crate::rootfs::release_handle(handle);
+            })?
+        } else {
+            let (inode, stat) = crate::rootfs::retain_directory(&resolved)?;
+            description.set_directory_inode(inode);
+            stat
+        };
         description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino });
         description.dir_host_handle = crate::rootfs::ROOTFS_DIR_SENTINEL;
-        Ok(crate::rootfs::ROOTFS_DIR_SENTINEL)
+        Ok(handle)
     })
 }
 
@@ -5458,6 +5525,9 @@ pub fn validate_scm_rights_transfer_metadata(
             crate::descriptor_backing::is_live_managed_ofd(file_type, host_handle)
                 .then_some(())
                 .ok_or(Errno::EOPNOTSUPP)
+        }
+        FileType::Directory if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            crate::rootfs::owns_inode_description(host_handle, true).then_some(()).ok_or(Errno::EOPNOTSUPP)
         }
         FileType::Directory if host_handle < 0 => matches!(
             host_handle,
@@ -6110,19 +6180,26 @@ fn release_ofd_reference_with_preclosed(
                     if effects.final_ofd_reference { release_final_ofd_locks(locks.as_deref_mut(), ofd_id); }
                     else { crate::ofd::note_possibly_orphaned_ofd_locks(); }
                     effects.close_with(host)?;
-                } else if file_type == FileType::Regular
-                    && (crate::procfs::is_procfs_buf_handle(host_handle)
-                        || crate::descriptor_backing::is_synthetic_regular_handle(host_handle)
-                        || crate::tmpfs::is_tmpfs_file_handle(host_handle)
-                        || crate::rootfs::is_rootfs_file_handle(host_handle))
+                } else if matches!(file_type, FileType::Regular | FileType::Directory)
+                    && crate::rootfs::is_rootfs_file_handle(host_handle)
+                    || file_type == FileType::Regular
+                        && (crate::procfs::is_procfs_buf_handle(host_handle)
+                            || crate::descriptor_backing::is_synthetic_regular_handle(host_handle)
+                            || crate::tmpfs::is_tmpfs_file_handle(host_handle))
                 {
-                    if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
+                    let (last, result) = if crate::rootfs::is_rootfs_file_handle(host_handle) {
+                        crate::rootfs::release_handle_checked(host_handle)
+                    } else {
+                        (crate::descriptor_backing::release_for_ofd(file_type, host_handle), Ok(()))
+                    };
+                    if last {
                         release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
                     } else {
                         // Another open of the same file keeps the backing
                         // alive, which says nothing about this description.
                         crate::ofd::note_possibly_orphaned_ofd_locks();
                     }
+                    result?;
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
                     || host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
@@ -7386,7 +7463,7 @@ pub fn sys_read(
                 let current_offset =
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
                 let n = crate::rootfs::read(host_handle, current_offset, buf, |req, b| match req {
-                    crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+                    crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
                     crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                         host.discard_deferred(&uri);
                         Ok(0)
@@ -7669,7 +7746,7 @@ pub fn sys_write(
                 tmpfs_stamp_now(host)?;
                 let n =
                     crate::rootfs::write(host_handle, start, &buf[..writable_len], |req, b| match req {
-                        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+                        crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
                         crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                             host.discard_deferred(&uri);
                             Ok(0)
@@ -7681,6 +7758,9 @@ pub fn sys_write(
                     .get_mut(ofd_idx)
                     .ok_or(Errno::EBADF)?
                     .set_offset(new_offset);
+                if status_flags & O_DSYNC != 0 {
+                    crate::rootfs::sync_persistence()?;
+                }
                 return Ok(n);
             }
 
@@ -7940,9 +8020,14 @@ pub fn sys_lseek(
             || backing_handle == crate::devfs::DEVFS_DIR_HANDLE
             || backing_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
             || backing_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+            || crate::rootfs::is_rootfs_file_handle(backing_handle)
             || backing_handle == crate::sysfs::SYSFS_DIR_HANDLE
         {
-            let sentinel = backing_handle;
+            let sentinel = if crate::rootfs::is_rootfs_file_handle(backing_handle) {
+                crate::rootfs::ROOTFS_DIR_SENTINEL
+            } else {
+                backing_handle
+            };
             let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
             ofd.dir_host_handle = sentinel;
             ofd.dir_synth_state = offset.min(2) as u8;
@@ -8287,7 +8372,7 @@ pub fn sys_pread(
     // In-kernel rootfs overlay: positioned read; base-file bytes via the byte source.
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         return crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
                 Ok(0)
@@ -8720,7 +8805,8 @@ pub fn sys_pwrite(
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    let access_mode = ofd.status_flags() & O_ACCMODE;
+    let status_flags = ofd.status_flags();
+    let access_mode = status_flags & O_ACCMODE;
     if access_mode == O_RDONLY {
         return Err(Errno::EBADF);
     }
@@ -8772,14 +8858,18 @@ pub fn sys_pwrite(
     // (rootfs::write reads base bytes through the byte source for the copy).
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         tmpfs_stamp_now(host)?;
-        return crate::rootfs::write(host_handle, offset, &buf[..writable_len], |req, b| match req {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        let written = crate::rootfs::write(host_handle, offset, &buf[..writable_len], |req, b| match req {
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
                 Ok(0)
             }
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
-        });
+        })?;
+        if status_flags & O_DSYNC != 0 {
+            crate::rootfs::sync_persistence()?;
+        }
+        return Ok(written);
     }
 
     // WHY: the host owns the backing cursor. Only a true positioned call can
@@ -10205,7 +10295,12 @@ fn procfs_entry_stat(
 }
 
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
-    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    let request = stat_result_cache::Request::new(proc, path, true);
+    if let Some(hit) = request.as_ref().and_then(stat_result_cache::Request::lookup) {
+        stat_lease::record(proc, path, wasm_posix_shared::Syscall::Stat as u32, 0, hit);
+        return Ok(hit);
+    }
+    let ResolvedNamespacePath { path: resolved, stat, searched_ancestors } = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(
             dev,
@@ -10245,6 +10340,15 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     }
     // VFS is the source of truth for ownership: host_stat already returns the
     // file's real uid/gid, so just propagate.
+    // All virtual final-name handlers have run. The ordinary rootfs is
+    // owned by this kernel, so its record and checked ancestry are still live.
+    if searched_ancestors && crate::rootfs::claims_path(&resolved) {
+        let metadata = stat.ok_or(Errno::ENOENT)?;
+        if request.is_some_and(|request| request.remember(&resolved, metadata)) {
+            stat_lease::record(proc, path, wasm_posix_shared::Syscall::Stat as u32, 0, metadata);
+        }
+        return Ok(metadata);
+    }
     check_search_path(proc, host, &resolved)?;
     fs_stat(host, &resolved)
 }
@@ -10254,7 +10358,12 @@ pub fn sys_lstat(
     host: &mut dyn HostIO,
     path: &[u8],
 ) -> Result<WasmStat, Errno> {
-    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    let request = stat_result_cache::Request::new(proc, path, false);
+    if let Some(hit) = request.as_ref().and_then(stat_result_cache::Request::lookup) {
+        stat_lease::record(proc, path, wasm_posix_shared::Syscall::Lstat as u32, 0, hit);
+        return Ok(hit);
+    }
+    let ResolvedNamespacePath { path: resolved, stat, searched_ancestors } = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(
             dev,
@@ -10294,6 +10403,15 @@ pub fn sys_lstat(
     }
     // VFS is the source of truth for ownership: host_lstat already returns the
     // link's real uid/gid, so just propagate.
+    // All virtual final-name handlers have run. The ordinary rootfs is
+    // owned by this kernel, so its record and checked ancestry are still live.
+    if searched_ancestors && crate::rootfs::claims_path(&resolved) {
+        let metadata = stat.ok_or(Errno::ENOENT)?;
+        if request.is_some_and(|request| request.remember(&resolved, metadata)) {
+            stat_lease::record(proc, path, wasm_posix_shared::Syscall::Lstat as u32, 0, metadata);
+        }
+        return Ok(metadata);
+    }
     check_search_path(proc, host, &resolved)?;
     fs_lstat(host, &resolved)
 }
@@ -10372,19 +10490,20 @@ fn tmpfs_rmdir(resolved: &[u8]) -> Result<(), Errno> {
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
-    if crate::tmpfs::claims_path(&resolved) {
-        check_may_delete(proc, host, &resolved)?;
-        return tmpfs_rmdir(&resolved);
+    let resolution = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?;
+    let resolved = resolution.path.as_slice();
+    if crate::tmpfs::claims_path(resolved) {
+        check_may_delete(proc, host, resolved)?;
+        return tmpfs_rmdir(resolved);
     }
-    if crate::rootfs::claims_path(&resolved) {
-        check_may_delete(proc, host, &resolved)?;
-        return crate::rootfs::rmdir(&resolved);
+    if crate::rootfs::claims_path(resolved) {
+        check_resolved_rootfs_delete(proc, host, &resolution)?;
+        return crate::rootfs::rmdir(resolved);
     }
-    ensure_host_mutable_namespace_path(&resolved)?;
-    check_parent_writable(proc, host, &resolved)?;
-    check_sticky_child(proc, host, &resolved)?;
-    crate::hostdir::rmdir(host, &resolved)
+    ensure_host_mutable_namespace_path(resolved)?;
+    check_parent_writable(proc, host, resolved)?;
+    check_sticky_child(proc, host, resolved)?;
+    crate::hostdir::rmdir(host, resolved)
 }
 
 /// Create a named FIFO (`mkfifo` / `mknod(S_IFIFO)`). A FIFO is a named kernel
@@ -10673,44 +10792,45 @@ fn link_with_fifo_registration(
 }
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    let resolution = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?;
+    let resolved = resolution.path.as_slice();
     // In-kernel tmpfs owns the scratch mounts. A tmpfs fifo lives in the
     // fifo/pipe table (not the tmpfs inode store), so drop it there first. A
     // bound AF_UNIX socket node also has a path-keyed registry entry; drop it
     // (waking any parked datagram senders) before removing the tmpfs node.
-    if crate::tmpfs::claims_path(&resolved) {
-        check_may_delete(proc, host, &resolved)?;
-        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+    if crate::tmpfs::claims_path(resolved) {
+        check_may_delete(proc, host, resolved)?;
+        if let Some(result) = unlink_fifo_marker(host, resolved) {
             return result;
         }
-        crate::exchange::policy::check_remove(&resolved)?;
+        crate::exchange::policy::check_remove(resolved)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.unregister(&resolved) {
+        if registry.unregister(resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return tmpfs_unlink(&resolved);
+        return tmpfs_unlink(resolved);
     }
     // In-kernel rootfs overlay owns `/`: same fifo/socket handling as tmpfs — a
     // fifo lives in the fifo/pipe table, a bound AF_UNIX socket in the registry;
     // drop those before removing the tree entry.
-    if crate::rootfs::claims_path(&resolved) {
-        check_may_delete(proc, host, &resolved)?;
-        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+    if crate::rootfs::claims_path(resolved) {
+        check_resolved_rootfs_delete(proc, host, &resolution)?;
+        if let Some(result) = unlink_fifo_marker(host, resolved) {
             return result;
         }
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.unregister(&resolved) {
+        if registry.unregister(resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return crate::rootfs::unlink(&resolved);
+        return crate::rootfs::unlink(resolved);
     }
-    if let Some(result) = unlink_devfs_socket_name(proc, &resolved) {
+    if let Some(result) = unlink_devfs_socket_name(proc, resolved) {
         return result;
     }
-    ensure_host_mutable_namespace_path(&resolved)?;
-    check_parent_writable(proc, host, &resolved)?;
-    check_sticky_child(proc, host, &resolved)?;
-    if let Some(result) = unlink_fifo_marker(host, &resolved) {
+    ensure_host_mutable_namespace_path(resolved)?;
+    check_parent_writable(proc, host, resolved)?;
+    check_sticky_child(proc, host, resolved)?;
+    if let Some(result) = unlink_fifo_marker(host, resolved) {
         return result;
     }
     // AF_UNIX bind() creates a real host inode, so unlink must remove both the
@@ -10718,18 +10838,18 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     // some hosts (test mocks) don't track the inode.
     {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.unregister(&resolved) {
+        if registry.unregister(resolved) {
             // A sendto(path) may be parked on a full AF_UNIX datagram queue.
             // Once the name is removed, retry it so it observes the now-stale
             // destination instead of sleeping until an unrelated timeout.
             crate::wakeup::push_datagram_writable();
-            match crate::hostdir::unlink(host, &resolved) {
+            match crate::hostdir::unlink(host, resolved) {
                 Ok(()) | Err(Errno::ENOENT) => return Ok(()),
                 Err(e) => return Err(e),
             }
         }
     }
-    unlink_host_entry(host, &resolved)
+    unlink_host_entry(host, resolved)
 }
 
 pub fn sys_rename(
@@ -11112,7 +11232,7 @@ pub fn sys_fchdir(proc: &mut Process, fd: i32) -> Result<(), Errno> {
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
-    proc.cwd = ofd.path.clone();
+    proc.cwd = directory_description_path(ofd)?;
     Ok(())
 }
 
@@ -11567,11 +11687,11 @@ pub fn sys_getdents64(
 
     // In-kernel rootfs overlay directories: same live-store generation.
     if dir_handle == crate::rootfs::ROOTFS_DIR_SENTINEL {
-        let entry_offset = proc
+        let ofd = proc
             .ofd_table
             .get(ofd_idx)
-            .ok_or(Errno::EBADF)?
-            .dir_entry_offset;
+            .ok_or(Errno::EBADF)?;
+        let entry_offset = ofd.dir_entry_offset;
         // The `/` image tree has no `/dev` or `/proc` — those are synthetic
         // kernel mounts. Inject them into the root listing exactly as the
         // host-served path does (ROOT_VIRTUAL_DIRENTS), so `ls /` matches.
@@ -11580,8 +11700,11 @@ pub fn sys_getdents64(
         } else {
             Vec::new()
         };
-        let (bytes, new_offset, exhausted) =
-            crate::rootfs::getdents64(&path, buf, entry_offset, &root_virtuals)?;
+        let (bytes, new_offset, exhausted) = if crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
+            crate::rootfs::getdents_for_handle(ofd.host_handle, buf, entry_offset, &root_virtuals)?
+        } else {
+            crate::rootfs::getdents64(&path, buf, entry_offset, &root_virtuals)?
+        };
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_entry_offset = new_offset;
             ofd.set_directory_offset(new_offset);
@@ -12626,6 +12749,15 @@ fn check_utimens_permissions(
     Ok(true)
 }
 
+fn resolve_file_time(seconds: i64, nanos: i64, current: (u64, u32), now: (u64, u32)) -> Result<(u64, u32), Errno> {
+    match nanos {
+        UTIME_OMIT => Ok(current),
+        UTIME_NOW => Ok(now),
+        0..=999_999_999 => Ok((u64::try_from(seconds).map_err(|_| Errno::EINVAL)?, nanos as u32)),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 /// Set file timestamps. Delegates to host.
 pub fn sys_utimensat(
     proc: &mut Process,
@@ -12660,19 +12792,26 @@ pub fn sys_utimensat(
         }
         let handle = ofd.metadata_handle();
         if matches!(ofd.file_type, FileType::Regular | FileType::Directory)
-            && (crate::rootfs::is_rootfs_file_handle(handle) || crate::tmpfs::is_tmpfs_file_handle(handle))
+            && (crate::rootfs::is_rootfs_file_handle(handle)
+                || crate::tmpfs::is_tmpfs_file_handle(handle))
         {
             let stat = sys_fstat(proc, host, dirfd)?;
             if !check_utimens_permissions(proc, &stat, times)? {
                 return Ok(());
             }
-            let (atime, mtime, now) = resolve_inode_timestamps(
-                host, &stat, (atime_sec, atime_nsec), (mtime_sec, mtime_nsec),
+            let now = realtime_timestamp(host)?;
+            let accessed = resolve_file_time(
+                atime_sec, atime_nsec, (stat.st_atime_sec, stat.st_atime_nsec), now,
+            )?;
+            let modified = resolve_file_time(
+                mtime_sec, mtime_nsec, (stat.st_mtime_sec, stat.st_mtime_nsec), now,
             )?;
             if crate::rootfs::is_rootfs_file_handle(handle) {
-                return crate::rootfs::futimens(handle, atime.0, atime.1, mtime.0, mtime.1, now.0, now.1);
+                return crate::rootfs::futimens(handle, accessed, modified, now);
             }
-            return crate::tmpfs::futimens(handle, atime.0, atime.1, mtime.0, mtime.1, now.0, now.1);
+            return crate::tmpfs::futimens(
+                handle, accessed.0, accessed.1, modified.0, modified.1, now.0, now.1,
+            );
         }
         if let Some(pipe_idx) = named_fifo_pipe_idx(proc, dirfd)? {
             let st = sys_fstat(proc, host, dirfd)?;
@@ -12688,30 +12827,10 @@ pub fn sys_utimensat(
                     // A tmpfs/rootfs fifo's times live on its Special(S_IFIFO)
                     // inode, not a host marker; update the inode directly
                     // (host_utimensat would ENOENT on the absent host path).
-                    let (now_sec, now_nsec) = {
-                        let (s, n) = host
-                            .host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
-                        (
-                            u64::try_from(s).map_err(|_| Errno::EINVAL)?,
-                            u32::try_from(n).map_err(|_| Errno::EINVAL)?,
-                        )
-                    };
-                    let resolve = |req_sec: i64, req_nsec: i64, cur_sec: u64, cur_nsec: u32|
-                     -> Result<(u64, u32), Errno> {
-                        match req_nsec {
-                            UTIME_OMIT => Ok((cur_sec, cur_nsec)),
-                            UTIME_NOW => Ok((now_sec, now_nsec)),
-                            0..=999_999_999 => Ok((
-                                u64::try_from(req_sec).map_err(|_| Errno::EINVAL)?,
-                                req_nsec as u32,
-                            )),
-                            _ => Err(Errno::EINVAL),
-                        }
-                    };
-                    let (a_sec, a_nsec) =
-                        resolve(atime_sec, atime_nsec, st.st_atime_sec, st.st_atime_nsec)?;
-                    let (m_sec, m_nsec) =
-                        resolve(mtime_sec, mtime_nsec, st.st_mtime_sec, st.st_mtime_nsec)?;
+                    let now = realtime_timestamp(host)?;
+                    let (now_sec, now_nsec) = now;
+                    let (a_sec, a_nsec) = resolve_file_time(atime_sec, atime_nsec, (st.st_atime_sec, st.st_atime_nsec), now)?;
+                    let (m_sec, m_nsec) = resolve_file_time(mtime_sec, mtime_nsec, (st.st_mtime_sec, st.st_mtime_nsec), now)?;
                     if crate::rootfs::claims_path(&live_path) {
                         return crate::rootfs::utimensat(
                             &live_path, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
@@ -12790,24 +12909,27 @@ pub fn sys_utimensat(
         }
     }
 
+    let nofollow = flags & AT_SYMLINK_NOFOLLOW != 0;
     let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
         let entry = proc.fd_table.get(dirfd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
         ofd.path.to_vec()
     } else {
-        let policy = if flags & AT_SYMLINK_NOFOLLOW != 0 { PathResolveOptions::NOFOLLOW } else { PathResolveOptions::FOLLOW };
-        resolve_at_path(proc, host, dirfd, path, policy)?.path
+        let options = if nofollow { PathResolveOptions::NOFOLLOW } else { PathResolveOptions::FOLLOW };
+        resolve_at_path(proc, host, dirfd, path, options)?.path
     };
     ensure_host_mutable_namespace_path(&resolved)?;
 
     check_search_path(proc, host, &resolved)?;
-    let st = if flags & AT_SYMLINK_NOFOLLOW != 0 { fs_lstat(host, &resolved)? } else { fs_stat(host, &resolved)? };
+    let st = if nofollow { fs_lstat(host, &resolved)? } else { fs_stat(host, &resolved)? };
     if !check_utimens_permissions(proc, &st, times)? {
         return Ok(());
     }
     if crate::tmpfs::claims_path(&resolved) || crate::rootfs::claims_path(&resolved) {
-        let ((a_sec, a_nsec), (m_sec, m_nsec), (now_sec, now_nsec)) =
-            resolve_inode_timestamps(host, &st, (atime_sec, atime_nsec), (mtime_sec, mtime_nsec))?;
+        let now = realtime_timestamp(host)?;
+        let (now_sec, now_nsec) = now;
+        let (a_sec, a_nsec) = resolve_file_time(atime_sec, atime_nsec, (st.st_atime_sec, st.st_atime_nsec), now)?;
+        let (m_sec, m_nsec) = resolve_file_time(mtime_sec, mtime_nsec, (st.st_mtime_sec, st.st_mtime_nsec), now)?;
         if crate::rootfs::claims_path(&resolved) {
             return crate::rootfs::utimensat(
                 &resolved, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
@@ -12817,31 +12939,8 @@ pub fn sys_utimensat(
             &resolved, a_sec, a_nsec, m_sec, m_nsec, now_sec, now_nsec,
         );
     }
-    crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, flags)
+    crate::hostdir::utimensat(host, &resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec, flags & AT_SYMLINK_NOFOLLOW)
 }
-
-type InodeTimestamp = (u64, u32);
-
-fn resolve_inode_timestamps(
-    host: &mut dyn HostIO,
-    stat: &WasmStat,
-    atime: (i64, i64),
-    mtime: (i64, i64),
-) -> Result<(InodeTimestamp, InodeTimestamp, InodeTimestamp), Errno> {
-    let now = realtime_timestamp(host)?;
-    let resolve = |(sec, nsec), current| match nsec {
-        UTIME_OMIT => Ok(current),
-        UTIME_NOW => Ok(now),
-        0..=999_999_999 => Ok((u64::try_from(sec).map_err(|_| Errno::EINVAL)?, nsec as u32)),
-        _ => Err(Errno::EINVAL),
-    };
-    Ok((
-        resolve(atime, (stat.st_atime_sec, stat.st_atime_nsec))?,
-        resolve(mtime, (stat.st_mtime_sec, stat.st_mtime_nsec))?,
-        now,
-    ))
-}
-
 
 /// `madvise()` advice values Kandelo's `<sys/mman.h>` defines: the five
 /// POSIX/BSD values and the Linux values from `MADV_FREE` (8) through
@@ -13562,8 +13661,8 @@ fn mmap_region_for_ofd(
             && crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
         {
             crate::rootfs::prefetch_range(ofd.host_handle, offset, len, |req, b| match req {
-                crate::rootfs::ByteReq::Deferred { uri, offset } => {
-                    host.fetch_deferred(&uri, b, offset)
+                crate::rootfs::ByteReq::Deferred { uri, offset, size } => {
+                    host.fetch_deferred(&uri, b, offset, size)
                 }
                 crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                     host.discard_deferred(&uri);
@@ -19040,6 +19139,13 @@ pub fn sys_gettimeofday(_proc: &mut Process, host: &mut dyn HostIO) -> Result<(i
     Ok((sec, usec))
 }
 
+fn directory_description_path(ofd: &crate::ofd::OpenFileDesc) -> Result<crate::ofd::OfdPath, Errno> {
+    if ofd.file_type == FileType::Directory && crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
+        return crate::rootfs::directory_handle_path(ofd.host_handle);
+    }
+    Ok(ofd.path.clone())
+}
+
 /// Resolve a path relative to a directory fd through the global namespace.
 /// Absolute paths ignore `dirfd`; relative paths use either cwd or the
 /// canonical path captured by the directory OFD.
@@ -19064,7 +19170,7 @@ fn resolve_at_path(
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
-    let base = ofd.path.clone();
+    let base = directory_description_path(ofd)?;
 
     resolve_namespace_path_from(proc, host, path, &base, options)
 }
@@ -19105,6 +19211,7 @@ pub fn sys_openat(
             return Err(Errno::ELOOP);
         }
     }
+    let searched_for_missing_name = resolved_entry.searched_ancestors && resolved_entry.stat.is_none();
     let resolved = resolved_entry.path;
 
     // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
@@ -19281,11 +19388,12 @@ pub fn sys_openat(
     // reads or deferred fetches, via the read path). Permission checks are host-free
     // (fs_stat is rootfs-aware and rootfs owns every parent of a `/` path).
     if crate::rootfs::claims_path(&resolved) {
-        check_open_permissions(proc, host, &resolved, oflags)?;
+        let creating = oflags & O_CREAT != 0 && searched_for_missing_name;
+        check_resolved_rootfs_open(proc, host, &resolved, oflags, creating)?;
         if oflags & O_CREAT != 0 {
             tmpfs_stamp_now(host)?;
         }
-        if crate::rootfs::is_dir(&resolved) {
+        if !creating && crate::rootfs::is_dir(&resolved) {
             if oflags & O_ACCMODE != O_RDONLY {
                 return Err(Errno::EISDIR);
             }
@@ -19331,7 +19439,12 @@ pub fn sys_fstatat(
     } else {
         PathResolveOptions::FOLLOW
     };
-    let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
+    let request = if dirfd == AT_FDCWD || path.starts_with(b"/") { stat_result_cache::Request::new(proc, path, flags & AT_SYMLINK_NOFOLLOW == 0) } else { None };
+    if let Some(hit) = request.as_ref().and_then(stat_result_cache::Request::lookup) {
+        stat_lease::record(proc, path, wasm_posix_shared::Syscall::Fstatat as u32, flags, hit);
+        return Ok(hit);
+    }
+    let ResolvedNamespacePath { path: resolved, stat, searched_ancestors } = resolve_at_path(proc, host, dirfd, path, options)?;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(
             dev,
@@ -19377,6 +19490,15 @@ pub fn sys_fstatat(
     }
     // VFS is the source of truth for ownership: host_stat / host_lstat
     // already return the real uid/gid, so just propagate.
+    // All virtual final-name handlers have run. The ordinary rootfs is
+    // owned by this kernel, so its record and checked ancestry are still live.
+    if searched_ancestors && crate::rootfs::claims_path(&resolved) {
+        let metadata = stat.ok_or(Errno::ENOENT)?;
+        if request.is_some_and(|request| request.remember(&resolved, metadata)) {
+            stat_lease::record(proc, path, wasm_posix_shared::Syscall::Fstatat as u32, flags, metadata);
+        }
+        return Ok(metadata);
+    }
     check_search_path(proc, host, &resolved)?;
     if flags & AT_SYMLINK_NOFOLLOW != 0 {
         fs_lstat(host, &resolved)
@@ -19397,7 +19519,8 @@ pub fn sys_unlinkat(
 ) -> Result<(), Errno> {
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
-    let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::NOFOLLOW)?.path;
+    let resolution = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::NOFOLLOW)?;
+    let resolved = resolution.path.as_slice();
 
     // `unlinkat` is `unlink` and `rmdir` under one name, differing only in how
     // the target is named, so each branch must reach exactly the filesystems
@@ -19406,69 +19529,69 @@ pub fn sys_unlinkat(
     // fallback but a lookup in a filesystem that does not contain the file.
     if flags & AT_REMOVEDIR != 0 {
         // Mirrors `sys_rmdir`.
-        if crate::tmpfs::claims_path(&resolved) {
-            check_may_delete(proc, host, &resolved)?;
-            return tmpfs_rmdir(&resolved);
+        if crate::tmpfs::claims_path(resolved) {
+            check_may_delete(proc, host, resolved)?;
+            return tmpfs_rmdir(resolved);
         }
-        if crate::rootfs::claims_path(&resolved) {
-            check_may_delete(proc, host, &resolved)?;
-            return crate::rootfs::rmdir(&resolved);
+        if crate::rootfs::claims_path(resolved) {
+            check_resolved_rootfs_delete(proc, host, &resolution)?;
+            return crate::rootfs::rmdir(resolved);
         }
-        ensure_host_mutable_namespace_path(&resolved)?;
-        check_parent_writable(proc, host, &resolved)?;
-        check_sticky_child(proc, host, &resolved)?;
-        return crate::hostdir::rmdir(host, &resolved);
+        ensure_host_mutable_namespace_path(resolved)?;
+        check_parent_writable(proc, host, resolved)?;
+        check_sticky_child(proc, host, resolved)?;
+        return crate::hostdir::rmdir(host, resolved);
     }
 
     // Mirrors `sys_unlink`: a fifo lives in the fifo/pipe table rather than the
     // owning filesystem's inode store, and a bound AF_UNIX socket node also has
     // a path-keyed registry entry, so both are dropped before the node is.
-    if crate::tmpfs::claims_path(&resolved) {
-        check_may_delete(proc, host, &resolved)?;
-        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+    if crate::tmpfs::claims_path(resolved) {
+        check_may_delete(proc, host, resolved)?;
+        if let Some(result) = unlink_fifo_marker(host, resolved) {
             return result;
         }
-        crate::exchange::policy::check_remove(&resolved)?;
+        crate::exchange::policy::check_remove(resolved)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.unregister(&resolved) {
+        if registry.unregister(resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return tmpfs_unlink(&resolved);
+        return tmpfs_unlink(resolved);
     }
-    if crate::rootfs::claims_path(&resolved) {
-        check_may_delete(proc, host, &resolved)?;
-        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+    if crate::rootfs::claims_path(resolved) {
+        check_resolved_rootfs_delete(proc, host, &resolution)?;
+        if let Some(result) = unlink_fifo_marker(host, resolved) {
             return result;
         }
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.unregister(&resolved) {
+        if registry.unregister(resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return crate::rootfs::unlink(&resolved);
+        return crate::rootfs::unlink(resolved);
     }
 
-    if let Some(result) = unlink_devfs_socket_name(proc, &resolved) {
+    if let Some(result) = unlink_devfs_socket_name(proc, resolved) {
         return result;
     }
-    ensure_host_mutable_namespace_path(&resolved)?;
-    check_parent_writable(proc, host, &resolved)?;
-    check_sticky_child(proc, host, &resolved)?;
-    if let Some(result) = unlink_fifo_marker(host, &resolved) {
+    ensure_host_mutable_namespace_path(resolved)?;
+    check_parent_writable(proc, host, resolved)?;
+    check_sticky_child(proc, host, resolved)?;
+    if let Some(result) = unlink_fifo_marker(host, resolved) {
         return result;
     }
     // AF_UNIX bind() creates a host inode; remove both the registry
     // entry and the inode. (Same as sys_unlink.)
     {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.unregister(&resolved) {
+        if registry.unregister(resolved) {
             crate::wakeup::push_datagram_writable();
-            match crate::hostdir::unlink(host, &resolved) {
+            match crate::hostdir::unlink(host, resolved) {
                 Ok(()) | Err(Errno::ENOENT) => return Ok(()),
                 Err(e) => return Err(e),
             }
         }
     }
-    unlink_host_entry(host, &resolved)
+    unlink_host_entry(host, resolved)
 }
 
 /// mkdirat -- mkdir relative to directory fd.
@@ -22724,7 +22847,7 @@ pub fn sys_ftruncate(
         }
         tmpfs_stamp_now(host)?;
         return crate::rootfs::truncate_handle(host_handle, length, |req, b| match req {
-            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+            crate::rootfs::ByteReq::Deferred { uri, offset, size } => host.fetch_deferred(&uri, b, offset, size),
             crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                 host.discard_deferred(&uri);
                 Ok(0)
@@ -22819,6 +22942,7 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                 return Ok(());
             }
             if crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
+                || crate::rootfs::is_rootfs_dir_handle(ofd.host_handle)
                 || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
             {
                 return crate::rootfs::sync_persistence();
@@ -27028,7 +27152,7 @@ mod tests {
             })
         }
 
-        fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64, _size: u64) -> Result<usize, Errno> {
             // The fixtures key their blobs by id, so this host resolves the
             // address back to one — which is exactly the table the real host no
             // longer keeps, kept here because a TEST host is allowed to be a
@@ -71292,4 +71416,29 @@ impl HostIO for RelSymlinkMock {
             );
         }
     }
+}
+
+mod stat_result_cache;
+pub mod stat_lease;
+
+pub(crate) fn reset_stat_results() { stat_result_cache::reset(); }
+
+// The same routing sources as namespace_lstat_raw and the final stat
+// handlers. Check dynamic exact-name providers at every cache hit.
+fn ordinary_stat_result_path(path: &[u8]) -> bool {
+    if is_procfs_namespace_path(path) || is_devfs_namespace_path(path)
+        || crate::sysfs::is_namespace_path(path)
+        || !crate::rootfs::claims_path(path) || !crate::rootfs::claims_path(b"/")
+        || unsafe { crate::unix_socket::global_unix_socket_registry() }.contains(path)
+    {
+        return false;
+    }
+    let fifo = unsafe { crate::fifo::global_fifo_table() };
+    if fifo.lookup(b"/").is_some() { return false; }
+    path.iter().enumerate().skip(1).filter_map(|(index, byte)| (*byte == b'/').then_some(index))
+        .chain(core::iter::once(path.len()))
+        .all(|end| {
+            let prefix = &path[..end];
+            synthetic_file_object_id(prefix).is_none() && fifo.lookup(prefix).is_none()
+        })
 }

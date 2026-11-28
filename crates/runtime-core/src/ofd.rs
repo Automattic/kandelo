@@ -1347,7 +1347,9 @@ impl OpenFileDesc {
 
         debug_assert!(self.offset() >= 0, "directory cookies cannot be negative");
         let cookie = self.offset().max(0);
-        self.dir_host_handle = if self.host_handle == crate::procfs::PROCFS_DIR_HANDLE
+        self.dir_host_handle = if crate::rootfs::is_rootfs_file_handle(self.host_handle) {
+            crate::rootfs::ROOTFS_DIR_SENTINEL
+        } else if self.host_handle == crate::procfs::PROCFS_DIR_HANDLE
             || self.host_handle == crate::devfs::DEVFS_DIR_HANDLE
             || self.host_handle == crate::sysfs::SYSFS_DIR_HANDLE
         {

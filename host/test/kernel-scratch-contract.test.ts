@@ -818,6 +818,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setIoBudget(ioBudgetBytes)",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::supportsStatLease()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::rootfsFormatVersion()",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.rootfsJournalStateMemory::kernel-export-direct-use::used()",
   ),
   reviewedScalarKernelExportCall(
@@ -1228,6 +1234,32 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::loadPersistentImage(imageLenLo, imageLenHi, digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7, dataCachePages, indexCachePages)",
+  ),
+  // KIFS v3 accepts eight scalar identity words and obtains volume bytes
+  // through the worker's positioned storage provider.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::mountVolume(...volume.identity)",
+  ),
+  // The compact export takes no arguments. Its bytes cross only the active
+  // and target positioned-storage imports.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.writeRootfsImageTo::kernel-export-direct-use::compact()",
+  ),
+  // Generation handoff uses scalar status, identity words and positioned I/O.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.kifsCompactionNeeded::kernel-export-direct-use::needed()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.prepareKifsHandoff::kernel-export-direct-use::prepare(...words)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.activateKifsHandoff::kernel-export-direct-use::activate()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.cancelKifsHandoff::kernel-export-direct-use::cancel()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.stageSavedKifsV3::kernel-export-direct-use::stage(targetSlot, profile, ...words)",
   ),
   // Reviewed: `kernel_set_image_build_determinism` takes the image-build
   // seed and epoch as four 32-bit scalar words, once at boot before any

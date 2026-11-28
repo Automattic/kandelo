@@ -147,12 +147,15 @@ import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import { trapProcessWorker } from "./fork-worker-import-exceptions";
 import { createHeapSafepointImport } from "./heap-safepoint";
 import { createStackCaptureImport } from "./wasm-stack-capture";
+import { makeStatLeaseImport, type StatLeaseBinding } from "./stat-lease";
 import {
   KLOG_IMPORT,
   KLOG_INVALID_ARGUMENT,
   KLOG_MODULE,
   STACK_IMPORT,
   STACK_MODULE,
+  STAT_CACHE_IMPORT,
+  STAT_CACHE_MODULE,
 } from "./generated/program-extensions";
 import { GroupedWorkerRuntime, assertDeferredGroupedStart } from "./grouped-worker-runtime";
 import { WorkerChannelIPC, type GroupedWorkerWait32 } from "./worker-channel-ipc";
@@ -1165,6 +1168,7 @@ export function buildDlopenImports(
   memoryOwnership: "copied" | "borrowed" = "copied",
   forkSideModuleContract?: ForkSideModuleContract,
   stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
+  statLeaseBinding?: StatLeaseBinding,
   groupedWait32?: GroupedWorkerWait32,
 ): DlopenSupport {
   if (
@@ -1194,6 +1198,12 @@ export function buildDlopenImports(
   };
   const extensionImports: WebAssembly.Imports = {
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
+    [STAT_CACHE_MODULE]: {
+      // Grouped address spaces use their normal syscall path for stat.
+      [STAT_CACHE_IMPORT]: memory instanceof WebAssembly.Memory
+        ? makeStatLeaseImport(memory, ptrWidth, statLeaseBinding)
+        : () => 0,
+    },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
         [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,
@@ -3754,6 +3764,7 @@ export async function centralizedWorkerMain(
         forkMemoryOwnership,
         readForkSideModuleContract(module),
         programBytes,
+        initData.statLeaseBinding,
         grouped?.wait32,
       );
       processDlopenSupport = dlopenSupport;
@@ -4319,6 +4330,7 @@ export async function centralizedWorkerMain(
         undefined,
         readForkSideModuleContract(module),
         programBytes,
+        initData.statLeaseBinding,
         grouped?.wait32,
       );
       const importObject = buildImportObject(
@@ -5782,6 +5794,7 @@ export async function centralizedThreadWorkerMain(
       undefined,
       readForkSideModuleContract(module),
       () => programBytes ?? patchWasmForThread(initData.programBytes),
+      undefined,
       grouped?.wait32,
     );
     if (threadActivationRegistry) {

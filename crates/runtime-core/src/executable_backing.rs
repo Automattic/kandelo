@@ -80,8 +80,8 @@ impl RawRegular {
                 bytes,
                 |request, output| match request {
                     crate::rootfs::ByteReq::Image { offset } => host.image_read(output, offset),
-                    crate::rootfs::ByteReq::Deferred { uri, offset } => {
-                        host.fetch_deferred(&uri, output, offset)
+                    crate::rootfs::ByteReq::Deferred { uri, offset, size } => {
+                        host.fetch_deferred(&uri, output, offset, size)
                     }
                     crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                         host.discard_deferred(&uri);
@@ -372,8 +372,8 @@ pub fn prefetch(
             length,
             |request, output| match request {
                 crate::rootfs::ByteReq::Image { offset } => host.image_read(output, offset),
-                crate::rootfs::ByteReq::Deferred { uri, offset } => {
-                    host.fetch_deferred(&uri, output, offset)
+                crate::rootfs::ByteReq::Deferred { uri, offset, size } => {
+                    host.fetch_deferred(&uri, output, offset, size)
                 }
                 crate::rootfs::ByteReq::DiscardDeferred { uri } => {
                     host.discard_deferred(&uri);

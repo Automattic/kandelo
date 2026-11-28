@@ -31,7 +31,17 @@ test("memory-only boots do not claim an OPFS journal, checking policy or cache",
 
 test("unknown mounted properties stay absent instead of becoming defaults", () => {
   const labels = filesystemConfigRows({ storage: "opfs" }, null).map(row => row.label);
-  for (const label of ["Base generation", "Base file size", "Base checking", "Retention", "OPFS directory"]) assert(!labels.includes(label));
+  for (const label of ["Filesystem version", "Base generation", "Base file size", "Base checking", "Retention", "OPFS directory"]) assert(!labels.includes(label));
+});
+
+test("filesystem version reflects the mounted format", () => {
+  for (const version of [1, 2, 3]) {
+    const rows = new Map(filesystemConfigRows({ storage: "opfs", version, mode: "resizable", baseFile: "source" }, null)
+      .map(row => [row.label, row.value]));
+    assert.equal(rows.get("Filesystem version"), `KIFS v${version}`);
+    assert.equal(rows.has("Journal mode"), version !== 3);
+    assert.equal(rows.get(version === 3 ? "Source image file" : "Mounted base file"), "source");
+  }
 });
 
 test("mounted base details reflect supplied generation, size, checking policy and directory", () => {

@@ -1,16 +1,24 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { Worker } from "node:worker_threads";
+import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+import { upgradeCuts, exerciseOwnerLoss, type OwnerResult } from "./fixtures/kifs-upgrade-cuts";
+import { writeCheckedUpgradeSource } from "./fixtures/kifs-upgrade-source";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import type { PositionedImageTarget } from "../../images/vfs/lib/positioned-image-targets";
+import { resolveBinary } from "../src/binary-resolver";
 import { ERRNO } from "../src/generated/abi";
 import { HostFileSystem } from "../src/vfs/host-fs";
+import { NodeKernelHost } from "../src/node-kernel-host";
+import { capacityProgram } from "./fixtures/kifs-v3-guest";
 import { NodeImageReader } from "../src/vfs/node-image-reader";
 import { OverlayStorageFile } from "../src/vfs/overlay-storage";
 
-const moduleBytes = () => new Uint8Array(readFileSync(new URL("../../local-binaries/kandelo_image_module_positioned32.wasm", import.meta.url)));
+const moduleBytes = () => new Uint8Array(readFileSync(resolveBinary("kandelo_image_module_positioned32.wasm")));
 
 async function temporary(operation: (directory: string, filesystem: KandeloImageFs, open: (name: string) => OverlayStorageFile) => Promise<void>) {
   const directory = mkdtempSync(join(tmpdir(), "kandelo-image-writer-"));
@@ -30,6 +38,151 @@ async function temporary(operation: (directory: string, filesystem: KandeloImage
 }
 
 describe("Rust persistent image writer through real Wasm and Node files", () => {
+  it.each(upgradeCuts)("recovers a real saved volume after worker termination at %s", async cut => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-upgrade-cut-"));
+    try {
+      const { identity } = await writeCheckedUpgradeSource(directory);
+      const loader = pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href;
+      const fixture = new URL("./fixtures/kifs-upgrade-node-worker.ts", import.meta.url).href;
+      const entry = new URL("data:text/javascript," + encodeURIComponent(
+        `import { tsImport } from ${JSON.stringify(loader)}; await tsImport(${JSON.stringify(fixture)}, ${JSON.stringify(import.meta.url)});`,
+      ));
+      const kernelPath = process.env.KANDELO_KIFS_BENCH_KERNEL ?? resolveBinary("kernel.wasm");
+      await exerciseOwnerLoss(cut, async action => {
+        const worker = new Worker(entry, { workerData: { action, directory, identity, kernelPath }, execArgv: [] });
+        try {
+          return await new Promise<OwnerResult>((resolve, reject) => {
+            worker.once("message", resolve);
+            worker.once("error", reject);
+            worker.once("exit", code => reject(new Error(`upgrade worker exited before reporting (${code})`)));
+          });
+        } finally { await worker.terminate(); }
+      }, process.env.KANDELO_KIFS_EXPECT_INDEX_QUOTA === "1");
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 90_000);
+
+  it("refuses damaged active KIFS authority while the old journal is still readable", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kifs-authority-"));
+    try {
+      const checked = await writeCheckedUpgradeSource(directory);
+      const kernel = Uint8Array.from(readFileSync(resolveBinary("kernel.wasm"))).buffer;
+      const journal = join(directory, "computer");
+      const boot = async (phase: "seed" | "upgrade" | "recover", identity = checked.identity) => {
+        const host = new NodeKernelHost({ rootfsImageFile: checked.path,
+          rootfsPersistentImageBinding: { identitySha256: identity, dataCachePages: 1, indexCachePages: 1 },
+          experimentalResizablePersistencePath: journal, requireExistingRootfsPersistence: phase !== "seed",
+          kifsUpgradeProfile: phase === "upgrade" ? "development" : phase === "seed" ? "legacy" : undefined });
+        try {
+          await host.init(kernel);
+          if (phase === "seed") await host.writeFileToVfs("/saved", Uint8Array.of(1), 0o600);
+          if (phase === "upgrade") await host.writeFileToVfs("/saved", Uint8Array.of(2), 0o600);
+          return await host.readFileFromVfs("/saved");
+        } finally { await host.destroy(); }
+      };
+      await boot("seed");
+      const source = readFileSync(journal);
+      await boot("upgrade");
+      expect(existsSync(journal)).toBe(false);
+      // Simulate storage restored from a stale backup after activation.
+      writeFileSync(journal, source);
+      const files = ["activation0", "activation1", "g0.volume", "g0.volume-seal"] as const;
+      const path = (file: typeof files[number]) => journal + "." + file;
+      const saved = new Map(files.map(file => [file, readFileSync(path(file))]));
+      for (const damage of ["missing controls", "corrupt controls", "missing volume", "wrong seal", "wrong base"]) {
+        if (damage.endsWith("controls")) {
+          for (const replica of ["activation0", "activation1"] as const) {
+            if (damage === "missing controls") rmSync(path(replica));
+            else writeFileSync(path(replica), Buffer.alloc(128, 9));
+          }
+        } else if (damage === "missing volume") rmSync(path("g0.volume"));
+        else if (damage === "wrong seal") {
+          const bytes = Buffer.from(saved.get("g0.volume-seal")!);
+          bytes[bytes.length - 1] ^= 1;
+          writeFileSync(path("g0.volume-seal"), bytes);
+        }
+        await expect(boot("recover", damage === "wrong base" ? "00".repeat(32) : checked.identity), damage).rejects.toThrow();
+        expect(readFileSync(journal), damage).toEqual(source);
+        for (const [file, bytes] of saved) writeFileSync(path(file), bytes);
+        expect(await boot("recover"), damage).toEqual(Uint8Array.of(2));
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 90_000);
+
+  it.each(["development", "custom"] as const)("upgrades a checked saved %s computer and boots its activated volume", async profile => {
+    await temporary(async (directory, filesystem, open) => {
+      filesystem.setImageCapacity(8 * 1024 * 1024);
+      filesystem.writeFile("/base-file", new TextEncoder().encode("checked base"), 0o644);
+      const checked = await filesystem.exportPersistentImageTo(open("base.img"), "sha256");
+      const journal = join(directory, "computer");
+      const kernel = Uint8Array.from(readFileSync(resolveBinary("kernel.wasm"))).buffer;
+      const guest = Uint8Array.from(readFileSync(capacityProgram)).buffer;
+      let objects: string | undefined;
+      let legacyBlocks: string | undefined;
+      for (const phase of ["seed", "upgrade", "reopen"]) {
+        let output = "";
+        const diagnostics: string[] = [];
+        const write = (_pid: number, bytes: Uint8Array) => { output += new TextDecoder().decode(bytes); };
+        const host = new NodeKernelHost({
+          rootfsImageFile: join(directory, "base.img"),
+          rootfsPersistentImageBinding: { identitySha256: checked.identitySha256, dataCachePages: 1, indexCachePages: 1 },
+          experimentalResizablePersistencePath: journal, requireExistingRootfsPersistence: phase !== "seed",
+          kifsUpgradeProfile: phase === "upgrade" ? profile : undefined,
+          onHostDiagnostic: event => diagnostics.push(event.message), onStdout: write, onStderr: write,
+        });
+        try {
+          await host.init(kernel);
+          expect(new TextDecoder().decode((await host.readFileFromVfs("/base-file"))!)).toBe("checked base");
+          const code = await host.spawn(guest, ["kifs-capacity", phase === "seed" ? "seed-saved" : "check-saved", "/"], { uid: 0, gid: 0 });
+          expect(code, output).toBe(0);
+          const ids = output.match(/^saved objects .+$/m)?.[0];
+          const geometry = output.match(/^geometry (\d+) (\d+)$/m);
+          expect(ids).toBeDefined();
+          expect(geometry).not.toBeNull();
+          if (phase === "seed") {
+            objects = ids;
+            legacyBlocks = geometry![1];
+            expect(Number(geometry![2])).toBeGreaterThan(0);
+          } else {
+            expect(ids).toBe(objects);
+            expect(geometry!.slice(1)).toEqual([profile === "development" ? "262144" : legacyBlocks, "0"]);
+            if (phase === "upgrade") {
+              await host.writeFileToVfs("/after-upgrade", Uint8Array.of(83), 0o600);
+            } else {
+              expect(await host.readFileFromVfs("/after-upgrade")).toEqual(Uint8Array.of(83));
+            }
+          }
+          expect(diagnostics.filter(message => message.includes("Upgrading the saved filesystem"))).toHaveLength(phase === "upgrade" ? 1 : 0);
+        } finally { await host.destroy(); }
+        expect(host.getPersistenceShutdownFailure()).toBeNull();
+      }
+    });
+  }, 120_000);
+
+  it("stages and verifies a standalone KIFS v3 volume in a positioned file", async () => {
+    await temporary(async (directory, filesystem, open) => {
+      filesystem.writeFile("/source", new TextEncoder().encode("content"));
+      filesystem.symlink("source", "/alias");
+      filesystem.registerLazyFile("/deferred", "https://example.invalid/v3-deferred.wasm", 32_768, 0o755);
+      filesystem.setImageMetadata({ version: 1, createdBy: "KIFS v3 staging fixture" });
+      const identity = new Uint8Array(32).fill(19);
+      const target = open("volume.kifs");
+      const length = filesystem.stageKifsV3To(target, 262_144, identity);
+      expect(length).toBe(target.len());
+      expect(length).toBeLessThan(64 * 1024);
+      const bytes = readFileSync(join(directory, "volume.kifs"));
+      expect(bytes.subarray(0, 4).toString()).toBe("KIFS");
+      expect(bytes.readUInt32LE(4)).toBe(3);
+      expect(bytes.readBigUInt64LE(24)).toBe(262_144n);
+      expect(bytes.subarray(96, 128)).toEqual(Buffer.from(identity));
+      expect(bytes.includes(Buffer.from("https://example.invalid/v3-deferred.wasm"))).toBe(true);
+      expect(bytes.includes(Buffer.from("KIFS v3 staging fixture"))).toBe(true);
+      expect(bytes.subarray(4096, 4096 + 168)).toEqual(bytes.subarray(0, 168));
+      expect(() => filesystem.stageKifsV3To(target, 262_144, identity))
+        .toThrow(expect.objectContaining({ errno: ERRNO.EEXIST }));
+      expect(readFileSync(join(directory, "volume.kifs"))).toEqual(bytes);
+    });
+  });
+
   it.each([false, true])("checks positioned import bytes with native SHA-256 before parsing (short reads: %s)", async shortReads => {
     await temporary(async (_directory, filesystem) => {
       filesystem.writeFile("/source", Uint8Array.from({ length: 256 * 1024 + 19 }, (_, index) => index % 251));

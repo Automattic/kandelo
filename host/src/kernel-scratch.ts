@@ -176,6 +176,8 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_getsockopt",
   "kernel_handle_channel",
   "kernel_handle_channel_record",
+  "kernel_handle_channel_record_complete",
+  "kernel_rootfs_stat_lease",
   "kernel_handle_guest_io",
   "kernel_inject_datagram",
   "kernel_ioctl",
@@ -361,6 +363,8 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_enum_procs":
     case "kernel_handle_channel":
     case "kernel_handle_channel_record":
+    case "kernel_handle_channel_record_complete":
+    case "kernel_rootfs_stat_lease":
     case "kernel_handle_guest_io":
     case "kernel_mq_drain_notification":
     case "kernel_poll":
@@ -536,6 +540,8 @@ function isKernelScratchExportName(
     case "kernel_getsockopt":
     case "kernel_handle_channel":
     case "kernel_handle_channel_record":
+    case "kernel_handle_channel_record_complete":
+    case "kernel_rootfs_stat_lease":
     case "kernel_handle_guest_io":
     case "kernel_inject_datagram":
     case "kernel_ioctl":

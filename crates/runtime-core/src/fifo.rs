@@ -50,13 +50,20 @@ pub(crate) struct PreparedFifoRename {
 
 /// Registry mapping a FIFO's canonical path to its backing pipe index.
 pub struct FifoTable {
+    pathname_generation: u64,
     map: PreparedMap<Vec<u8>, usize>,
     budget: &'static MetadataBudget,
 }
 
 impl FifoTable {
+    pub(crate) fn pathname_generation(&self) -> u64 { self.pathname_generation }
+
+    fn note_pathname_change(&mut self) {
+        self.pathname_generation = self.pathname_generation.saturating_add(1);
+    }
+
     pub const fn new() -> Self {
-        FifoTable { map: PreparedMap::new(), budget: &IO_MEMORY }
+        FifoTable { pathname_generation: 0, map: PreparedMap::new(), budget: &IO_MEMORY }
     }
 
     /// Register one FIFO name. Returns false if the canonical path is already
@@ -79,6 +86,7 @@ impl FifoTable {
     pub(crate) fn publish_registration(&mut self, prepared: PreparedFifoName) -> bool {
         if self.map.contains_key(prepared.0.key()) { return false; }
         self.map.insert_prepared(prepared.0);
+        self.note_pathname_change();
         true
     }
 
@@ -109,11 +117,15 @@ impl FifoTable {
 
     /// Remove the FIFO named `path`, returning its backing pipe index.
     pub fn remove(&mut self, path: &[u8]) -> Option<usize> {
-        self.map.remove_entry(path).map(|entry| *entry.value())
+        let removed = self.map.remove_entry(path).map(|entry| *entry.value());
+        if removed.is_some() { self.note_pathname_change(); }
+        removed
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&[u8], usize) -> bool) {
+        let before = self.map.len();
         self.map.retain(|path, index| keep(path, *index));
+        if self.map.len() != before { self.note_pathname_change(); }
     }
 
     /// Remove every FIFO name at or below `prefix` (a directory tree the
@@ -125,7 +137,7 @@ impl FifoTable {
             .filter(|path| contains_path(path, prefix))
             .cloned()
             .collect();
-        names.into_iter().filter_map(|name| self.map.remove(&name)).collect()
+        names.into_iter().filter_map(|name| self.remove(&name)).collect()
     }
 
     /// Re-key FIFO names after a successful VFS rename. Directory renames move
@@ -219,7 +231,7 @@ mod tests {
     #[test]
     fn fifo_registration_prepares_admission_and_physical_allocation_before_publication() {
         static BUDGET: MetadataBudget = MetadataBudget::new(4096);
-        let mut table = FifoTable { map: PreparedMap::new(), budget: &BUDGET };
+        let mut table = FifoTable { pathname_generation: 0, map: PreparedMap::new(), budget: &BUDGET };
         BUDGET.set_limit(0).unwrap();
         assert!(matches!(table.prepare_registration(b"/fifo", 7), Err(Errno::ENOMEM)));
         assert_eq!(table.lookup(b"/fifo"), None);
@@ -243,7 +255,7 @@ mod tests {
     #[test]
     fn fifo_directory_rename_refusal_retains_every_name_and_credit_until_retry() {
         static BUDGET: MetadataBudget = MetadataBudget::new(64 * 1024);
-        let mut table = FifoTable { map: PreparedMap::new(), budget: &BUDGET };
+        let mut table = FifoTable { pathname_generation: 0, map: PreparedMap::new(), budget: &BUDGET };
         for (path, index) in [(b"/old/a".as_slice(), 1), (b"/old/nested/b", 2), (b"/new/a", 3)] {
             let prepared = table.prepare_registration(path, index).unwrap();
             assert!(table.publish_registration(prepared));
@@ -279,7 +291,7 @@ mod tests {
     #[test]
     fn fifo_same_inode_rename_needs_no_credit_and_keeps_both_names() {
         static BUDGET: MetadataBudget = MetadataBudget::new(4096);
-        let mut table = FifoTable { map: PreparedMap::new(), budget: &BUDGET };
+        let mut table = FifoTable { pathname_generation: 0, map: PreparedMap::new(), budget: &BUDGET };
         assert!(table.register(b"/source".to_vec(), 1));
         assert!(table.register(b"/alias".to_vec(), 1));
         BUDGET.set_limit(BUDGET.usage().0).unwrap();
