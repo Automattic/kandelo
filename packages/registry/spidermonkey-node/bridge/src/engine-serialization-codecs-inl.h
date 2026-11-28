@@ -142,7 +142,8 @@ struct ValueSerializer::PrivateData final:internal::WireAllocationDelegate {
     // Match the side-effect-free Symbol argument used by V8's clone errors.
     constexpr size_t maxDescriptionLength = 128;
     constexpr size_t retainedEndLength = 56;
-    JS::RootedString description(cx, JS::GetSymbolDescription(cx, value.toSymbol()));
+    JS::Rooted<JS::Symbol*> symbol(cx, value.toSymbol());
+    JS::RootedString description(cx, JS::GetSymbolDescription(cx, symbol));
     js::JSStringBuilder message(cx);
     if (!message.append("Symbol(")) return false;
     if (description) {
