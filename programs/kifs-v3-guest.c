@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static const char directory[] = "/opt/kifs-guest";
@@ -163,6 +164,13 @@ static int check_directory_handles(void)
         || fstat(held, &st) || st.st_ino != original.st_ino
         || fstatat(held, "original", &st, 0) || st.st_ino != original_file.st_ino)
         return 0;
+    const struct timespec renamed_times[] = {{12345, 321}, {67890, 123}};
+    if (futimens(held, renamed_times) || stat(moved_child, &st)
+        || st.st_ino != original.st_ino
+        || st.st_atim.tv_sec != 12345 || st.st_atim.tv_nsec != 321
+        || st.st_mtim.tv_sec != 67890 || st.st_mtim.tv_nsec != 123
+        || stat(child, &st) || st.st_mtim.tv_sec == 67890)
+        return 0;
     errno = 0;
     if (openat(replaced, "wrong", O_CREAT | O_EXCL | O_RDWR, 0600) != -1 || errno != ENOENT)
         return 0;
@@ -185,9 +193,14 @@ static int check_directory_handles(void)
         if (strcmp(ent->d_name, "original") == 0 && ent->d_ino == original_file.st_ino)
             found++;
     }
+    const struct timespec removed_times[] = {{123, 456}, {789, 987}};
     if (errno || found != 1 || closedir(dir) || rmdir(moved_child) != -1 || errno != ENOTEMPTY
-        || unlinkat(held, "original", 0) || rmdir(moved_child) || fstat(held, &st)
-        || st.st_nlink != 0 || st.st_ino != original.st_ino || close(held) || close(replaced)
+        || unlinkat(held, "original", 0) || rmdir(moved_child)
+        || futimens(held, removed_times) || fstat(held, &st)
+        || st.st_nlink != 0 || st.st_ino != original.st_ino
+        || st.st_atim.tv_sec != 123 || st.st_atim.tv_nsec != 456
+        || st.st_mtim.tv_sec != 789 || st.st_mtim.tv_nsec != 987
+        || close(held) || close(replaced)
         || rmdir(child) || rmdir(old) || rmdir(moved))
         return 0;
     return 1;

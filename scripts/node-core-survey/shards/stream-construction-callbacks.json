@@ -1,0 +1,32 @@
+{
+  "id": "stream-construction-callbacks",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-construct",
+      "file": "test/parallel/test-stream-construct.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Readable, writable and duplex construction and ordering.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-err-multiple-callback-construction",
+      "file": "test/parallel/test-stream-err-multiple-callback-construction.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Multiple final callbacks and finish/error delivery.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

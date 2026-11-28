@@ -1,0 +1,32 @@
+{
+  "id": "stream-autodestroy-end",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-auto-destroy",
+      "file": "test/parallel/test-stream-auto-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Automatic end and destruction ordering.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-end-of-streams",
+      "file": "test/parallel/test-stream-end-of-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Finished on both sides of a duplex.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

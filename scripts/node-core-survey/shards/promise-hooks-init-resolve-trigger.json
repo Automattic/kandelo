@@ -1,0 +1,45 @@
+{
+  "id": "promise-hooks-init-resolve-trigger",
+  "cases": [
+    {
+      "selector": "parallel/test-async-hooks-promise",
+      "file": "test/parallel/test-async-hooks-promise.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Promise initialization, resolution, trigger IDs and disabling the hook.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-hooks-promise-triggerid",
+      "file": "test/parallel/test-async-hooks-promise-triggerid.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Promise initialization, resolution, trigger IDs and disabling the hook.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-hooks-promise-enable-disable",
+      "file": "test/parallel/test-async-hooks-promise-enable-disable.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Promise initialization, resolution, trigger IDs and disabling the hook.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

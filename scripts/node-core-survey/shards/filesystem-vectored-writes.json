@@ -1,0 +1,48 @@
+{
+  "id": "filesystem-vectored-writes",
+  "fixtures": [],
+  "cases": [
+    {
+      "selector": "parallel/test-fs-writev",
+      "file": "test/parallel/test-fs-writev.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Gather writes through callback, synchronous, and promise APIs with original guest file readback.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-writev-sync",
+      "file": "test/parallel/test-fs-writev-sync.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Gather writes through callback, synchronous, and promise APIs with original guest file readback.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-writev-promises",
+      "file": "test/parallel/test-fs-writev-promises.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Gather writes through callback, synchronous, and promise APIs with original guest file readback.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    }
+  ]
+}

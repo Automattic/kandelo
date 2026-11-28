@@ -66,7 +66,14 @@ Maybe<bool> Object::HasPrivate(Local<Context> context,Local<Private> key){
 }
 Maybe<bool> Object::DeletePrivate(Local<Context> context,Local<Private> key){
   auto& frame=Current(context->isolate);NativeNoScriptEntry entry(frame);
-  if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
+  if (entry.Terminated()) return {};
+  // Native destructors release their private wrapper while an exception is
+  // unwinding. Restore that exception and its stack after the deletion.
+  mozilla::Maybe<JS::AutoSaveExceptionState> pending;
+  if (JS_IsExceptionPending(frame.cx)) {
+    if (frame.cx->exceptionStatus() != JS::ExceptionStatus::Throwing) return {};
+    pending.emplace(frame.cx);
+  }
   Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());JS::RootedValue name(frame.cx,Input(key));
   CHECK(name.isSymbol());JS::RootedSymbol symbol(frame.cx,name.toSymbol());
   CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);

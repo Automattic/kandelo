@@ -1,0 +1,20 @@
+Use the context-aware registration signature for the disabled Inspector.
+
+The built-in binding dispatcher calls the initializer with four arguments.
+On WebAssembly the call through an incompatible signature traps before
+the empty initializer can return. Match addon_context_register_func.
+
+# @suggest-upstream
+
+--- a/src/node.cc
++++ b/src/node.cc
+@@ -1755,4 +1755,7 @@
+ #if !HAVE_INSPECTOR
+-void Initialize() {}
+-
++void Initialize(v8::Local<v8::Object>,
++                v8::Local<v8::Value>,
++                v8::Local<v8::Context>,
++                void*) {}
++
+ NODE_BINDING_CONTEXT_AWARE_INTERNAL(inspector, Initialize)

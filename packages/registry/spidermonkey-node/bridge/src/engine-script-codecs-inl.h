@@ -102,6 +102,76 @@ JSContext* NativeCompilationContext(JSContext* cx){
   JS::ContextOptionsRef(cx).compileOptions().setSourcePhaseImports(bridge::SourcePhaseImportsEnabled());
   return cx;
 }
+// Keep the parser's report category and source information. These literal
+// diagnostics take no format arguments. The module parser retains its own
+// diagnostic for an import nested inside an otherwise valid module.
+template <bool InModule>
+const JSErrorFormatString* NodeParserErrorFormat(void* data, unsigned number) {
+  static constexpr JSErrorFormatString constInitializer = {
+      "JSMSG_BAD_CONST_DECL", "Missing initializer in const declaration", 0, JSEXN_SYNTAXERR};
+  static constexpr JSErrorFormatString destructuringInitializer = {
+      "JSMSG_BAD_DESTRUCT_DECL", "Missing initializer in destructuring declaration", 0, JSEXN_SYNTAXERR};
+  static constexpr JSErrorFormatString scriptImport = {
+      "JSMSG_IMPORT_DECL_AT_TOP_LEVEL", "Cannot use import statement outside a module", 0, JSEXN_SYNTAXERR};
+  switch (number) {
+    case JSMSG_BAD_CONST_DECL:
+      return &constInitializer;
+    case JSMSG_BAD_DESTRUCT_DECL:
+      return &destructuringInitializer;
+    case JSMSG_IMPORT_DECL_AT_TOP_LEVEL:
+      if (!InModule) return &scriptImport;
+      break;
+    default:
+      break;
+  }
+  return js::GetErrorMessage(data, number);
+}
+
+JSString* FormatNodeModuleResolutionError(JSContext* cx, unsigned number,
+                                          JS::HandleString specifier,
+                                          JS::HandleString binding) {
+  js::JSStringBuilder message(cx);
+  if (number == JSMSG_MODULE_CIRCULAR_IMPORT) {
+    if (!message.append("Detected cycle while resolving name '") ||
+        !message.append(binding) || !message.append("' in '") ||
+        !message.append(specifier) || !message.append("'")) return nullptr;
+    return message.finishString();
+  }
+
+  if (!message.append("The requested module '") ||
+      !message.append(specifier)) return nullptr;
+  if (number == JSMSG_MODULE_NO_EXPORT) {
+    if (!message.append("' does not provide an export named '")) return nullptr;
+  } else {
+    CHECK_EQ(number, JSMSG_MODULE_AMBIGUOUS);
+    if (!message.append("' contains conflicting star exports for name '")) return nullptr;
+  }
+  if (!message.append(binding) || !message.append("'")) return nullptr;
+  return message.finishString();
+}
+
+
+bool FormatNodeModuleResolutionDiagnostic(JSContext* cx, JSErrorReport* report,
+                                          JS::HandleScript script,
+                                          JS::HandleString specifier,
+                                          JS::HandleString binding,
+                                          JS::MutableHandleString message) {
+  message.set(FormatNodeModuleResolutionError(cx, report->errorNumber, specifier, binding));
+  if (!message) return false;
+  if (!script) return true;
+
+  // The failing module can be a transitive dependency. Use the script that
+  // owns the failed binding and the parser's recorded line.
+  JS::RootedString sourceLine(cx, NativeSourceLine(cx, script->scriptSource(), report->lineno));
+  if (!sourceLine) return !JS_IsExceptionPending(cx);
+  auto characters = JS_CopyStringCharsZ(cx, sourceLine);
+  if (!characters) return false;
+  const size_t length = JS_GetStringLength(sourceLine);
+  const size_t offset = std::min(length, size_t(report->column.oneOriginValue() - 1));
+  report->initOwnedLinebuf(characters.release(), length, offset);
+  return true;
+}
+
 // Own all storage borrowed by CompileOptions/SourceText across compilation.
 // The same origin and source conversion serves scripts, modules and functions.
 struct NativeCompilationInput {
@@ -135,6 +205,7 @@ struct NativeCompilationInput {
   }
   options.setFileAndLine(filename?filename.get():"",uint32_t(origin.LineOffset())+1)
       .setColumn(JS::ColumnNumberOneOrigin(uint32_t(origin.ColumnOffset())+1));
+  options.parserErrorFormat = module ? NodeParserErrorFormat<true> : NodeParserErrorFormat<false>;
   if(module)options.setModule();
   if(uint32_t(flags)&uint32_t(ScriptCompiler::kEagerCompile))options.setForceFullParse();
   auto map=origin.SourceMapUrl();
@@ -819,6 +890,12 @@ Local<UnboundScript> Script::GetUnboundScript(){
 }
 int Script::ScriptId()const{return int(StencilSource(ScriptRecord(*this))->id());}
 Local<Value> Script::GetResourceName(){return NativeScriptValue(ScriptRecord(*this),ScriptResource);}
+
+void bridge::InitializeNativeDiagnosticFormats(JSContext* cx) {
+  JS::ContextOptionsRef(cx)
+      .setDynamicScriptErrorFormat(NodeParserErrorFormat<false>)
+      .setModuleResolutionErrorFormatter(FormatNodeModuleResolutionDiagnostic);
+}
 
 }
 #include "kandelo-node/engine-code-cache-codecs-inl.h"

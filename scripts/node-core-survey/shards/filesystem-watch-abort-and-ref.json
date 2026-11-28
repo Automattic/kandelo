@@ -1,0 +1,34 @@
+{
+  "id": "filesystem-watch-abort-and-ref",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-watch-abort-signal",
+      "file": "test/parallel/test-fs-watch-abort-signal.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Closing a guest file watcher by AbortSignal emits close for both early and later aborts.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-watch-ref-unref",
+      "file": "test/parallel/test-fs-watch-ref-unref.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "The guest file watcher can be unreferenced, referenced and unreferenced again before process exit.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/empty.js"
+  ]
+}

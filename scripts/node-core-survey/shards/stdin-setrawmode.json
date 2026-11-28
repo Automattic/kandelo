@@ -1,0 +1,21 @@
+{
+  "id": "stdin-setrawmode",
+  "cases": [
+    {
+      "selector": "pseudo-tty/stdin-setrawmode",
+      "file": "test/pseudo-tty/stdin-setrawmode.js",
+      "family": "terminal",
+      "modules": [
+        "node:tty",
+        "node:process"
+      ],
+      "contract": "The original PTY process verifies stdin raw-mode toggling",
+      "owners": [
+        "upstream Node tty",
+        "Kandelo libuv tty and termios",
+        "Kandelo PTY"
+      ]
+    }
+  ],
+  "fixtures": []
+}

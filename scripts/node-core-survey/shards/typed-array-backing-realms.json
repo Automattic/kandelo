@@ -1,0 +1,22 @@
+{
+  "id": "typed-array-backing-realms",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-typed-array-backing-realms",
+      "file": "test/parallel/test-kandelo-typed-array-backing-realms.js",
+      "origin": "kandelo",
+      "family": "values",
+      "modules": [
+        "node:buffer",
+        "node:vm",
+        "node:worker_threads"
+      ],
+      "contract": "Verify native backing and explicit buffer identity on both sides of 64 bytes for typed-array constructors in the main, VM and worker realms.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

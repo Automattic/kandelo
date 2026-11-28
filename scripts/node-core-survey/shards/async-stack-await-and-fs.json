@@ -1,0 +1,15 @@
+{
+  "id": "async-stack-await-and-fs",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-await-stack",
+      "file": "test/parallel/test-kandelo-await-stack.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": ["node:fs/promises", "Error.captureStackTrace", "Error.prepareStackTrace"],
+      "contract": "Observe real await ancestry in default stacks and structured CallSites, including a filesystem rejection, a synchronous throw and a detached return.",
+      "owners": ["maintained SpiderMonkey bridge", "upstream Node filesystem promises"]
+    }
+  ],
+  "fixtures": []
+}

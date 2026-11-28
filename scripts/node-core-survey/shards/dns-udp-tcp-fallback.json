@@ -1,0 +1,15 @@
+{
+  "id": "dns-udp-tcp-fallback",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-dns-udp-tcp-fallback",
+      "file": "test/parallel/test-kandelo-dns-udp-tcp-fallback.js",
+      "origin": "kandelo",
+      "family": "network",
+      "modules": ["node:dns/promises", "node:net", "node:dgram"],
+      "contract": "An explicitly configured resolver repeats a truncated UDP query over real TCP, preserves its A record TTL, and reports NXDOMAIN",
+      "owners": ["upstream Node DNS", "Node c-ares package", "Kandelo TCP and UDP socket ownership"]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "pipe-input-and-error",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-objectmode-to-non-objectmode",
+      "file": "test/parallel/test-stream-pipe-objectmode-to-non-objectmode.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe objectmode to non objectmode case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-error-unhandled",
+      "file": "test/parallel/test-stream-pipe-error-unhandled.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe error unhandled case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

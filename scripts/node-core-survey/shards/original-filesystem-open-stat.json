@@ -1,0 +1,33 @@
+{
+  "id": "original-filesystem-open-stat",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-open",
+      "file": "test/parallel/test-fs-open.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Open, openSync and promises.open success, argument validation and errors.",
+      "owners": [
+        "upstream Node filesystem and loader implementations",
+        "guest VFS and libuv"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-stat",
+      "file": "test/parallel/test-fs-stat.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Stat, lstat and fstat values, types, callbacks and input errors.",
+      "owners": [
+        "upstream Node filesystem and loader implementations",
+        "guest VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

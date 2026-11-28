@@ -72,6 +72,7 @@ pub enum ProcfsEntry {
     NetDir(Option<u32>),  // /proc/net or /proc/<pid>/net
     NetTcp(Option<u32>),  // /proc/net/tcp or /proc/<pid>/net/tcp
     NetUnix(Option<u32>), // /proc/net/unix or /proc/<pid>/net/unix
+    NetIfInet6(Option<u32>), // /proc/net/if_inet6 or /proc/<pid>/net/if_inet6
     // Kandelo-specific kernel state. Namespaced under its own directory so it
     // can never collide with a name Linux later gives a procfs file, and so a
     // reader can tell at a glance which files are Kandelo's own.
@@ -168,7 +169,10 @@ pub fn entry_pid(entry: &ProcfsEntry) -> Option<u32> {
         | ProcfsEntry::Exe(pid)
         | ProcfsEntry::Root_(pid) => Some(*pid),
         ProcfsEntry::FdLink(pid, _) | ProcfsEntry::FdInfo(pid, _) => Some(*pid),
-        ProcfsEntry::NetDir(pid) | ProcfsEntry::NetTcp(pid) | ProcfsEntry::NetUnix(pid) => *pid,
+        ProcfsEntry::NetDir(pid)
+        | ProcfsEntry::NetTcp(pid)
+        | ProcfsEntry::NetUnix(pid)
+        | ProcfsEntry::NetIfInet6(pid) => *pid,
         ProcfsEntry::Root
         | ProcfsEntry::Mounts
         | ProcfsEntry::SelfLink
@@ -349,6 +353,7 @@ fn match_net_path(rest: &[u8], pid: Option<u32>) -> Option<ProcfsEntry> {
         match &rest[4..] {
             b"tcp" => return Some(ProcfsEntry::NetTcp(pid)),
             b"unix" => return Some(ProcfsEntry::NetUnix(pid)),
+            b"if_inet6" => return Some(ProcfsEntry::NetIfInet6(pid)),
             _ => return None,
         }
     }
@@ -664,6 +669,19 @@ pub fn generate_net_unix_header() -> Result<crate::IoBuffer<u8>, Errno> {
     crate::IoBuffer::copy_from(b"Num       RefCount Protocol Flags    Type St Inode Path\n")
 }
 
+/// The IPv6 interface inventory shares the loopback address with socket routing.
+fn generate_net_if_inet6() -> Result<crate::IoBuffer<u8>, Errno> {
+    let interface = crate::netif::LOOPBACK_INTERFACE;
+    let address = u128::from_be_bytes(crate::netif::IPV6_LOOPBACK);
+    let prefix_length = 128;
+    let host_scope = 0x10;
+    let permanent_address = 0x80;
+    crate::IoBuffer::formatted(format_args!(
+        "{address:032x} {:02x} {prefix_length:02x} {host_scope:02x} {permanent_address:02x} {:>8}\n",
+        interface.index, interface.name,
+    ))
+}
+
 // ── Stat synthesis ──────────────────────────────────────────────────────────
 
 /// Synthetic inode for procfs entries.
@@ -762,6 +780,7 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::NetDir(pid) => (pid.unwrap_or(0), 19),
         ProcfsEntry::NetTcp(pid) => (pid.unwrap_or(0), 20),
         ProcfsEntry::NetUnix(pid) => (pid.unwrap_or(0), 21),
+        ProcfsEntry::NetIfInet6(pid) => (pid.unwrap_or(0), 26),
         ProcfsEntry::KandeloDir => (0, 22),
         ProcfsEntry::KandeloWritebackLosses => (0, 23),
         ProcfsEntry::KandeloFilesystemMemory => (0, 24),
@@ -930,6 +949,12 @@ pub(crate) fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<cr
                 validate_pid(proc, *pid)?;
             }
             generate_net_unix_header()
+        }
+        ProcfsEntry::NetIfInet6(pid) => {
+            if let Some(pid) = pid {
+                validate_pid(proc, *pid)?;
+            }
+            generate_net_if_inet6()
         }
         _ => Err(Errno::ENOENT),
     }
@@ -1269,6 +1294,7 @@ pub(crate) fn dir_entries(
             let ino_pid = pid.unwrap_or(0);
             entries.try_push((crate::IoBuffer::copy_from(b"tcp")?, DT_REG, procfs_ino(ino_pid, 20)))?;
             entries.try_push((crate::IoBuffer::copy_from(b"unix")?, DT_REG, procfs_ino(ino_pid, 21)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"if_inet6")?, DT_REG, procfs_ino(ino_pid, 26)))?;
         }
         _ => return Err(Errno::ENOTDIR),
     }
@@ -1591,6 +1617,14 @@ mod tests {
         assert_eq!(
             match_procfs(b"/proc/42/net/tcp", 1),
             Some(ProcfsEntry::NetTcp(Some(42)))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/net/if_inet6", 1),
+            Some(ProcfsEntry::NetIfInet6(None))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/self/net/if_inet6", 1),
+            Some(ProcfsEntry::NetIfInet6(Some(1)))
         );
     }
 

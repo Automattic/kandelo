@@ -1,0 +1,32 @@
+{
+  "id": "stream-map-filter-concurrency",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-map",
+      "file": "test/parallel/test-stream-map.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Concurrent mapper result order, queued work, errors and abort.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-filter",
+      "file": "test/parallel/test-stream-filter.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Concurrent predicate ordering, input errors and abort.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

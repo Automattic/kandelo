@@ -1,0 +1,32 @@
+{
+  "id": "worker-port-and-termination",
+  "cases": [
+    {
+      "selector": "parallel/test-worker-parent-port-ref",
+      "file": "test/parallel/test-worker-parent-port-ref.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads"
+      ],
+      "contract": "Removing the final parent port listener permits clean worker exit after online.",
+      "owners": [
+        "upstream Node loaders and workers",
+        "Kandelo Amaro and maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-worker-terminate-unrefed",
+      "file": "test/parallel/test-worker-terminate-unrefed.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads"
+      ],
+      "contract": "Termination of an unreferenced online worker resolves even when it owns a timer.",
+      "owners": [
+        "upstream Node loaders and workers",
+        "Kandelo Amaro and maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

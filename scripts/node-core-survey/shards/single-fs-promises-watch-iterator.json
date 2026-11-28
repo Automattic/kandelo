@@ -1,0 +1,20 @@
+{
+  "id": "single-fs-promises-watch-iterator",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-promises-watch-iterator",
+      "file": "test/parallel/test-fs-promises-watch-iterator.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "While an async iterator pauses between events, it receives all three created guest filenames.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

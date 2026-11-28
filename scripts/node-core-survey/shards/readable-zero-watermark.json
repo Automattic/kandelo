@@ -1,0 +1,32 @@
+{
+  "id": "readable-zero-watermark",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-hwm-0",
+      "file": "test/parallel/test-stream-readable-hwm-0.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A zero-watermark read starts once and exposes EOF after the source finishes.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-hwm-0-async",
+      "file": "test/parallel/test-stream-readable-hwm-0-async.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Five asynchronously delivered chunks and EOF drive six source reads at zero watermark.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

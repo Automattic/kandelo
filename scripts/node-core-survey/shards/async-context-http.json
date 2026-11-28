@@ -1,0 +1,22 @@
+{
+  "id": "async-context-http",
+  "cases": [
+    {
+      "selector": "parallel/test-async-local-storage-http-agent",
+      "file": "test/parallel/test-async-local-storage-http-agent.js",
+      "family": "async",
+      "modules": ["node:async_hooks", "node:http", "node:timers"],
+      "contract": "Different async contexts survive real HTTP callbacks and immediate scheduling when an Agent reuses its socket",
+      "owners": ["upstream Node async context", "maintained SpiderMonkey bridge", "upstream Node HTTP Agent"]
+    },
+    {
+      "selector": "parallel/test-async-local-storage-isolation",
+      "file": "test/parallel/test-async-local-storage-isolation.js",
+      "family": "async",
+      "modules": ["node:async_hooks"],
+      "contract": "AsyncLocalStorage instances keep independent nested stores and disable only their own store",
+      "owners": ["upstream Node async context", "maintained SpiderMonkey bridge"]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "buffer-equality-and-iteration",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-equals",
+      "file": "test/parallel/test-buffer-equals.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffers compare by byte content across distinct buffers and Uint8Array views, and validate the argument.",
+      "owners": [
+        "upstream Node Buffer and string decoder",
+        "maintained SpiderMonkey backing storage and encoding"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-iterator",
+      "file": "test/parallel/test-buffer-iterator.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer iteration and its key/value and entry iterators observe the original bytes and indexes.",
+      "owners": [
+        "upstream Node Buffer and string decoder",
+        "maintained SpiderMonkey backing storage and encoding"
+      ]
+    }
+  ],
+  "fixtures": []
+}

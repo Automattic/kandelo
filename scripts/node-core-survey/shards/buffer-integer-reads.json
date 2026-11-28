@@ -1,0 +1,32 @@
+{
+  "id": "buffer-integer-reads",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-readint",
+      "file": "test/parallel/test-buffer-readint.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Signed and unsigned integer reads in both byte orders and bounds checks.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-readuint",
+      "file": "test/parallel/test-buffer-readuint.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Signed and unsigned integer reads in both byte orders and bounds checks.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

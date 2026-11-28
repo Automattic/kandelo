@@ -1,0 +1,30 @@
+{
+  "id": "tcp-half-close-and-udp",
+  "cases": [
+    {
+      "selector": "parallel/test-net-allow-half-open-async-iter",
+      "file": "test/parallel/test-net-allow-half-open-async-iter.js",
+      "family": "network",
+      "modules": ["node:net", "node:stream"],
+      "contract": "Read the sent bytes through a TCP half-close and then send a reply on the same socket",
+      "owners": ["upstream Node net and streams", "Kandelo libuv socket ownership"]
+    },
+    {
+      "selector": "parallel/test-dgram-send-callback-multi-buffer",
+      "file": "test/parallel/test-dgram-send-callback-multi-buffer.js",
+      "family": "network",
+      "modules": ["node:dgram"],
+      "contract": "Send a concatenated UDP datagram and observe the exact bytes and callback byte count",
+      "owners": ["upstream Node dgram", "Kandelo libuv socket ownership"]
+    },
+    {
+      "selector": "parallel/test-dgram-send-empty-packet",
+      "file": "test/parallel/test-dgram-send-empty-packet.js",
+      "family": "network",
+      "modules": ["node:dgram"],
+      "contract": "Receive a zero-length UDP datagram and close the socket",
+      "owners": ["upstream Node dgram", "Kandelo libuv socket ownership"]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,33 @@
+{
+  "id": "local-url-conversion",
+  "cases": [
+    {
+      "selector": "parallel/test-url-domain-ascii-unicode",
+      "file": "test/parallel/test-url-domain-ascii-unicode.js",
+      "family": "values",
+      "modules": [
+        "node:url"
+      ],
+      "contract": "The original Intl-conditional fixture compares IDNA ASCII and Unicode domain conversions.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-url-fileurltopath",
+      "file": "test/parallel/test-url-fileurltopath.js",
+      "family": "values",
+      "modules": [
+        "node:url",
+        "node:path"
+      ],
+      "contract": "Original file URL conversions and invalid inputs use the platform and explicit path semantics.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,5 @@
+script_path = "packages/registry/toywasm-core/build.sh"
+inputs = ["packages/registry/toywasm-core/build.sh"]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

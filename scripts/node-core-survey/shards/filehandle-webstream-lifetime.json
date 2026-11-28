@@ -1,0 +1,21 @@
+{
+  "id": "filehandle-webstream-lifetime",
+  "cases": [
+    {
+      "selector": "parallel/test-filehandle-readablestream",
+      "file": "test/parallel/test-filehandle-readablestream.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises",
+        "node:stream/web",
+        "node:worker_threads"
+      ],
+      "contract": "Reads the real file through async iteration and offset BYOB views, closes pending readers and rejects a duplicate stream or transfer of the in-use handle.",
+      "owners": [
+        "upstream Node filesystem and stream implementations",
+        "Kandelo guest file descriptors and VFS"
+      ]
+    }
+  ],
+  "fixtures": []
+}

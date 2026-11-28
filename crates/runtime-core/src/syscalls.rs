@@ -147,10 +147,17 @@ pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<usize, Errno> {
     }
 }
 
-fn require_io_fd_access(proc: &Process, fd: i32, write: bool) -> Result<usize, Errno> {
+fn require_io_fd_access(proc: &Process, fd: i32, kind: VectorIoKind) -> Result<usize, Errno> {
     let index = require_io_fd(proc, fd)?;
+    // Match the scalar positioned I/O order before reading any guest buffers.
+    if matches!(kind, VectorIoKind::Pread { offset } | VectorIoKind::Pwrite { offset } if offset < 0) {
+        return Err(Errno::EINVAL);
+    }
     let mode = proc.ofd_table.get(index).ok_or(Errno::EBADF)?.status_flags() & O_ACCMODE;
-    if (write && mode == O_RDONLY) || (!write && mode == O_WRONLY) { return Err(Errno::EBADF); }
+    let write = kind.is_write();
+    if (write && mode == O_RDONLY) || (!write && mode == O_WRONLY) {
+        return Err(Errno::EBADF);
+    }
     Ok(index)
 }
 
@@ -5413,10 +5420,12 @@ fn tmpfs_stamp_now(host: &mut dyn HostIO) -> Result<(), Errno> {
 /// Open a tmpfs directory for iteration. Mirrors `devfs_open_dir`: a
 /// `FileType::Directory` OFD carrying the tmpfs directory sentinel in both
 /// `host_handle` and `dir_host_handle`; getdents regenerates entries from the
-/// live store, so there is no host handle and no backing to refcount.
+/// live store. The shared OFD pins the directory inode for metadata operations.
 fn open_scratch_tmpfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
     proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
-        if cfg!(feature = "vfs-events") { description.file_id = Some(crate::vfs_events::identity(crate::tmpfs::lstat(&resolved)?)); }
+        let (handle, stat) = crate::tmpfs::retain_directory(&resolved)?;
+        description.set_directory_inode(handle);
+        description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino });
         description.dir_host_handle = crate::tmpfs::TMPFS_DIR_SENTINEL;
         Ok(crate::tmpfs::TMPFS_DIR_SENTINEL)
     })
@@ -5434,9 +5443,20 @@ fn open_rootfs(proc: &mut Process, resolved: Vec<u8>, oflags: u32, effective_mod
 /// inode pin for the shared directory cookie.
 fn open_rootfs_dir(proc: &mut Process, resolved: Vec<u8>, oflags: u32) -> Result<i32, Errno> {
     proc.open_descriptor(FileType::Directory, oflags & !CREATION_FLAGS, &resolved, oflags_to_fd_flags(oflags), |_, description| {
-        if cfg!(feature = "vfs-events") { description.file_id = Some(crate::vfs_events::identity(crate::rootfs::lstat(&resolved)?)); }
+        let handle = crate::rootfs::open_directory_handle(&description.path)?;
+        // Standalone KIFS already retains the directory in host_handle.
+        let stat = if crate::rootfs::is_rootfs_file_handle(handle) {
+            crate::rootfs::fstat(handle).inspect_err(|_| {
+                crate::rootfs::release_handle(handle);
+            })?
+        } else {
+            let (inode, stat) = crate::rootfs::retain_directory(&resolved)?;
+            description.set_directory_inode(inode);
+            stat
+        };
+        description.file_id = Some(FileId::Host { dev: stat.st_dev, ino: stat.st_ino });
         description.dir_host_handle = crate::rootfs::ROOTFS_DIR_SENTINEL;
-        crate::rootfs::open_directory_handle(&description.path)
+        Ok(handle)
     })
 }
 
@@ -9499,10 +9519,10 @@ pub(crate) fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -
         crate::sysfs::lookup(&ofd.path)
             .map(|node| crate::sysfs::stat(&node))
             .ok_or(Errno::EBADF)
-    } else if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
-        crate::tmpfs::fstat(ofd.host_handle)
-    } else if crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
-        crate::rootfs::fstat(ofd.host_handle)
+    } else if crate::tmpfs::is_tmpfs_file_handle(ofd.metadata_handle()) {
+        crate::tmpfs::fstat(ofd.metadata_handle())
+    } else if crate::rootfs::is_rootfs_file_handle(ofd.metadata_handle()) {
+        crate::rootfs::fstat(ofd.metadata_handle())
     } else if ofd.file_type == FileType::Regular
         && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
     {
@@ -12770,15 +12790,28 @@ pub fn sys_utimensat(
             }
             return Err(Errno::EPERM);
         }
-        if matches!(ofd.file_type, FileType::Regular | FileType::Directory) && crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
-            let st = crate::rootfs::fstat(ofd.host_handle)?;
-            if !check_utimens_permissions(proc, &st, times)? {
+        let handle = ofd.metadata_handle();
+        if matches!(ofd.file_type, FileType::Regular | FileType::Directory)
+            && (crate::rootfs::is_rootfs_file_handle(handle)
+                || crate::tmpfs::is_tmpfs_file_handle(handle))
+        {
+            let stat = sys_fstat(proc, host, dirfd)?;
+            if !check_utimens_permissions(proc, &stat, times)? {
                 return Ok(());
             }
             let now = realtime_timestamp(host)?;
-            let accessed = resolve_file_time(atime_sec, atime_nsec, (st.st_atime_sec, st.st_atime_nsec), now)?;
-            let modified = resolve_file_time(mtime_sec, mtime_nsec, (st.st_mtime_sec, st.st_mtime_nsec), now)?;
-            return crate::rootfs::futimens(ofd.host_handle, accessed, modified, now);
+            let accessed = resolve_file_time(
+                atime_sec, atime_nsec, (stat.st_atime_sec, stat.st_atime_nsec), now,
+            )?;
+            let modified = resolve_file_time(
+                mtime_sec, mtime_nsec, (stat.st_mtime_sec, stat.st_mtime_nsec), now,
+            )?;
+            if crate::rootfs::is_rootfs_file_handle(handle) {
+                return crate::rootfs::futimens(handle, accessed, modified, now);
+            }
+            return crate::tmpfs::futimens(
+                handle, accessed.0, accessed.1, modified.0, modified.1, now.0, now.1,
+            );
         }
         if let Some(pipe_idx) = named_fifo_pipe_idx(proc, dirfd)? {
             let st = sys_fstat(proc, host, dirfd)?;
@@ -23243,7 +23276,7 @@ pub fn sys_guest_io(proc: &mut Process, host: &mut dyn HostIO,
         n if n == Syscall::Pwrite as u32 => VectorIoKind::Pwrite { offset },
         _ => return Err(Errno::EINVAL),
     };
-    let index = require_io_fd_access(proc, fd, kind.is_write())?;
+    let index = require_io_fd_access(proc, fd, kind)?;
     let operation = BlockingRetryOperation::from_syscall(syscall)?;
     let request = match take_active_vector_io(proc, tid, operation)? {
         Some(pending) => pending,
@@ -23303,7 +23336,7 @@ pub fn sys_vector_io(
 ) -> Result<GuestIoOutcome, Errno> {
     // Reject a descriptor that cannot carry I/O before reading caller memory,
     // so a zero-length vector on a closed or path-only fd still fails.
-    let index = require_io_fd_access(proc, fd, kind.is_write())?;
+    let index = require_io_fd_access(proc, fd, kind)?;
     let entropy = kind == VectorIoKind::Read && crate::entropy_read::EntropyRead::is_device(proc, index)?;
     let operation = BlockingRetryOperation::from_syscall(syscall_nr)?;
     let pid = proc.pid as i32;
@@ -29564,6 +29597,49 @@ mod tests {
             Err(Errno::EBADF),
         );
         sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn directory_futimens_follows_the_open_inode_until_the_last_dup_closes() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/tmp", 0o1777, 0, 0, 2).unwrap();
+        let mut proc = Process::new(100);
+        let mut host = MockHostIO::new();
+        for (path, moved) in [
+            (b"/tmp/dir-owner".as_slice(), b"/tmp/dir-moved".as_slice()),
+            (b"/dir-owner".as_slice(), b"/dir-moved".as_slice()),
+        ] {
+            sys_mkdir(&mut proc, &mut host, path, 0o700).unwrap();
+            let fd = sys_open(&mut proc, &mut host, path, O_RDONLY | O_DIRECTORY, 0).unwrap();
+            let duplicate = sys_dup(&mut proc, fd).unwrap();
+            let inode = sys_fstat(&proc, &mut host, fd).unwrap().st_ino;
+            let handle = proc.ofd_table.get(resolve_io_ofd(&proc, fd).unwrap()).unwrap().metadata_handle();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_rename(&mut proc, &mut host, path, moved).unwrap();
+            sys_mkdir(&mut proc, &mut host, path, 0o700).unwrap();
+            for seconds in [12345, 67890] {
+                if seconds == 67890 {
+                    sys_rmdir(&mut proc, &mut host, moved).unwrap();
+                }
+                let times = [WasmTimespec { tv_sec: seconds, tv_nsec: 0 }; 2];
+                sys_utimensat(&mut proc, &mut host, duplicate, b"", Some(&times), 0).unwrap();
+                let held = sys_fstat(&proc, &mut host, duplicate).unwrap();
+                assert_eq!(held.st_ino, inode);
+                assert_eq!(held.st_mtime_sec, seconds as u64);
+                assert_ne!(fs_lstat(&mut host, path).unwrap().st_mtime_sec, seconds as u64);
+            }
+            sys_close(&mut proc, &mut host, duplicate).unwrap();
+            let released = if crate::tmpfs::claims_path(path) {
+                crate::tmpfs::fstat(handle)
+            } else {
+                crate::rootfs::fstat(handle)
+            };
+            assert!(matches!(released, Err(Errno::EBADF)));
+            sys_rmdir(&mut proc, &mut host, path).unwrap();
+        }
     }
 
     #[test]
@@ -42213,6 +42289,14 @@ mod tests {
             ),
             Err(Errno::EINVAL),
         );
+
+        for (syscall, wrong_access, kind) in [
+            (extended_syscalls::SYS_PREADV, write_fd, VectorIoKind::Pread { offset: -1 }),
+            (extended_syscalls::SYS_PWRITEV, read_fd, VectorIoKind::Pwrite { offset: -1 }),
+        ] {
+            assert_eq!(vector_io(&mut proc, &mut host, syscall, -1, 0, 0, kind), Err(Errno::EBADF));
+            assert_eq!(vector_io(&mut proc, &mut host, syscall, wrong_access, 0, 0, kind), Err(Errno::EINVAL));
+        }
 
         let (pipe_read, pipe_write) = sys_pipe(&mut proc).unwrap();
         assert_eq!(

@@ -1,0 +1,20 @@
+{
+  "id": "single-stream-finished-bindAsyncResource-path",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-finished-bindAsyncResource-path",
+      "file": "test/parallel/test-stream-finished-bindAsyncResource-path.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:async_hooks"
+      ],
+      "contract": "An active async hook observes STREAM_END_OF_STREAM with the expected parent context.",
+      "owners": [
+        "upstream Node stream completion and async context",
+        "maintained guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

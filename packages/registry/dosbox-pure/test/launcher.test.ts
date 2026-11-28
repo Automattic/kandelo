@@ -34,7 +34,7 @@ describe("dos-play in Kandelo", () => {
       for (const name of ["cat", "mkdir", "mv", "rm", "cp", "wc", "cut", "sha256sum"])
         fs.symlink("/bin/coreutils", `/bin/${name}`);
       for (const name of ["grep", "curl", "unzip"])
-        install(`/usr/bin/${name}`, `programs/${name}.wasm`);
+        install(`/usr/bin/${name}`, `programs/${name}/${name}.wasm`);
       install("/usr/bin/dosbox-pure", "programs/dosbox-pure/dosbox-pure.wasm");
       install("/usr/bin/dos-play", "programs/dosbox-pure/bin/dos-play");
       fs.writeFile("/usr/share/dos-play/games.tsv", new TextEncoder().encode(

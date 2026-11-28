@@ -1,0 +1,22 @@
+{
+  "id": "single-child-process-fork-close",
+  "cases": [
+    {
+      "selector": "parallel/test-child-process-fork-close",
+      "file": "test/parallel/test-child-process-fork-close.js",
+      "family": "processes",
+      "modules": [
+        "node:process",
+        "node:child_process"
+      ],
+      "contract": "An installed child sends hello and exits. Both message and exit must precede close.",
+      "owners": [
+        "upstream Node child_process",
+        "guest process and IPC lifecycle"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/child-process-message-and-exit.js"
+  ]
+}

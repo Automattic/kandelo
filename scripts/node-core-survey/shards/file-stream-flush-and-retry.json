@@ -1,0 +1,38 @@
+{
+  "id": "file-stream-flush-and-retry",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-write-stream-flush",
+      "file": "test/parallel/test-fs-write-stream-flush.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises",
+        "node:stream/promises",
+        "node:test"
+      ],
+      "contract": "Exercises file and handle streams with flush enabled or disabled, checking fsync calls and final file contents.",
+      "owners": [
+        "upstream Node filesystem and stream implementations",
+        "Kandelo guest file descriptors and VFS"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-write-stream-eagain",
+      "file": "test/parallel/test-fs-write-stream-eagain.mjs",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises",
+        "node:stream/promises",
+        "node:test"
+      ],
+      "contract": "Retries an injected transient write error and checks the actual file bytes, close event and destruction handling.",
+      "owners": [
+        "upstream Node filesystem and stream implementations",
+        "Kandelo guest file descriptors and VFS"
+      ]
+    }
+  ],
+  "fixtures": []
+}

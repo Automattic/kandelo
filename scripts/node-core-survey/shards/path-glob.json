@@ -1,0 +1,19 @@
+{
+  "id": "path-glob",
+  "cases": [
+    {
+      "selector": "parallel/test-path-glob",
+      "file": "test/parallel/test-path-glob.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 path glob matching.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

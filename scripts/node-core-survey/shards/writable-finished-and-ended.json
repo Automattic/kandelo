@@ -1,0 +1,45 @@
+{
+  "id": "writable-finished-and-ended",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-ended-state",
+      "file": "test/parallel/test-stream-writable-ended-state.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The ended flag changes at the expected point in the public and internal states.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-finished-state",
+      "file": "test/parallel/test-stream-writable-finished-state.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Internal finished state follows finalization.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-finished",
+      "file": "test/parallel/test-stream-writable-finished.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The public writableFinished flag and callbacks follow sync and async completion.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,19 @@
+{
+  "id": "single-fs-watch-encoding",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-watch-encoding",
+      "file": "test/parallel/test-fs-watch-encoding.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Three independent watchers receive filename events in hex, default and Buffer encodings.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

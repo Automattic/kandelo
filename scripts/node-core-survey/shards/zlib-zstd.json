@@ -1,0 +1,22 @@
+{
+  "id": "zlib-zstd",
+  "cases": [
+    {
+      "selector": "parallel/test-zlib-zstd",
+      "file": "test/parallel/test-zlib-zstd.js",
+      "family": "compression",
+      "modules": [
+        "node:zlib",
+        "node:stream"
+      ],
+      "contract": "Zstd compression levels and parameter and flush validation run against the original upstream sample.",
+      "owners": [
+        "upstream Node zlib binding and bundled codecs",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/pss-vectors.json"
+  ]
+}

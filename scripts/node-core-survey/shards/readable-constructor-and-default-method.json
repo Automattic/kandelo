@@ -1,0 +1,32 @@
+{
+  "id": "readable-constructor-and-default-method",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-constructor-set-methods",
+      "file": "test/parallel/test-stream-readable-constructor-set-methods.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The constructor invokes a supplied read method.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-with-unimplemented-_read",
+      "file": "test/parallel/test-stream-readable-with-unimplemented-_read.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A missing read implementation delivers the original error and close events.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    }
+  ],
+  "fixtures": []
+}

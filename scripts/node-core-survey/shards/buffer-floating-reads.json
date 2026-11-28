@@ -1,0 +1,32 @@
+{
+  "id": "buffer-floating-reads",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-readfloat",
+      "file": "test/parallel/test-buffer-readfloat.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Single- and double-precision reads in both byte orders.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-readdouble",
+      "file": "test/parallel/test-buffer-readdouble.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Single- and double-precision reads in both byte orders.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

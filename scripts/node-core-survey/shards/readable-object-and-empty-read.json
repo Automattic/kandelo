@@ -1,0 +1,33 @@
+{
+  "id": "readable-object-and-empty-read",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-object-multi-push-async",
+      "file": "test/parallel/test-stream-readable-object-multi-push-async.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "An asynchronous object-mode producer preserves the original batched push and consumption order.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-next-no-null",
+      "file": "test/parallel/test-stream-readable-next-no-null.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/promises"
+      ],
+      "contract": "Readable.from rejects null chunks from synchronous and asynchronous iterables, including promised null, preserves earlier data and destroys the stream.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

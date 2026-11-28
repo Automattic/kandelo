@@ -1,0 +1,283 @@
+# Node CallSites observe the original receiver and its current property names.
+# Transfer traced call data to the pending error and release it after formatting.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -202,6 +202,12 @@
+     return *this;
+   }
+ 
++  bool captureCallReceivers() const { return captureCallReceivers_; }
++  RealmCreationOptions& setCaptureCallReceivers(bool enabled) {
++    captureCallReceivers_ = enabled;
++    return *this;
++  }
++
+   bool getToSourceEnabled() const { return toSource_; }
+   RealmCreationOptions& setToSourceEnabled(bool flag) {
+     toSource_ = flag;
+@@ -257,6 +263,7 @@
+   bool coopAndCoep_ = false;
+   bool immutableArrayBuffers_ = false;
+   uint32_t maxLazyTypedArrayBytes_ = UINT32_MAX;
++  bool captureCallReceivers_ = false;
+   bool toSource_ = false;
+ 
+   bool secureContext_ = false;
+--- a/js/public/SavedFrameAPI.h
++++ b/js/public/SavedFrameAPI.h
+@@ -99,6 +99,16 @@
+     MutableHandle<JSString*> namep,
+     SavedFrameSelfHosted selfHosted = SavedFrameSelfHosted::Include);
+ 
++// Transfer call metadata to the embedding's pending Error capture. Saved
++// source frames can survive formatting without retaining the call receivers.
++extern JS_PUBLIC_API JSObject* TakeErrorStackCallRecords(JSContext* cx, HandleObject stack);
++
++// Read the selected visible frame's optional embedding call metadata.
++// Output objects and values are wrapped into the caller's compartment.
++extern JS_PUBLIC_API bool GetSavedFrameCall(JSContext* cx, JSPrincipals* principals,
++    HandleObject frame, HandleObject records, MutableHandleValue receiver, MutableHandleObject callee,
++    bool* constructing, SavedFrameSelfHosted selfHosted);
++
+ /**
+  * Given a SavedFrame JSObject, get its asyncCause string. Defaults to nullptr.
+  */
+--- a/js/src/vm/GeneratorObject.cpp
++++ b/js/src/vm/GeneratorObject.cpp
+@@ -17,6 +17,7 @@
+ #include "vm/GlobalObject.h"
+ #include "vm/JSObject.h"
+ #include "vm/PlainObject.h"  // js::PlainObject
++#include "vm/Realm.h"
+ 
+ #include "debugger/DebugAPI-inl.h"
+ #include "vm/Stack-inl.h"
+@@ -83,6 +84,9 @@
+     return nullptr;
+   }
+ 
++  if (cx->realm()->creationOptions().captureCallReceivers()) {
++    genObj->setFixedSlot(CALL_RECEIVER_SLOT, frame.thisArgument());
++  }
+   if (!DebugAPI::onNewGenerator(cx, frame, genObj)) {
+     return nullptr;
+   }
+@@ -480,6 +484,7 @@
+     }
+   }
+ 
++  setFixedSlot(CALL_RECEIVER_SLOT, UndefinedValue());
+   setFixedSlot(CALLEE_SLOT, NullValue());
+   setFixedSlot(ENV_CHAIN_SLOT, NullValue());
+   setFixedSlot(ARGS_OBJ_SLOT, NullValue());
+--- a/js/src/vm/GeneratorObject.h
++++ b/js/src/vm/GeneratorObject.h
+@@ -41,6 +41,7 @@
+     ARGS_OBJ_SLOT,
+     STACK_STORAGE_SLOT,
+     RESUME_INDEX_SLOT,
++    CALL_RECEIVER_SLOT,
+     RESERVED_SLOTS
+   };
+ 
+@@ -72,6 +73,8 @@
+ 
+   static void finalSuspend(JSContext* cx, HandleObject obj);
+ 
++  Value callReceiver() const { return getFixedSlot(CALL_RECEIVER_SLOT); }
++
+   JSFunction& callee() const {
+     return getFixedSlot(CALLEE_SLOT).toObject().as<JSFunction>();
+   }
+--- a/js/src/vm/SavedFrame.h
++++ b/js/src/vm/SavedFrame.h
+@@ -57,6 +57,11 @@
+   // Convenient getters for SavedFrame's reserved slots for use from C++.
+   JSAtom* getSource();
+   uint32_t getSourceId();
++  JSObject* takeCallRecords() {
++    const Value records = getReservedSlot(JSSLOT_CALL_RECORDS);
++    setReservedSlot(JSSLOT_CALL_RECORDS, UndefinedValue());
++    return records.isObject() ? &records.toObject() : nullptr;
++  }
+   // Capture compiler provenance while the script is live. Reconstructed frames
+   // without this metadata remain explicitly Unknown.
+   enum class KandeloSourceKind : uint32_t { Unknown, Script, Eval, Function, Wasm };
+@@ -153,6 +158,7 @@
+     JSSLOT_SOURCEID,
+     JSSLOT_KANDELO_SOURCE_KIND,
+     JSSLOT_NATIVE_FRAME_METADATA,
++    JSSLOT_CALL_RECORDS,
+     JSSLOT_LINE,
+     JSSLOT_COLUMN,
+     JSSLOT_FUNCTIONDISPLAYNAME,
+--- a/js/src/vm/SavedStacks.cpp
++++ b/js/src/vm/SavedStacks.cpp
+@@ -26,6 +26,7 @@
+ #include "js/SavedFrameAPI.h"
+ #include "js/Stack.h"
+ #include "js/Vector.h"
++#include "js/WeakMap.h"
+ #include "util/DifferentialTesting.h"
+ #include "util/RandomSeed.h"
+ #include "util/StringBuilder.h"
+@@ -174,6 +175,10 @@
+   frame.set(nullptr);
+ }
+ 
++enum ErrorStackCallSlot { CallReceiver, CallCallee, CallConstructing, CallSlotCount };
++static const JSClass ErrorStackCallClass = {
++    "ErrorStackCall", JSCLASS_HAS_RESERVED_SLOTS(CallSlotCount)};
++
+ struct MOZ_STACK_CLASS SavedFrame::Lookup {
+   Lookup(JSAtom* source, uint32_t sourceId, uint32_t line,
+          JS::TaggedColumnNumberOneOrigin column, JSAtom* functionDisplayName,
+@@ -226,6 +231,9 @@
+   uint32_t sourceId;
+   KandeloSourceKind sourceKind;
+   RefPtr<NativeFrameMetadata> nativeMetadata;
++  Value receiver = UndefinedValue();
++  JSObject* callee = nullptr;
++  bool constructing = false;
+ 
+   // Line number (1-origin).
+   uint32_t line;
+@@ -246,6 +254,8 @@
+   Activation* activation;
+ 
+   void trace(JSTracer* trc) {
++    TraceRoot(trc, &receiver, "SavedFrame::Lookup::receiver");
++    TraceRoot(trc, &callee, "SavedFrame::Lookup::callee");
+     TraceRoot(trc, &source, "SavedFrame::Lookup::source");
+     TraceRoot(trc, &functionDisplayName,
+               "SavedFrame::Lookup::functionDisplayName");
+@@ -286,6 +296,11 @@
+   SavedFrame::Lookup& value() { return static_cast<Wrapper*>(this)->get(); }
+ 
+  public:
++  void setCall(Value receiver, JSObject* callee, bool constructing) {
++    value().receiver = receiver;
++    value().callee = callee;
++    value().constructing = constructing;
++  }
+   void setParent(SavedFrame* parent) { value().parent = parent; }
+ 
+   void setAsyncCause(Handle<JSAtom*> asyncCause) {
+@@ -896,8 +911,42 @@
+   }
+   *columnp = frame->getColumn();
+   return SavedFrameResult::Ok;
++}
++
++JS_PUBLIC_API JSObject* TakeErrorStackCallRecords(JSContext* cx, HandleObject stack) {
++  if (!stack || !stack->is<js::SavedFrame>()) return nullptr;
++  cx->check(stack);
++  return stack->as<js::SavedFrame>().takeCallRecords();
+ }
+ 
++JS_PUBLIC_API bool GetSavedFrameCall(JSContext* cx, JSPrincipals* principals,
++                                     HandleObject savedFrame, HandleObject records,
++                                     MutableHandleValue receiver,
++                                     MutableHandleObject callee, bool* constructing,
++                                     SavedFrameSelfHosted selfHosted) {
++  js::AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  bool skippedAsync;
++  Rooted<js::SavedFrame*> frame(cx, UnwrapSavedFrame(
++      cx, principals, savedFrame, selfHosted, skippedAsync));
++  if (!frame) {
++    JS_ReportErrorASCII(cx, "Captured frame is not visible in this realm");
++    return false;
++  }
++  receiver.setUndefined();
++  callee.set(nullptr);
++  *constructing = false;
++  if (!records) return true;
++  RootedValue key(cx, ObjectValue(*frame)), value(cx);
++  if (!JS_WrapValue(cx, &key) || !GetWeakMapEntry(cx, records, key, &value)) return false;
++  if (value.isUndefined()) return true;
++  const auto& record = value.toObject().as<js::NativeObject>();
++  receiver.set(record.getReservedSlot(js::CallReceiver));
++  callee.set(&record.getReservedSlot(js::CallCallee).toObject());
++  *constructing = record.getReservedSlot(js::CallConstructing).toBoolean();
++  return true;
++}
++
+ JS_PUBLIC_API SavedFrameResult GetSavedFrameFunctionDisplayName(
+     JSContext* cx, JSPrincipals* principals, HandleObject savedFrame,
+     MutableHandleString namep,
+@@ -1680,6 +1729,20 @@
+                                   iter.pc(), &activation, sourceKind,
+                                   metadata)) {
+         return false;
++      }
++      if (captureAwaiters && !iter.isWasm() && iter.isFunctionFrame() &&
++          iter.realm()->creationOptions().captureCallReceivers()) {
++        AutoRealmUnchecked ar(cx, iter.realm());
++        RootedFunction callee(cx, iter.callee(cx));
++        RootedValue receiver(cx, iter.thisArgument(cx));
++        if (iter.hasUsableAbstractFramePtr() && iter.abstractFramePtr().isGeneratorFrame()) {
++          if (auto* gen = GetGeneratorObjectForFrame(cx, iter.abstractFramePtr())) {
++            receiver = gen->callReceiver();
++          }
++        }
++        // A derived constructor can have an uninitialized this binding.
++        if (receiver.isMagic()) receiver.setUndefined();
++        stackChain[stackChain.length() - 1].setCall(receiver, callee, iter.isConstructing());
+       }
+     }
+ 
+@@ -1822,11 +1885,15 @@
+                                   location.line(), location.column(), callee->fullDisplayAtom(),
+                                   causeAtom, nullptr, callee->realm()->principals(), script->mutedErrors(),
+                                   Nothing(), nullptr, nullptr, CaptureScriptKind(script), metadata)) return false;
++      if (callee->realm()->creationOptions().captureCallReceivers()) {
++        stackChain[stackChain.length() - 1].setCall(gen->callReceiver(), callee, false);
++      }
+     }
+   }
+ 
+   // Iterate through |stackChain| in reverse order and get or create the
+   // actual SavedFrame instances.
++  RootedObject records(cx);
+   frame.set(cachedParentFrame);
+   for (size_t i = stackChain.length(); i != 0; i--) {
+     MutableHandle<SavedFrame::Lookup> lookup = stackChain[i - 1];
+@@ -1847,9 +1914,26 @@
+       }
+     }
+ 
+-    frame.set(getOrCreateSavedFrame(cx, lookup));
+-    if (!frame) {
+-      return false;
++    // A stack location can be shared across independent calls. The map must
++    // key by the exact call; its root also owns the one-time handoff to Error.
++    bool unique = lookup.get().callee || (i == 1 && records);
++    frame.set(unique ? createFrameFromLookup(cx, lookup)
++                     : getOrCreateSavedFrame(cx, lookup));
++    if (!frame) return false;
++    if (lookup.get().callee) {
++      if (!records) {
++        records = JS::NewWeakMapObject(cx);
++        if (!records) return false;
++      }
++      RootedObject record(cx, JS_NewObjectWithGivenProto(cx, &ErrorStackCallClass, nullptr));
++      RootedValue receiver(cx, lookup.get().receiver);
++      RootedObject callee(cx, lookup.get().callee);
++      if (!record || !JS_WrapValue(cx, &receiver) || !JS_WrapObject(cx, &callee)) return false;
++      JS::SetReservedSlot(record, CallReceiver, receiver);
++      JS::SetReservedSlot(record, CallCallee, ObjectValue(*callee));
++      JS::SetReservedSlot(record, CallConstructing, BooleanValue(lookup.get().constructing));
++      RootedValue key(cx, ObjectValue(*frame)), value(cx, ObjectValue(*record));
++      if (!JS::SetWeakMapEntry(cx, records, key, value)) return false;
+     }
+ 
+     if (capture.is<JS::AllFrames>() && lookup.framePtr()) {
+@@ -1861,6 +1945,7 @@
+     }
+   }
+ 
++  if (records) frame->setReservedSlot(SavedFrame::JSSLOT_CALL_RECORDS, ObjectValue(*records));
+   return true;
+ }
+ 

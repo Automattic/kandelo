@@ -1,0 +1,45 @@
+{
+  "id": "buffer-copy-compare-concat",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-copy",
+      "file": "test/parallel/test-buffer-copy.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer copy ranges, partial copies and Uint8Array arguments.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-compare",
+      "file": "test/parallel/test-buffer-compare.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer and Uint8Array byte ordering and comparison ranges.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-concat",
+      "file": "test/parallel/test-buffer-concat.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Concatenation with explicit and inferred lengths and Uint8Array input.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,15 @@
+{
+  "id": "captured-source-location",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-captured-source-location",
+      "file": "test/parallel/test-kandelo-captured-source-location.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": ["node:assert", "node:test"],
+      "contract": "Node's retained structured error source comes from Error.captureStackTrace without invoking stack formatting",
+      "owners": ["maintained SpiderMonkey error stack and message bridge", "upstream Node error and assertion consumers"]
+    }
+  ],
+  "fixtures": []
+}

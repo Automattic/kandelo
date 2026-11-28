@@ -1,0 +1,32 @@
+{
+  "id": "async-store-arguments-and-disable",
+  "cases": [
+    {
+      "selector": "async-hooks/test-async-local-storage-args",
+      "file": "test/async-hooks/test-async-local-storage-args.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "AsyncLocalStorage.run passes its arguments to the supplied callback.",
+      "owners": [
+        "upstream Node AsyncLocalStorage",
+        "maintained SpiderMonkey promise and realm integration"
+      ]
+    },
+    {
+      "selector": "async-hooks/test-async-local-storage-enable-disable",
+      "file": "test/async-hooks/test-async-local-storage-enable-disable.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Disabling and reusing a store follows the upstream propagation and restoration rules.",
+      "owners": [
+        "upstream Node AsyncLocalStorage",
+        "maintained SpiderMonkey promise and realm integration"
+      ]
+    }
+  ],
+  "fixtures": []
+}

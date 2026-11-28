@@ -1,0 +1,45 @@
+{
+  "id": "duplex-properties-and-destroy",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-duplex-props",
+      "file": "test/parallel/test-stream-duplex-props.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Independent readable and writable settings supply the expected watermarks and object modes.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-duplex-readable-writable",
+      "file": "test/parallel/test-stream-duplex-readable-writable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Separate public readable and writable flags follow duplex state.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-duplex-destroy",
+      "file": "test/parallel/test-stream-duplex-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Destroy callbacks, error identity, events and both sides of a duplex follow the upstream lifecycle.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,34 @@
+{
+  "id": "readable-event-delivery",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-event",
+      "file": "test/parallel/test-stream-readable-event.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:events"
+      ],
+      "contract": "Readable listener attachment observes buffered data during an active or idle read.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and callback scheduling"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-emittedReadable",
+      "file": "test/parallel/test-stream-readable-emittedReadable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:events"
+      ],
+      "contract": "Read resets the readable-event marker and successive ticks batch readable notifications.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and callback scheduling"
+      ]
+    }
+  ],
+  "fixtures": []
+}

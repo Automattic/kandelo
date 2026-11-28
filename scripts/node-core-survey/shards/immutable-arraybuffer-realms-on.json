@@ -1,0 +1,21 @@
+{
+  "id": "immutable-arraybuffer-realms-on",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-immutable-arraybuffer-realms-on",
+      "file": "test/parallel/test-kandelo-immutable-arraybuffer-realms-on.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:buffer",
+        "node:vm",
+        "node:worker_threads"
+      ],
+      "contract": "The on flag state in the main, VM, and worker realms, with the same property, copy, and mutation assertions as the combined supplemental control.",
+      "owners": [
+        "maintained SpiderMonkey engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

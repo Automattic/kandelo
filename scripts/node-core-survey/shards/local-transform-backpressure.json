@@ -1,0 +1,45 @@
+{
+  "id": "local-transform-backpressure",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-passthrough-drain",
+      "file": "test/parallel/test-stream-passthrough-drain.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A zero-high-water-mark PassThrough reports backpressure and emits drain as the data is read.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-transform-flush-data",
+      "file": "test/parallel/test-stream-transform-flush-data.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The Transform emits the final bytes supplied by its flush callback.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-transform-hwm0",
+      "file": "test/parallel/test-stream-transform-hwm0.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "At a zero high-water mark, write reports backpressure while the transform preserves the order of reads.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

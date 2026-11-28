@@ -1,0 +1,22 @@
+{
+  "id": "readline-and-raw-tty",
+  "cases": [
+    {
+      "selector": "pseudo-tty/readline-dumb-tty",
+      "file": "test/pseudo-tty/readline-dumb-tty.js",
+      "family": "terminal",
+      "modules": ["node:readline", "node:tty"],
+      "contract": "Readline produces the original prompt and display through a real dumb terminal PTY",
+      "owners": ["upstream Node readline", "Kandelo PTY and tty"]
+    },
+    {
+      "selector": "pseudo-tty/stdin-setrawmode",
+      "file": "test/pseudo-tty/stdin-setrawmode.js",
+      "family": "terminal",
+      "modules": ["node:tty", "node:process"],
+      "contract": "The original PTY process verifies stdin raw-mode toggling",
+      "owners": ["upstream Node tty", "Kandelo libuv tty and termios", "Kandelo PTY"]
+    }
+  ],
+  "fixtures": []
+}

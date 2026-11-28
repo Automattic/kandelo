@@ -1,0 +1,45 @@
+{
+  "id": "writable-destroyed-and-aborted",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-aborted",
+      "file": "test/parallel/test-stream-writable-aborted.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Premature destruction updates writableAborted.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-destroy",
+      "file": "test/parallel/test-stream-writable-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The original destroy cases preserve errors, events, callbacks and abort behavior.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-writable",
+      "file": "test/parallel/test-stream-writable-writable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The public writable property tracks end, error and destruction.",
+      "owners": [
+        "upstream Node writable streams",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

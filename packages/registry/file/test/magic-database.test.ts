@@ -7,7 +7,7 @@ import { runCentralizedProgram } from "../../../../host/test/centralized-test-he
 
 const fileBinary = tryResolveBinary("programs/file/file.wasm");
 const dashBinary = tryResolveBinary("programs/dash.wasm");
-const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
+const coreutilsBinary = tryResolveBinary("programs/coreutils/coreutils.wasm");
 
 // libmagic seals a loaded compiled database (.mgc) with mprotect(PROT_READ)
 // and refuses the database if that fails, so file declares the mprotect

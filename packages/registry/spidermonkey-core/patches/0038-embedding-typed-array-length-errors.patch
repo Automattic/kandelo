@@ -1,0 +1,168 @@
+# Allow JITless embeddings to describe rejected typed-array element counts.
+# Conversion and allocation failures retain their original exception paths.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -20,6 +20,7 @@
+ 
+ #include "js/Class.h"  // JSTraceOp
+ #include "js/RefCounted.h"
++#include "js/TypeDecls.h"  // JS::HandleValue
+ 
+ struct JS_PUBLIC_API JSContext;
+ class JS_PUBLIC_API JSObject;
+@@ -190,6 +191,17 @@
+   bool getImmutableArrayBuffersEnabled() const { return immutableArrayBuffers_; }
+   RealmCreationOptions& setImmutableArrayBuffersEnabled(bool flag) {
+     immutableArrayBuffers_ = flag;
++    return *this;
++  }
++
++  // Called only for a rejected element count. Conversion exceptions propagate.
++  using TypedArrayLengthErrorReporter = void (*)(JSContext*, HandleValue);
++  TypedArrayLengthErrorReporter getTypedArrayLengthErrorReporter() const {
++    return typedArrayLengthErrorReporter_;
++  }
++  RealmCreationOptions& setTypedArrayLengthErrorReporter(
++      TypedArrayLengthErrorReporter reporter) {
++    typedArrayLengthErrorReporter_ = reporter;
+     return *this;
+   }
+ 
+@@ -262,6 +274,7 @@
+   bool defineSharedArrayBufferConstructor_ = true;
+   bool coopAndCoep_ = false;
+   bool immutableArrayBuffers_ = false;
++  TypedArrayLengthErrorReporter typedArrayLengthErrorReporter_ = nullptr;
+   uint32_t maxLazyTypedArrayBytes_ = UINT32_MAX;
+   bool captureCallReceivers_ = false;
+   bool toSource_ = false;
+--- a/js/src/builtin/Number.h
++++ b/js/src/builtin/Number.h
+@@ -371,6 +371,8 @@
+   return true;
+ }
+ 
++using IndexErrorReporter = void (*)(JSContext*, JS::HandleValue);
++
+ /* ES2017 draft 7.1.17 ToIndex
+  *
+  * Return true and set |*index| to the integer value if |v| is a valid
+@@ -379,12 +381,12 @@
+  * The returned index will always be in the range 0 <= *index <= 2^53-1.
+  */
+ [[nodiscard]] extern bool ToIndexSlow(JSContext* cx, JS::HandleValue v,
+-                                      const unsigned errorNumber,
+-                                      uint64_t* index);
+-
+-[[nodiscard]] static inline bool ToIndex(JSContext* cx, JS::HandleValue v,
+-                                         const unsigned errorNumber,
+-                                         uint64_t* index) {
++                                      unsigned errorNumber, uint64_t* index,
++                                      IndexErrorReporter reportError);
++
++[[nodiscard]] static inline bool ToIndex(
++    JSContext* cx, JS::HandleValue v, unsigned errorNumber, uint64_t* index,
++    IndexErrorReporter reportError = nullptr) {
+   if (v.isInt32()) {
+     int32_t i = v.toInt32();
+     if (i >= 0) {
+@@ -392,7 +394,7 @@
+       return true;
+     }
+   }
+-  return ToIndexSlow(cx, v, errorNumber, index);
++  return ToIndexSlow(cx, v, errorNumber, index, reportError);
+ }
+ 
+ [[nodiscard]] static inline bool ToIndex(JSContext* cx, JS::HandleValue v,
+--- a/js/src/builtin/Number.cpp
++++ b/js/src/builtin/Number.cpp
+@@ -2195,7 +2195,8 @@
+ 
+ // ES2017 draft 7.1.17 ToIndex
+ bool js::ToIndexSlow(JSContext* cx, JS::HandleValue v,
+-                     const unsigned errorNumber, uint64_t* index) {
++                     unsigned errorNumber, uint64_t* index,
++                     IndexErrorReporter reportError) {
+   MOZ_ASSERT_IF(v.isInt32(), v.toInt32() < 0);
+ 
+   // Step 1.
+@@ -2215,7 +2216,11 @@
+   // 2. Step eliminates < 0, +0 == -0 with SameValueZero.
+   // 3/4. Limit to <= 2^53-1, so everything above should fail.
+   if (integerIndex < 0 || integerIndex >= DOUBLE_INTEGRAL_PRECISION_LIMIT) {
+-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, errorNumber);
++    if (reportError) {
++      reportError(cx, v);
++    } else {
++      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, errorNumber);
++    }
+     return false;
+   }
+ 
+--- a/js/src/vm/TypedArrayObject.cpp
++++ b/js/src/vm/TypedArrayObject.cpp
+@@ -515,7 +515,10 @@
+     if (args.length() == 0 || !args[0].isObject()) {
+       // Step 6.c.ii.
+       uint64_t len;
+-      if (!ToIndex(cx, args.get(0), JSMSG_BAD_ARRAY_LENGTH, &len)) {
++      auto reportError =
++          cx->realm()->creationOptions().getTypedArrayLengthErrorReporter();
++      if (!ToIndex(cx, args.get(0), JSMSG_BAD_ARRAY_LENGTH, &len,
++                   reportError)) {
+         return nullptr;
+       }
+ 
+@@ -525,7 +528,7 @@
+         return nullptr;
+       }
+ 
+-      return fromLength(cx, len, proto);
++      return fromLength(cx, len, proto, gc::Heap::Default, args.get(0));
+     }
+ 
+     RootedObject dataObj(cx, &args[0].toObject());
+@@ -820,11 +823,21 @@
+     return fromBufferSameCompartment(cx, buffer, byteOffset, length, nullptr);
+   }
+ 
+-  static bool maybeCreateArrayBuffer(JSContext* cx, uint64_t count,
+-                                     MutableHandle<ArrayBufferObject*> buffer) {
++  static bool maybeCreateArrayBuffer(
++      JSContext* cx, uint64_t count, MutableHandle<ArrayBufferObject*> buffer,
++      HandleValue requestedLength = JS::UndefinedHandleValue) {
+     if (count > ByteLengthLimit / BYTES_PER_ELEMENT) {
+-      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+-                                JSMSG_BAD_ARRAY_LENGTH);
++      auto reportError =
++          cx->realm()->creationOptions().getTypedArrayLengthErrorReporter();
++      if (reportError) {
++        RootedValue length(cx, requestedLength.isUndefined()
++                                   ? DoubleValue(double(count))
++                                   : requestedLength.get());
++        reportError(cx, length);
++      } else {
++        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
++                                  JSMSG_BAD_ARRAY_LENGTH);
++      }
+       return false;
+     }
+     size_t byteLength = count * BYTES_PER_ELEMENT;
+@@ -851,11 +864,12 @@
+   // ES2023 draft rev cf86f1cdc28e809170733d74ea64fd0f3dd79f78
+   // 23.2.5.1.1 AllocateTypedArray ( constructorName, newTarget, defaultProto [
+   // , length ] )
+-  static TypedArrayObject* fromLength(JSContext* cx, uint64_t nelements,
+-                                      HandleObject proto = nullptr,
+-                                      gc::Heap heap = gc::Heap::Default) {
++  static TypedArrayObject* fromLength(
++      JSContext* cx, uint64_t nelements, HandleObject proto = nullptr,
++      gc::Heap heap = gc::Heap::Default,
++      HandleValue requestedLength = JS::UndefinedHandleValue) {
+     Rooted<ArrayBufferObject*> buffer(cx);
+-    if (!maybeCreateArrayBuffer(cx, nelements, &buffer)) {
++    if (!maybeCreateArrayBuffer(cx, nelements, &buffer, requestedLength)) {
+       return nullptr;
+     }
+ 

@@ -1,0 +1,32 @@
+{
+  "id": "transform-watermarks-and-destroy",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-transform-split-highwatermark",
+      "file": "test/parallel/test-stream-transform-split-highwatermark.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Independent readable and writable high-water marks honor overrides, defaults and invalid inputs.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-transform-destroy",
+      "file": "test/parallel/test-stream-transform-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Destroy errors, repeats, close events and asynchronous early exit preserve the original stream state and callback assertions.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

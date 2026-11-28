@@ -1,0 +1,20 @@
+{
+  "id": "child-process-argv",
+  "cases": [
+    {
+      "selector": "parallel/test-child-process-spawn-argv0",
+      "file": "test/parallel/test-child-process-spawn-argv0.js",
+      "family": "processes",
+      "modules": [
+        "node:child_process",
+        "node:process"
+      ],
+      "contract": "spawnSync preserves default and overridden argv[0] through a real child exec and captured stdout",
+      "owners": [
+        "upstream Node child_process",
+        "Kandelo libuv and kernel spawn"
+      ]
+    }
+  ],
+  "fixtures": []
+}

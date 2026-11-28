@@ -1,0 +1,45 @@
+{
+  "id": "readable-demand-and-queue",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-needReadable",
+      "file": "test/parallel/test-stream-readable-needReadable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Demand for a readable event follows listener registration and read state.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-reading-readingMore",
+      "file": "test/parallel/test-stream-readable-reading-readingMore.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Internal reading and refill flags reflect reads and pushes.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-unobserved-eof-readable",
+      "file": "test/parallel/test-stream-readable-unobserved-eof-readable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Readable EOF is observable after data and listener transitions.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

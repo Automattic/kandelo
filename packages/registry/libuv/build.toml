@@ -1,7 +1,7 @@
 script_path = "packages/registry/libuv/build-libuv.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 11
+revision = 12
 inputs = [
   "packages/registry/libuv/build-libuv.sh",
   "packages/registry/libuv/patches/0001-kandelo-posix-backend.patch",
@@ -11,6 +11,7 @@ inputs = [
   "packages/registry/libuv/patches/0006-kandelo-procfs-cpu-load.patch",
   "packages/registry/libuv/patches/0007-guest-vfs-events.patch",
   "packages/registry/libuv/patches/0008-kandelo-resource-usage-errors.patch",
+  "packages/registry/libuv/patches/0009-kandelo-posix-timestamps.patch",
   "packages/registry/libuv/src/kandelo-fs-events.c",
   "packages/registry/libuv/src/kandelo-proctitle.c",
   "packages/registry/libuv/src/kandelo-memory.c",

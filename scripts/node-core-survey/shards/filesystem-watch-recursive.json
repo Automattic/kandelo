@@ -1,0 +1,45 @@
+{
+  "id": "filesystem-watch-recursive",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-watch-recursive-add-file-to-new-folder",
+      "file": "test/parallel/test-fs-watch-recursive-add-file-to-new-folder.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Recursive Node watcher emits a relative filename for a file created in a new subdirectory and closes.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-watch-recursive-delete",
+      "file": "test/parallel/test-fs-watch-recursive-delete.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Recursive Node watcher observes removal of a directory tree.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-watch-recursive-promise",
+      "file": "test/parallel/test-fs-watch-recursive-promise.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises"
+      ],
+      "contract": "Promises recursive iterator observes actual writes and propagates early and late abort reasons.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

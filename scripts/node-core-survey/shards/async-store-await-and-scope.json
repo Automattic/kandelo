@@ -1,0 +1,32 @@
+{
+  "id": "async-store-await-and-scope",
+  "cases": [
+    {
+      "selector": "async-hooks/test-async-local-storage-async-await",
+      "file": "test/async-hooks/test-async-local-storage-async-await.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "A store propagates through awaited work.",
+      "owners": [
+        "upstream Node AsyncLocalStorage",
+        "maintained SpiderMonkey promise and realm integration"
+      ]
+    },
+    {
+      "selector": "async-hooks/test-async-local-storage-async-functions",
+      "file": "test/async-hooks/test-async-local-storage-async-functions.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Async functions preserve the scope of the current store across their awaits.",
+      "owners": [
+        "upstream Node AsyncLocalStorage",
+        "maintained SpiderMonkey promise and realm integration"
+      ]
+    }
+  ],
+  "fixtures": []
+}

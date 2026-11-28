@@ -1,0 +1,45 @@
+{
+  "id": "pipeline-end-and-completion",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipeline-queued-end-in-destroy",
+      "file": "test/parallel/test-stream-pipeline-queued-end-in-destroy.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A queued write and end during destruction settle with ERR_STREAM_PREMATURE_CLOSE.",
+      "owners": [
+        "upstream Node local core libraries",
+        "Kandelo process and stream runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipeline-uncaught",
+      "file": "test/parallel/test-stream-pipeline-uncaught.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A thrown completion callback from an async pipeline reaches uncaughtException.",
+      "owners": [
+        "upstream Node local core libraries",
+        "Kandelo process and stream runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipeline-with-empty-string",
+      "file": "test/parallel/test-stream-pipeline-with-empty-string.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "An empty string source completes through an object-mode PassThrough.",
+      "owners": [
+        "upstream Node local core libraries",
+        "Kandelo process and stream runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

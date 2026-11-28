@@ -1073,10 +1073,19 @@ struct SharedOfdStateInner {
     position_generation: Cell<u64>,
     epoll_identity: Cell<Option<OfdId>>,
     vfs_watch: Cell<Option<OfdId>>,
+    // Forked descriptions and queued SCM_RIGHTS entries share this inode pin.
+    directory_inode: Cell<Option<i64>>,
 }
 
 impl Drop for SharedOfdStateInner {
     fn drop(&mut self) {
+        if let Some(handle) = self.directory_inode.get() {
+            if crate::tmpfs::is_tmpfs_file_handle(handle) {
+                crate::tmpfs::release_handle(handle);
+            } else {
+                crate::rootfs::release_handle(handle);
+            }
+        }
         if let Some(id) = self.vfs_watch.get() { crate::vfs_events::retire(id); }
         if let Some(id) = self.epoll_identity.get() {
             // A sender waiting on this datagram receiver's full queue can
@@ -1112,6 +1121,7 @@ impl SharedOfdState {
             position_generation: Cell::new(0),
             epoll_identity: Cell::new(None),
             vfs_watch: Cell::new(None),
+            directory_inode: Cell::new(None),
         })?))
     }
 
@@ -1274,6 +1284,15 @@ impl OpenFileDesc {
 
     pub fn shared_state(&self) -> SharedOfdState {
         self.shared_state.clone()
+    }
+
+    pub(crate) fn set_directory_inode(&self, handle: i64) {
+        debug_assert!(self.shared_state.0.directory_inode.get().is_none());
+        self.shared_state.0.directory_inode.set(Some(handle));
+    }
+
+    pub(crate) fn metadata_handle(&self) -> i64 {
+        self.shared_state.0.directory_inode.get().unwrap_or(self.host_handle)
     }
 
     #[cfg(test)]

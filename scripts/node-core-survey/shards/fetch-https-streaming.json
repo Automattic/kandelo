@@ -1,0 +1,19 @@
+{
+  "id": "fetch-https-streaming",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-fetch-https-streaming",
+      "file": "test/parallel/test-kandelo-fetch-https-streaming.mjs",
+      "origin": "kandelo",
+      "family": "web",
+      "modules": ["globalThis.fetch", "node:https", "node:tls", "node:stream/web"],
+      "contract": "TLS-verified Fetch streams between separate processes, response write/drain, body cancellation, peer closure, healthy follow-up and clean server exit",
+      "owners": ["upstream Undici", "Node TLS", "upstream Node streams", "Kandelo libuv socket ownership"]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/keys/agent8-cert.pem",
+    "test/fixtures/keys/agent8-key.pem",
+    "test/fixtures/keys/fake-startcom-root-cert.pem"
+  ]
+}

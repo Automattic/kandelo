@@ -1,0 +1,20 @@
+{
+  "id": "single-stream-iter-property-access",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-iter-property-access",
+      "file": "test/parallel/test-stream-iter-property-access.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/iter"
+      ],
+      "contract": "Pinned upstream property-access iterator behavior with the original test flags.",
+      "owners": [
+        "upstream Node stream iterators and their adapters",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

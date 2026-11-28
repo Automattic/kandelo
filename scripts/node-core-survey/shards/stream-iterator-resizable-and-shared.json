@@ -1,0 +1,32 @@
+{
+  "id": "stream-iterator-resizable-and-shared",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-iter-resizable-buffers",
+      "file": "test/parallel/test-stream-iter-resizable-buffers.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/iter"
+      ],
+      "contract": "Detect resized, grown and detached views across buffered operations.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-iter-sharedarraybuffer",
+      "file": "test/parallel/test-stream-iter-sharedarraybuffer.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/iter"
+      ],
+      "contract": "Consume shared byte storage through the experimental stream iterator API.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

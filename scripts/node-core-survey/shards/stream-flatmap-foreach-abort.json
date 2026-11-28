@@ -1,0 +1,34 @@
+{
+  "id": "stream-flatmap-foreach-abort",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-flatMap",
+      "file": "test/parallel/test-stream-flatMap.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Flattened file chunks and cancellation of both concurrent mapper calls.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-forEach",
+      "file": "test/parallel/test-stream-forEach.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Concurrent consumption, handler errors and abort.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/x.txt"
+  ]
+}

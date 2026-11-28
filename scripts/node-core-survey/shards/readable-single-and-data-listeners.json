@@ -1,0 +1,32 @@
+{
+  "id": "readable-single-and-data-listeners",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-data",
+      "file": "test/parallel/test-stream-readable-data.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A data listener receives a chunk after replacing the readable listener.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-readable-one",
+      "file": "test/parallel/test-stream-readable-readable-one.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Successive read() calls return the original queued buffer objects in order.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    }
+  ],
+  "fixtures": []
+}

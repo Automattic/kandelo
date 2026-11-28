@@ -1,0 +1,63 @@
+# Node observes the await reaction that resumes a frame. The default
+# SavedFrame parent remains in use for other stack captures.
+--- a/js/src/vm/SavedStacks.cpp
++++ b/js/src/vm/SavedStacks.cpp
+@@ -1571,7 +1571,11 @@
+                                        ? &startAtObj->as<JSFunction>()
+                                        : nullptr);
+   bool seenStartAt = !startAt;
+-  bool framePushed = false;
++  const bool captureAwaiters =
++      capture.is<JS::MaxFrames>() && capture.as<JS::MaxFrames>().includeAwaiters;
++  const uint32_t visibleLimit =
++      captureAwaiters ? capture.as<JS::MaxFrames>().maxFrames : 0;
++  bool reachedAwaitBoundary = false;
+   RootedField<LocationValue, 1> location(roots);
+   RootedField<JSAtom*, 2> displayAtom(roots);
+   RootedField<JSAtom*, 3> causeAtom(roots);
+@@ -1654,8 +1658,10 @@
+ 
+     // If we haven't yet seen the start, then don't add anything to the stack
+     // chain.
+-    if (seenStartAt) {
+-      framePushed = true;
++    const bool framePushed =
++        seenStartAt && (!captureAwaiters ||
++                        location.source() != cx->names().self_hosted_);
++    if (framePushed) {
+       auto sourceKind = iter.isWasm() ? SavedFrame::KandeloSourceKind::Wasm
+                                       : CaptureScriptKind(iter.script());
+       RefPtr<NativeFrameMetadata> metadata;
+@@ -1721,6 +1727,13 @@
+       break;
+     }
+ 
++    if (hasAsyncStackToAdopt && captureAwaiters && cx->activeErrorStackJob) {
++      // The ordinary SavedFrame parent at this boundary comes from promise
++      // allocation. Node error stacks follow the pending await reaction here.
++      reachedAwaitBoundary = true;
++      break;
++    }
++
+     if (hasAsyncStackToAdopt) {
+       // Atomize the async cause string. There should only be a few
+       // different strings used.
+@@ -1774,12 +1787,14 @@
+     }
+   }
+ 
+-  if (seenStartAt && iter.done() && capture.is<JS::MaxFrames>() &&
+-      capture.as<JS::MaxFrames>().includeAwaiters && cx->activeErrorStackJob) {
++  if (seenStartAt && captureAwaiters && cx->activeErrorStackJob &&
++      (iter.done() || reachedAwaitBoundary) && stackChain.length() < visibleLimit) {
+     RootedObject job(cx, cx->activeErrorStackJob.ref()->get());
+     RootedObjectVector generators(cx);
+-    if (job && !GetAwaitingGenerators(cx, job, capture.as<JS::MaxFrames>().maxFrames,
+-                                      &generators)) return false;
++    const uint32_t remaining = visibleLimit - uint32_t(stackChain.length());
++    if (job && !GetAwaitingGenerators(cx, job, remaining, &generators)) {
++      return false;
++    }
+     if (!generators.empty()) {
+       causeAtom = Atomize(cx, "await", 5);
+       if (!causeAtom) return false;

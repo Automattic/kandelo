@@ -1,0 +1,25 @@
+{
+  "id": "web-streams-writable-close",
+  "cases": [
+    {
+      "selector": "wpt/test-streams/writable-streams/close.any.html",
+      "file": "test/wpt/test-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "WritableStream closing, writer state and settlement of queued writes and close operations.",
+      "owners": [
+        "upstream Node web streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/wpt/resources/testharness.js",
+    "test/wpt/status/streams.json"
+  ],
+  "fixtureDirectories": [
+    "test/fixtures/wpt/streams"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "private-field-read-identity",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-private-field-read-identity",
+      "file": "test/parallel/test-kandelo-private-field-read-identity.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": ["node:vm"],
+      "contract": "Retain private field identity and matching read errors through eval, VM cached data, and receiver checks.",
+      "owners": ["SpiderMonkey private name compiler and runtime", "maintained Node engine bridge"]
+    }
+  ],
+  "fixtures": []
+}

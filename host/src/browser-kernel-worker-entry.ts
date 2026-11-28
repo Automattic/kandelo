@@ -111,6 +111,8 @@ import {
   type WorkerQuiescence,
   waitForExecRetirement as waitForExecRetirementFence,
   waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
+  cancelProcessWorkerStartup,
+  createProcessWorkerStartupPermit,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import {
@@ -241,6 +243,7 @@ interface ForkReplayContext {
 }
 
 interface ProcessInfo extends ProcessGenerationOwnership {
+  startupPermit?: Int32Array;
   workerAbsence?: WorkerAbsence;
   /** Host-only identity for one execution image. A PID persists across exec. */
   generation: number;
@@ -2978,9 +2981,38 @@ async function handleExec(
         && threadsQuiescent
         && initiatingInfo.memoryRetirementSafe
         && mainFramebufferReleased;
-      const handoffExitSignal = await retryKernelEntryResult(
-        () => kernelWorker.finalizeExecHandoffTermination(pid),
-      );
+
+      // DIAGNOSTIC: track pid → exec path so the sysprof dump can name
+      // each pid (otherwise the table is just opaque numbers).
+      {
+        const g = globalThis as { __pidMap?: Map<number, string> };
+        if (!g.__pidMap) g.__pidMap = new Map();
+        g.__pidMap.set(pid, diagnosticPath);
+      }
+      const {
+        memory: newMemory,
+        memoryLease: newMemoryLease,
+        layout: newLayout,
+        threadAllocator: newThreadAllocator,
+      } = prepared;
+      const newChannelOffset = newLayout.channelOffset;
+      // See the launch-continuation retry note on the root spawn path.
+      const handoffExitSignal = await retryKernelEntryResult(() => {
+        const signal = kernelWorker.finalizeExecHandoffTermination(pid);
+        if (signal > 0) return signal;
+        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+          preserveProcessState: true,
+          ptrWidth,
+          metadataPtrWidth: initiatingInfo.ptrWidth,
+          brkBase: newLayout.brkBase,
+          mmapBase: newLayout.mmapBase,
+          maxAddr: newLayout.maxAddr,
+          // Refresh kernel-owned argv/environment for procfs and kernel APIs.
+          argv: launchArgv,
+          env: envp,
+        });
+        return 0;
+      });
       if (handoffExitSignal > 0) {
         prepared.memoryLease.release();
         preparedLeaseConsumed = true;
@@ -2997,21 +3029,7 @@ async function handleExec(
         );
         return 0;
       }
-
-      // DIAGNOSTIC: track pid → exec path so the sysprof dump can name
-      // each pid (otherwise the table is just opaque numbers).
-      {
-        const g = globalThis as { __pidMap?: Map<number, string> };
-        if (!g.__pidMap) g.__pidMap = new Map();
-        g.__pidMap.set(pid, diagnosticPath);
-      }
-      const {
-        memory: newMemory,
-        memoryLease: newMemoryLease,
-        layout: newLayout,
-        threadAllocator: newThreadAllocator,
-      } = prepared;
-      const newChannelOffset = newLayout.channelOffset;
+      replacementRegistered = true;
       replacementForkHostImports = forkHostImportOwnerRuntime.createWorker({
         pid,
         generationId: replacementExternrefGeneration.id,
@@ -3028,10 +3046,12 @@ async function handleExec(
         },
       });
 
+      const startupPermit = createProcessWorkerStartupPermit();
       const execInitData: CentralizedWorkerInitMessage = {
         type: "centralized_init",
         statLeaseBinding: kernelWorker.createStatLeaseBinding(pid, newMemory, ptrWidth, programModule),
         pid,
+        startupPermit,
         programBytes: bytes,
         programModule,
         memory: newMemory,
@@ -3074,20 +3094,6 @@ async function handleExec(
         }
         return workerAdapter.createWorker(execInitData);
       });
-      // See the launch-continuation retry note on the root spawn path.
-      await retryKernelEntryResult(() =>
-        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-          preserveProcessState: true,
-          ptrWidth,
-          metadataPtrWidth: initiatingInfo.ptrWidth,
-          brkBase: newLayout.brkBase,
-          mmapBase: newLayout.mmapBase,
-          maxAddr: newLayout.maxAddr,
-          // Refresh kernel-owned argv/environment for procfs and kernel APIs.
-          argv: launchArgv,
-          env: envp,
-        }));
-      replacementRegistered = true;
       bindForkHostImports(replacementWorker, replacementForkHostImports);
 
       // Clear cached thread module — the new program binary is different
@@ -3097,6 +3103,7 @@ async function handleExec(
         generation: allocateProcessGeneration(),
         memory: newMemory,
         memoryLease: newMemoryLease,
+        startupPermit,
         workerQuiescence: createWorkerQuiescence(),
         execRetirement: createWorkerQuiescence(),
         memoryRetirementSafe: true,
@@ -3884,12 +3891,17 @@ async function finishProcessExit(
     // registered listener left to wake it.
     // Rust exit/signal delivery can precede the Worker observing its wake.
     // Release parked siblings through the idempotent exited-channel transport.
+    // A canceled startup may still be loading its Worker entry module.
+    // Wait for the real fence using the existing exec retirement bound.
+    const retirementWait = cancelProcessWorkerStartup(info.startupPermit)
+      ? EXEC_WORKER_RETIREMENT_WAIT_MS
+      : PROCESS_WORKER_QUIESCENCE_WAIT_MS;
     try {
       await kernelWorker.killBlockedProcessForTeardown(pid);
     } catch (error) {
       console.warn(`[kernel-worker] pid=${pid} retirement wake failed: ${String(error)}`);
     }
-    await waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS);
+    await waitForProcessWorkerRetirement(info, retirementWait);
     const threadsQuiescent = await terminateThreadWorkers(pid);
     await terminateTrackedWorker(expectedWorker, settleMs);
 

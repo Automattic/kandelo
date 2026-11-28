@@ -1,0 +1,201 @@
+# Module embedders can format errors with the original request specifier and
+# binding name already known to the linker. The optional diagnostic formatter
+# can also preserve the actual requesting script's source line. Node uses
+# this data in its upstream module loader. Other embedders retain the existing
+# messages. Remove the hook if upstream exposes equivalent link error data.
+#
+--- a/js/public/ContextOptions.h
++++ b/js/public/ContextOptions.h
+@@ -14,9 +14,16 @@
+ #include "js/WasmFeatures.h"
+ 
+ struct JS_PUBLIC_API JSContext;
++struct JSErrorReport;
++class JSScript;
+ 
+ namespace JS {
+ 
++using ModuleResolutionErrorFormatter = bool (*)(
++    JSContext* cx, JSErrorReport* report, JS::Handle<JSScript*> script,
++    JS::Handle<JSString*> specifier, JS::Handle<JSString*> name,
++    JS::MutableHandle<JSString*> message);
++
+ class JS_PUBLIC_API ContextOptions {
+  public:
+   // clang-format off
+@@ -189,6 +196,16 @@
+     return *this;
+   }
+ 
++  // Optional formatter for a failed import or re-export binding resolution.
++  ModuleResolutionErrorFormatter moduleResolutionErrorFormatter() const {
++    return moduleResolutionErrorFormatter_;
++  }
++  ContextOptions& setModuleResolutionErrorFormatter(
++      ModuleResolutionErrorFormatter formatter) {
++    moduleResolutionErrorFormatter_ = formatter;
++    return *this;
++  }
++
+   PrefableCompileOptions& compileOptions() { return compileOptions_; }
+   const PrefableCompileOptions& compileOptions() const {
+     return compileOptions_;
+@@ -218,6 +235,7 @@
+   // Compile options.
+   PrefableCompileOptions compileOptions_;
+   JSErrorCallback dynamicScriptErrorFormat_ = nullptr;
++  ModuleResolutionErrorFormatter moduleResolutionErrorFormatter_ = nullptr;
+ };
+ 
+ JS_PUBLIC_API ContextOptions& ContextOptionsRef(JSContext* cx);
+--- a/js/src/vm/Modules.cpp
++++ b/js/src/vm/Modules.cpp
+@@ -24,10 +24,12 @@
+ #include "frontend/FrontendContext.h"   // js::AutoReportFrontendContext
+ #include "js/ColumnNumber.h"            // JS::ColumnNumberOneOrigin
+ #include "js/Context.h"                 // js::AssertHeapIsIdle
++#include "js/ContextOptions.h"          // JS::ContextOptionsRef
+ #include "js/ErrorReport.h"             // JSErrorBase
+ #include "js/friend/StackLimits.h"      // js::AutoCheckRecursionLimit
+ #include "js/RootingAPI.h"              // JS::MutableHandle
+ #include "js/ScriptPrivate.h"           // JS::GetScriptPrivate
++#include "js/String.h"                  // JS_EncodeStringToUTF8
+ #include "js/Value.h"                   // JS::Value
+ #include "vm/EnvironmentObject.h"       // js::ModuleEnvironmentObject
+ #include "vm/Interpreter.h"  // GetAndClearExceptionAndStack
+@@ -1470,13 +1472,10 @@
+ 
+ static void ThrowResolutionError(JSContext* cx, Handle<ModuleObject*> module,
+                                  Handle<Value> resolution, Handle<JSAtom*> name,
+-                                 ModuleErrorInfo* errorInfo) {
++                                 ModuleErrorInfo* errorInfo,
++                                 Handle<ModuleRequestObject*> request,
++                                 Handle<JSAtom*> requestedName) {
+   MOZ_ASSERT(errorInfo);
+-  auto chars = StringToNewUTF8CharsZ(cx, *name);
+-  if (!chars) {
+-    ReportOutOfMemory(cx);
+-    return;
+-  }
+ 
+   bool isAmbiguous = resolution == StringValue(cx->names().ambiguous);
+ 
+@@ -1492,23 +1491,53 @@
+   JSErrorReport report;
+   report.isWarning_ = false;
+   report.errorNumber = errorNumber;
+-
+-  if (errorNumber == JSMSG_MODULE_AMBIGUOUS) {
+-    CreateErrorNumberMessageUTF8(cx, errorNumber, &report, errorInfo->imported,
+-                                 chars.get(), errorInfo->entry1,
+-                                 errorInfo->entry2);
++  RootedString message(cx);
++  auto formatter = JS::ContextOptionsRef(cx).moduleResolutionErrorFormatter();
++  if (formatter) {
++    RootedString specifier(cx, request->specifier());
++    RootedString bindingName(cx, requestedName);
++    RootedScript script(cx, module->maybeScript());
++    report.lineno = errorInfo->lineNumber;
++    report.column = errorInfo->columnNumber;
++    report.exnType = JSEXN_SYNTAXERR;
++    if (script) {
++      report.sourceId = script->scriptSource()->id();
++    }
++    if (!formatter(cx, &report, script, specifier, bindingName, &message)) {
++      return;
++    }
++    auto encoded = JS_EncodeStringToUTF8(cx, message);
++    if (!encoded) {
++      return;
++    }
++    report.initOwnedMessage(encoded.release());
+   } else {
+-    CreateErrorNumberMessageUTF8(cx, errorNumber, &report, errorInfo->imported,
+-                                 chars.get());
+-  }
++    auto chars = StringToNewUTF8CharsZ(cx, *name);
++    if (!chars) {
++      ReportOutOfMemory(cx);
++      return;
++    }
+ 
+-  Rooted<JSString*> message(cx, report.newMessageString(cx));
+-  if (!message) {
+-    ReportOutOfMemory(cx);
+-    return;
++    if (errorNumber == JSMSG_MODULE_AMBIGUOUS) {
++      CreateErrorNumberMessageUTF8(cx, errorNumber, &report, errorInfo->imported,
++                                   chars.get(), errorInfo->entry1,
++                                   errorInfo->entry2);
++    } else {
++      CreateErrorNumberMessageUTF8(cx, errorNumber, &report, errorInfo->imported,
++                                   chars.get());
++    }
++
++    message = report.newMessageString(cx);
++    if (!message) {
++      ReportOutOfMemory(cx);
++      return;
++    }
+   }
+ 
+   const char* file = module->filename();
++  if (formatter) {
++    report.filename = JS::ConstUTF8CharsZ(file, strlen(file));
++  }
+   RootedString filename(
+       cx, JS_NewStringCopyUTF8Z(cx, JS::ConstUTF8CharsZ(file, strlen(file))));
+   if (!filename) {
+@@ -1518,8 +1547,9 @@
+ 
+   RootedValue error(cx);
+   if (!JS::CreateError(cx, JSEXN_SYNTAXERR, nullptr, filename,
+-                       errorInfo->lineNumber, errorInfo->columnNumber, nullptr,
+-                       message, JS::NothingHandleValue, &error)) {
++                       errorInfo->lineNumber, errorInfo->columnNumber,
++                       formatter ? &report : nullptr, message,
++                       JS::NothingHandleValue, &error)) {
+     ReportOutOfMemory(cx);
+     return;
+   }
+@@ -1537,6 +1567,8 @@
+   // Step 1. For each ExportEntry Record e of module.[[IndirectExportEntries]],
+   //         do:
+   Rooted<JSAtom*> exportName(cx);
++  Rooted<JSAtom*> importName(cx);
++  Rooted<ModuleRequestObject*> moduleRequest(cx);
+   Rooted<Value> resolution(cx);
+   Rooted<ResolvedBindingObject*> binding(cx);
+   Rooted<JSAtom*> bindingName(cx);
+@@ -1556,7 +1588,10 @@
+     // Step 1.c. If resolution is either null or AMBIGUOUS, throw a SyntaxError
+     //           exception.
+     if (!IsResolvedBinding(cx, resolution)) {
+-      ThrowResolutionError(cx, module, resolution, exportName, &errorInfo);
++      moduleRequest = e.moduleRequest();
++      importName = e.importName() ? e.importName() : e.exportName();
++      ThrowResolutionError(cx, module, resolution, exportName, &errorInfo,
++                           moduleRequest, importName);
+       return false;
+     }
+ 
+@@ -1588,9 +1623,7 @@
+   Rooted<ModuleEnvironmentObject*> env(cx, &module->initialEnvironment());
+ 
+   // Step 7. For each ImportEntry Record in of module.[[ImportEntries]], do:
+-  Rooted<ModuleRequestObject*> moduleRequest(cx);
+   Rooted<ModuleObject*> importedModule(cx);
+-  Rooted<JSAtom*> importName(cx);
+   Rooted<JSAtom*> localName(cx);
+   Rooted<ModuleObject*> sourceModule(cx);
+   for (const ImportEntry& in : module->importEntries()) {
+@@ -1656,7 +1689,8 @@
+       // Step 7.d.ii. If resolution is null or ambiguous, throw a SyntaxError
+       //              exception.
+       if (!IsResolvedBinding(cx, resolution)) {
+-        ThrowResolutionError(cx, module, resolution, importName, &errorInfo);
++        ThrowResolutionError(cx, module, resolution, importName, &errorInfo,
++                             moduleRequest, importName);
+         return false;
+       }
+ 

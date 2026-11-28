@@ -1,0 +1,39 @@
+{
+  "id": "original-cjs-cache-and-circular-warning",
+  "cases": [
+    {
+      "selector": "parallel/test-require-cache",
+      "file": "test/parallel/test-require-cache.js",
+      "family": "loading",
+      "modules": [
+        "node:module",
+        "CommonJS"
+      ],
+      "contract": "Requiring cached filesystem and bare builtin modules returns the assigned exports.",
+      "owners": [
+        "upstream Node module loaders",
+        "maintained SpiderMonkey module bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-module-circular-dependency-warning",
+      "file": "test/parallel/test-module-circular-dependency-warning.js",
+      "family": "loading",
+      "modules": [
+        "node:module",
+        "CommonJS"
+      ],
+      "contract": "Circular requires preserve module.exports, warning conditions and proxy trap behavior.",
+      "owners": [
+        "upstream Node module loaders",
+        "maintained SpiderMonkey module bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/semicolon.js"
+  ],
+  "fixtureDirectories": [
+    "test/fixtures/cycles"
+  ]
+}

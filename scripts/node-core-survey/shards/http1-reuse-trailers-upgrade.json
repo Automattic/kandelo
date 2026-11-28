@@ -1,0 +1,30 @@
+{
+  "id": "http1-reuse-trailers-upgrade",
+  "cases": [
+    {
+      "selector": "parallel/test-http-agent-keepalive",
+      "file": "test/parallel/test-http-agent-keepalive.js",
+      "family": "http",
+      "modules": ["node:http", "node:net"],
+      "contract": "HTTP Agent socket reuse, queueing, idle ownership and request completion",
+      "owners": ["upstream Node HTTP", "Kandelo libuv socket ownership"]
+    },
+    {
+      "selector": "parallel/test-http-server-de-chunked-trailer",
+      "file": "test/parallel/test-http-server-de-chunked-trailer.js",
+      "family": "http",
+      "modules": ["node:http"],
+      "contract": "A real server request exposes the de-chunked body and trailers",
+      "owners": ["upstream Node HTTP", "Node llhttp"]
+    },
+    {
+      "selector": "parallel/test-http-upgrade-binary",
+      "file": "test/parallel/test-http-upgrade-binary.js",
+      "family": "http",
+      "modules": ["node:http", "node:net"],
+      "contract": "HTTP upgrade transfers exact binary bytes without text decoding",
+      "owners": ["upstream Node HTTP", "Node llhttp", "Kandelo libuv socket ownership"]
+    }
+  ],
+  "fixtures": []
+}

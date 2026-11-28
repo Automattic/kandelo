@@ -1,0 +1,32 @@
+{
+  "id": "stream-cork-and-uncork-flush",
+  "cases": [
+    {
+      "selector": "parallel/test-stream3-cork-end",
+      "file": "test/parallel/test-stream3-cork-end.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Flushing corked writes through end.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream3-cork-uncork",
+      "file": "test/parallel/test-stream3-cork-uncork.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Nested cork and uncork ordering.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -8,6 +8,12 @@ import { resolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
+const cohortPrograms = {
+  dash: "programs/wasm32/dash.wasm",
+  bash: "programs/wasm32/bash/bash.wasm",
+} as const;
+const cohortNames = ["dash", "bash"] as const;
+
 describe("Node native rootfs lazy cohort", () => {
   it("pins the complete native image cohort in one off-thread checkpoint on first use", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-native-cohort-"));
@@ -19,16 +25,16 @@ describe("Node native rootfs lazy cohort", () => {
       ?? resolve("../target/program-index-checker", hostTarget, "release/xtask");
     const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
     writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quote(marker)}\nexec ${quote(checker)} "$@"\n`, { mode: 0o755 });
-    const expected = ["dash", "bash"].map((name) => readFileSync(resolveBinary(`programs/wasm32/${name}.wasm`)));
+    const expected = cohortNames.map((name) => readFileSync(resolveBinary(cohortPrograms[name])));
     const fs = KandeloImageFs.create();
-    for (const [index, name] of ["dash", "bash"].entries()) {
+    for (const [index, name] of cohortNames.entries()) {
       const bytes = expected[index];
-      fs.registerLazyFile(`/bin/${name}`, `binaries/programs/wasm32/${name}.wasm`, bytes.length, 0o755,
+      fs.registerLazyFile(`/bin/${name}`, `binaries/${cohortPrograms[name]}`, bytes.length, 0o755,
         createHash("sha256").update(bytes).digest("hex"));
     }
     // A latent bad asset must stay a per-URL error, never fail boot or another
     // cohort member. Duplicate URLs must not create duplicate checkpoints.
-    fs.registerLazyFile("/bin/dash-alias", "binaries/programs/wasm32/dash.wasm", expected[0].length, 0o755);
+    fs.registerLazyFile("/bin/dash-alias", `binaries/${cohortPrograms.dash}`, expected[0].length, 0o755);
     fs.registerLazyFile("/bin/unused", "binaries/programs/wasm32/no-such-cohort-program.wasm", 4, 0o755);
     const previous = process.env.WASM_POSIX_XTASK_BIN;
     process.env.WASM_POSIX_XTASK_BIN = wrapper;
@@ -38,7 +44,7 @@ describe("Node native rootfs lazy cohort", () => {
       // Artifact admission may use the checker during boot. Count only the
       // lazy cohort phase, after the image has been validated by Rust.
       writeFileSync(marker, "");
-      for (const [index, name] of ["dash", "bash"].entries()) {
+      for (const [index, name] of cohortNames.entries()) {
         const bytes = await host.readFileFromVfs(`/bin/${name}`);
         expect(bytes).not.toBeNull();
         expect(Buffer.compare(bytes!, expected[index])).toBe(0);
@@ -66,7 +72,8 @@ describe("Node native rootfs lazy cohort", () => {
       const slow = join(directory, "slow");
       const wrapper = join(directory, "xtask");
       const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
-      const checker = resolve("../target/program-index-checker", hostTarget, "release/xtask");
+      const checker = process.env.WASM_POSIX_XTASK_BIN
+        ?? resolve("../target/program-index-checker", hostTarget, "release/xtask");
       const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
       // Sleep only once the flag exists, so boot-time artifact admission is
       // not slowed; then run the real checker when it has been prepared.
@@ -76,10 +83,10 @@ describe("Node native rootfs lazy cohort", () => {
         existsSync(checker) ? `exec ${quote(checker)} "$@"` : "exit 0",
         "",
       ].join("\n"), { mode: 0o755 });
-      const [dash, bash] = ["dash", "bash"].map((name) => readFileSync(resolveBinary(`programs/wasm32/${name}.wasm`)));
+      const [dash, bash] = cohortNames.map((name) => readFileSync(resolveBinary(cohortPrograms[name])));
       const fs = KandeloImageFs.create();
       for (const [name, bytes] of [["dash", dash], ["bash", bash]] as const) {
-        fs.registerLazyFile(`/bin/${name}`, `binaries/programs/wasm32/${name}.wasm`, bytes.length, 0o755,
+        fs.registerLazyFile(`/bin/${name}`, `binaries/${cohortPrograms[name]}`, bytes.length, 0o755,
           createHash("sha256").update(bytes).digest("hex"));
       }
       const previous = process.env.WASM_POSIX_XTASK_BIN;

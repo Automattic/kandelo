@@ -1,0 +1,20 @@
+{
+  "id": "original-pipeline-files-and-sockets",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipeline",
+      "file": "test/parallel/test-stream-pipeline.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/promises"
+      ],
+      "contract": "Complete callback and promise pipeline original, including files, loopback sockets, abort and teardown.",
+      "owners": [
+        "upstream Node streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,36 @@
+{
+  "id": "webstream-clone-retirement",
+  "cases": [
+    {
+      "selector": "parallel/test-webstreams-clone-unref",
+      "file": "test/parallel/test-webstreams-clone-unref.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web",
+        "node:worker_threads"
+      ],
+      "contract": "Transferred readable and writable streams allow the guest process to exit.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-webstream-structured-clone-no-leftovers",
+      "file": "test/parallel/test-webstream-structured-clone-no-leftovers.mjs",
+      "family": "streams",
+      "modules": [
+        "node:stream/web",
+        "node:worker_threads"
+      ],
+      "contract": "Consume the branches of a tee after structured clone and retire the process.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

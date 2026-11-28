@@ -1,0 +1,34 @@
+{
+  "id": "readable-flow-and-listener-removal",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-pause-and-resume",
+      "file": "test/parallel/test-stream-readable-pause-and-resume.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:events"
+      ],
+      "contract": "Object-mode data delivery respects pause and resume across successive listeners.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and callback scheduling"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-readable-then-resume",
+      "file": "test/parallel/test-stream-readable-readable-then-resume.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:events"
+      ],
+      "contract": "A stream resumes and reaches end after the last readable listener is removed in the same tick.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and callback scheduling"
+      ]
+    }
+  ],
+  "fixtures": []
+}

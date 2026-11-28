@@ -1,0 +1,22 @@
+{
+  "id": "crypto-keys-and-webcrypto",
+  "cases": [
+    {
+      "selector": "parallel/test-crypto-keygen-promisify",
+      "file": "test/parallel/test-crypto-keygen-promisify.js",
+      "family": "crypto",
+      "modules": ["node:crypto"],
+      "contract": "Async RSA key generation through promisify and use of the generated keys for encryption and signatures",
+      "owners": ["upstream Node crypto", "Node OpenSSL package", "Kandelo libuv work queue"]
+    },
+    {
+      "selector": "parallel/test-crypto-webcrypto-aes-decrypt-tag-too-small",
+      "file": "test/parallel/test-crypto-webcrypto-aes-decrypt-tag-too-small.js",
+      "family": "crypto",
+      "modules": ["node:crypto", "globalThis.crypto"],
+      "contract": "WebCrypto AES-GCM rejects a decrypt input shorter than its requested tag length",
+      "owners": ["upstream Node WebCrypto", "Node OpenSSL package"]
+    }
+  ],
+  "fixtures": []
+}

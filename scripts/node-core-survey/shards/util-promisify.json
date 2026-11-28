@@ -1,0 +1,19 @@
+{
+  "id": "util-promisify",
+  "cases": [
+    {
+      "selector": "parallel/test-util-promisify",
+      "file": "test/parallel/test-util-promisify.js",
+      "family": "values",
+      "modules": [
+        "node:util"
+      ],
+      "contract": "Promisify preserves callbacks, promise rejection, custom results, properties and real filesystem stat behavior.",
+      "owners": [
+        "upstream Node util and async scheduling",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

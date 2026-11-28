@@ -1,0 +1,18 @@
+{
+  "id": "buffer-maximum-string-constant",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-constants",
+      "file": "test/parallel/test-buffer-constants.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Check published Buffer limits, the maximum supported string length, and rejection immediately beyond it.",
+      "owners": [
+        "upstream Node Buffer and SpiderMonkey typed arrays"
+      ]
+    }
+  ],
+  "fixtures": []
+}

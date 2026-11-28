@@ -1,0 +1,14 @@
+{
+  "id": "brotli-stream-flush",
+  "cases": [
+    {
+      "selector": "parallel/test-zlib-brotli-flush",
+      "file": "test/parallel/test-zlib-brotli-flush.js",
+      "family": "compression",
+      "modules": ["node:zlib", "node:stream"],
+      "contract": "An asynchronous write and flush on the Brotli stream expose the original exact encoded bytes",
+      "owners": ["upstream Node compression and streams", "Node Brotli package", "Kandelo libuv work queue"]
+    }
+  ],
+  "fixtures": ["test/fixtures/person.jpg"]
+}

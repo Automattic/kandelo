@@ -1,0 +1,34 @@
+{
+  "id": "local-async-destroy",
+  "cases": [
+    {
+      "selector": "parallel/test-async-hooks-destroy-on-gc",
+      "file": "test/parallel/test-async-hooks-destroy-on-gc.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks",
+        "node:timers"
+      ],
+      "contract": "GC of a userland AsyncResource emits its destroy ID by the next immediate",
+      "owners": [
+        "upstream Node async hooks",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-hooks-prevent-double-destroy",
+      "file": "test/parallel/test-async-hooks-prevent-double-destroy.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks",
+        "node:timers"
+      ],
+      "contract": "The original manual emitDestroy and subsequent collection case completes with the upstream destroy-hook assertion",
+      "owners": [
+        "upstream Node async hooks",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

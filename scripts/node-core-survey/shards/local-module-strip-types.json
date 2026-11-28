@@ -1,0 +1,19 @@
+{
+  "id": "local-module-strip-types",
+  "cases": [
+    {
+      "selector": "parallel/test-module-strip-types",
+      "file": "test/parallel/test-module-strip-types.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "The public TypeScript stripping API preserves the upstream output, validates options, and emits the original warning.",
+      "owners": [
+        "upstream Node loaders and workers",
+        "Kandelo Amaro and maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -4,3 +4,6 @@ find_package(libuv 1.52.1 CONFIG REQUIRED)
 add_executable(libuv-backend-controls backend-controls.c)
 target_link_libraries(libuv-backend-controls PRIVATE libuv::uv_a)
 target_compile_options(libuv-backend-controls PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+add_executable(libuv-fs-timestamps fs-timestamps.c)
+target_link_libraries(libuv-fs-timestamps PRIVATE libuv::uv_a)

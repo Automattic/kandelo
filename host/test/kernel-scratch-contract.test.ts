@@ -1488,6 +1488,56 @@ const auditAllowances: AuditAllowance[] = [
     why: "The SpiderMonkey Node-compat adapter intentionally evaluates package JavaScript as its documented script-loader boundary; it is outside the kernel worker and receives no kernel WebAssembly authority.",
   },
   {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-dynamic-parser-formats.js::<module>::dynamic-code-contract::eval(source)",
+    disposition: "non-kernel",
+    why: "The survey compiles only the parser inputs declared in this fixture using direct eval. The fixture runs in a test Node process with no kernel memory authority.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-dynamic-parser-formats.js::<module>::dynamic-code-contract::(0, eval)(source)",
+    disposition: "non-kernel",
+    why: "The survey compiles the same fixture-local parser inputs through indirect eval in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-dynamic-parser-formats.js::<module>::dynamic-code-contract::new Function(source)",
+    disposition: "non-kernel",
+    why: "The survey compiles the same fixture-local parser inputs through Function in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-private-brand-lexical-name.js::<module>::dynamic-code-contract::eval(`(class Explicit ${body})`)",
+    disposition: "non-kernel",
+    why: "The survey combines a fixed class body with an explicit class name to check the diagnostic in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-private-brand-lexical-name.js::<module>::dynamic-code-contract::eval(`const Inferred = class ${body}; Inferred`)",
+    disposition: "non-kernel",
+    why: "The survey combines the fixed class body with an inferred name to check the diagnostic in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-private-brand-lexical-name.js::<module>::dynamic-code-contract::eval(`(class ${body})`)",
+    disposition: "non-kernel",
+    why: "The survey compiles the fixed class body without a name to check the diagnostic in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-private-brand-lexical-name.js::<module>::dynamic-code-contract::eval(`const key = 'computed-name'; ({ [key]: class ${body} })[key]`)",
+    disposition: "non-kernel",
+    why: "The survey combines the fixed class body with a computed name to check the diagnostic in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-private-brand-lexical-name.js::<module>::dynamic-code-contract::eval(`(class BeforeRename ${body})`)",
+    disposition: "non-kernel",
+    why: "The survey compiles the fixed class body before changing the public name to check the diagnostic in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-private-field-read-identity.js::Holder.readFromEval::dynamic-code-contract::eval('receiver.#π')",
+    disposition: "non-kernel",
+    why: "The survey evaluates a fixed private-field expression against fixture-created receivers in the test Node process.",
+  },
+  {
+    key: "scripts/node-core-survey/supplemental/test-kandelo-native-function-source.js::<module>::dynamic-code-contract::eval(probe)",
+    disposition: "non-kernel",
+    why: "The survey evaluates a fixed function-source probe in the test Node process to compare it with the same probe in the VM and Worker.",
+  },
+  {
     key: 'apps/browser-demos/pages/network/network-demo-worker.ts::createProcessMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(initialPages) as unknown as number, maximum: BigInt(MAX_PAGES) as unknown as number, shared: true, address: "i64", } as WebAssembly.MemoryDescriptor)',
     disposition: "non-kernel",
     authorityOwner: "process-memory",

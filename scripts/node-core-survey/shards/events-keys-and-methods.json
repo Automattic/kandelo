@@ -1,0 +1,45 @@
+{
+  "id": "events-keys-and-methods",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-symbols",
+      "file": "test/parallel/test-event-emitter-symbols.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream symbols assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-special-event-names",
+      "file": "test/parallel/test-event-emitter-special-event-names.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream special event names assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-method-names",
+      "file": "test/parallel/test-event-emitter-method-names.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream method names assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

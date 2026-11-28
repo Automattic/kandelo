@@ -1,0 +1,19 @@
+{
+  "id": "filesystem-filehandle-collection",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-filehandle",
+      "file": "test/parallel/test-fs-filehandle.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Upstream observes file handle collection with the original error code and guest pathname.",
+      "owners": [
+        "upstream Node filesystem",
+        "Kandelo VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

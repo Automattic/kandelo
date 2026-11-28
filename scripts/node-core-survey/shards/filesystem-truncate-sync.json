@@ -1,0 +1,34 @@
+{
+  "id": "filesystem-truncate-sync",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-truncate",
+      "file": "test/parallel/test-fs-truncate.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "File and descriptor truncation changes real file length and contents.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-fsync",
+      "file": "test/parallel/test-fs-fsync.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "fsync and fdatasync complete on an actual writable file descriptor.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/a.js"
+  ]
+}

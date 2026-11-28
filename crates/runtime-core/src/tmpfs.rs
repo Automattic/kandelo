@@ -1918,12 +1918,13 @@ fn rename_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
                     return Err(Errno::ENOTEMPTY);
                 }
             }
-            // Detach and free the replaced destination.
+            // A replaced file loses one name. Its other names and open
+            // descriptions continue to refer to the same inode.
             if let Some(InodeKind::Dir(entries)) = state.get_mut(new_parent).map(|i| &mut i.kind) {
                 entries.remove(&new_name);
             }
             if let Some(inode) = state.get_mut(existing) {
-                inode.nlink = 0;
+                inode.nlink = if new_is_dir { 0 } else { inode.nlink.saturating_sub(1) };
             }
             state.maybe_free(existing);
         }
@@ -2003,6 +2004,19 @@ fn link_mutation(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     })
 }
 
+
+/// Pin the directory inode until its last open description reference is dropped.
+pub(crate) fn retain_directory(path: &[u8]) -> Result<(i64, WasmStat), Errno> {
+    let index = walk_to_inode(path)?;
+    TMPFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::ENOENT)?;
+        if !matches!(inode.kind, InodeKind::Dir(_)) {
+            return Err(Errno::ENOTDIR);
+        }
+        inode.open_count = inode.open_count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok((inode_to_file_handle(index), inode.stat()))
+    })
+}
 
 // Directory descriptions retain the dev/inode observed when opened. Validate
 // that identity even if the pathname was renamed and replaced before binding.
@@ -2227,13 +2241,13 @@ pub fn utimensat(
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
     let path_entry = crate::vfs_events::Entry::capture(path, lstat);
-    let result = utimensat_mutation(path, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
+    set_inode_times(walk_to_inode(path)?, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
     if let Some(entry) = path_entry { entry.committed(true); }
-    Ok(result)
+    Ok(())
 }
 
-fn utimensat_mutation(
-    path: &[u8],
+pub fn futimens(
+    handle: i64,
     atime_sec: u64,
     atime_nsec: u32,
     mtime_sec: u64,
@@ -2241,7 +2255,20 @@ fn utimensat_mutation(
     ctime_sec: u64,
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
-    let idx = walk_to_inode(path)?;
+    set_inode_times(file_handle_to_inode(handle)?, atime_sec, atime_nsec, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec)?;
+    publish_handle_change(handle);
+    Ok(())
+}
+
+fn set_inode_times(
+    idx: u32,
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+) -> Result<(), Errno> {
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
         inode.check_mutable()?;
@@ -2946,6 +2973,36 @@ mod tests {
         release_handle(h3);
         assert_eq!(rename(b"/tmp/rn_g", b"/tmp/rn_e").unwrap_err(), Errno::EISDIR);
         assert_eq!(rename(b"/tmp/rn_e", b"/tmp/rn_g").unwrap_err(), Errno::ENOTDIR);
+    }
+
+    #[test]
+    fn rename_over_file_preserves_other_names_for_replaced_inode() {
+        let old = b"/tmp/rename-over-hardlink-old";
+        let alias = b"/tmp/rename-over-hardlink-alias";
+        let replacement = b"/tmp/rename-over-hardlink-new";
+        let original = open(old, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        write(original, 0, b"original").unwrap();
+        link(old, alias).unwrap();
+        let incoming = open(replacement, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        write(incoming, 0, b"replacement").unwrap();
+        release_handle(incoming);
+
+        rename(replacement, old).unwrap();
+        let original_ino = fstat(original).unwrap().st_ino;
+        assert_eq!(fstat(original).unwrap().st_nlink, 1);
+        assert_ne!(lstat(old).unwrap().st_ino, original_ino);
+        release_handle(original);
+        let survivor = open(alias, O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(survivor).unwrap().st_ino, original_ino);
+        assert_eq!(read_all(survivor), b"original");
+        release_handle(survivor);
+        let moved = open(old, O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(read_all(moved), b"replacement");
+        release_handle(moved);
+        assert_eq!(lstat(replacement).unwrap_err(), Errno::ENOENT);
+
+        unlink(alias).unwrap();
+        unlink(old).unwrap();
     }
 
     #[test]

@@ -1,0 +1,20 @@
+{
+  "id": "vm-invocation-locations",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-vm-invocation-locations",
+      "file": "test/parallel/test-kandelo-vm-invocation-locations.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Named and computed calls, optional invocations, grouped callees and spreads report the native source line, caret and frame and preserve nullish short circuiting.",
+      "owners": [
+        "maintained SpiderMonkey frontend",
+        "Node VM diagnostic bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

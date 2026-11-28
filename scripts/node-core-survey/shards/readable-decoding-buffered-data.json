@@ -1,0 +1,32 @@
+{
+  "id": "readable-decoding-buffered-data",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-setEncoding-existing-buffers",
+      "file": "test/parallel/test-stream-readable-setEncoding-existing-buffers.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Changing the decoder with bytes already queued preserves decoded output, including multibyte input.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-setEncoding-null",
+      "file": "test/parallel/test-stream-readable-setEncoding-null.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Passing null to setEncoding selects the UTF-8 decoder.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and Buffer providers"
+      ]
+    }
+  ],
+  "fixtures": []
+}

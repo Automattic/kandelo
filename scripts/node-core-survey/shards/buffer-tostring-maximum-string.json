@@ -1,0 +1,18 @@
+{
+  "id": "buffer-tostring-maximum-string",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-tostring-rangeerror",
+      "file": "test/parallel/test-buffer-tostring-rangeerror.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Apply the upstream memory prerequisite, allocation branches and maximum string conversion assertions.",
+      "owners": [
+        "upstream Node Buffer and SpiderMonkey typed arrays"
+      ]
+    }
+  ],
+  "fixtures": []
+}

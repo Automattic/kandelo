@@ -1,0 +1,20 @@
+{
+  "id": "vm-property-read-locations",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-vm-property-read-locations",
+      "file": "test/parallel/test-kandelo-vm-property-read-locations.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Twelve implicit property read errors report the native source line, UTF-16 caret and first frame for dotted, computed, chained and multiline expressions.",
+      "owners": [
+        "maintained SpiderMonkey frontend",
+        "Node VM diagnostic bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

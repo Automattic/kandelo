@@ -1,0 +1,32 @@
+{
+  "id": "readable-disposal-and-abort",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-dispose",
+      "file": "test/parallel/test-stream-readable-dispose.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Async disposal and await using emit AbortError and close and retire the readable.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-aborted",
+      "file": "test/parallel/test-stream-readable-aborted.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "readableAborted follows destroy and end for Readable and Duplex instances.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

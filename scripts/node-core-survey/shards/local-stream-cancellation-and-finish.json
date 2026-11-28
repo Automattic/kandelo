@@ -1,0 +1,34 @@
+{
+  "id": "local-stream-cancellation-and-finish",
+  "cases": [
+    {
+      "selector": "parallel/test-webstreams-abort-controller",
+      "file": "test/parallel/test-webstreams-abort-controller.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/web"
+      ],
+      "contract": "AbortSignal stops readable and writable web streams, rejects their outstanding operations and propagates the original error type.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-promises",
+      "file": "test/parallel/test-stream-promises.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/promises",
+        "node:fs"
+      ],
+      "contract": "The stream promises API exercises finished and pipeline, normal completion and error paths with actual guest file streams.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

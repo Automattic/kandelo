@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   renameSync,
@@ -139,6 +140,20 @@ describe("HostFileSystem utimens metadata", () => {
     const result = hostFs.stat("/timestamps");
     expect(result.atimeMs).toBe(before.atimeMs);
     expect(result.mtimeMs).toBe(30_000);
+  });
+
+  it("updates the final symlink while preserving its target's timestamps", () => {
+    const target = join(root, "target");
+    const link = join(root, "alias");
+    writeFileSync(target, "data");
+    symlinkSync("target", link);
+    utimesSync(target, 10, 20);
+
+    hostFs.utimensat("/alias", 30, 250_000_000, 40, 750_000_000, true);
+
+    expect(lstatSync(link).mtimeMs).toBe(40_750);
+    expect(statSync(target).mtimeMs).toBe(20_000);
+    expect(hostFs.lstat("/alias").atimeMs).toBe(30_250);
   });
 
   it("drops timestamp overrides after an external native mutation", () => {

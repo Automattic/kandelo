@@ -1,0 +1,20 @@
+{
+  "id": "callsite-receiver-identity",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-callsite-receiver-identity",
+      "file": "test/parallel/test-kandelo-callsite-receiver-identity.js",
+      "family": "engine",
+      "modules": [
+        "node:assert",
+        "node:vm"
+      ],
+      "contract": "Repeated captures from the same site keep distinct receivers. Names follow mutation, accessors, aliases and cross-realm method calls without executing proxy traps or getters.",
+      "owners": [
+        "maintained engine bridge and SpiderMonkey suspended frames"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

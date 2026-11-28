@@ -4,6 +4,7 @@ This port builds pinned Node.js 26.13.0 with SpiderMonkey 153.7 ESR through Node
 original configure/GYP build, startup, Environment, loaders and native policy.
 The default runtime is installed as `/usr/bin/spidermonkey-node`;
 `/usr/bin/node` is a relative symlink. Bundled npm remains upstream.
+See the [package security notes](SECURITY.md) for the OpenSSL secure-heap limitation.
 
 ## Source and package ownership
 
@@ -24,6 +25,11 @@ for source boundaries, dependency owners and upgrade procedure. Native Amaro and
 Undici are temporary alternatives to their upstream Wasm helpers; migrate back
 once general guest Wasm support has been designed and qualified.
 
+The JITless Node embedding supplies the typed-array constructor's RangeError
+text for rejected primitive lengths. SpiderMonkey performs index conversion and
+enforces the target byte limit. Node's diagnostic includes the original value,
+including whitespace in a numeric string.
+
 ## Build and test
 
 Run through `scripts/dev-shell.sh`. A focused package/image build is:
@@ -37,6 +43,20 @@ complete standard `node.wasm`, installed as `spidermonkey-node` with the `node`
 symlink. Experimental QUIC/DTLS are not enabled in this standard build; their
 implementation and qualification remain required later compatibility work.
 There is no automatic second executable or user profile selector.
+
+The Inspector-disabled build registers its empty Inspector binding initializer
+with the native callback signature. The upstream built-in inventory can
+load the internal Inspector helper through this path. Full Inspector
+protocol support remains open.
+
+Node realms expose lazy stacks on captured Error objects. The bridge removes
+SpiderMonkey's inherited Error stack accessor during realm setup so upstream
+serialization can omit a stack whose formatter throws.
+
+Node realms materialize backing buffers for fixed-length typed arrays larger
+than 64 bytes, matching the pinned native Node release. Passing
+`--js-immutable-arraybuffer` enables the immutable ArrayBuffer operations in
+Node realms. The option is off by default.
 
 Node's bundled OpenSSL uses `no-secure-memory`, like the
 [standalone OpenSSL package](../openssl/README.md#no-secure-heap). WebAssembly
@@ -55,6 +75,9 @@ them would require host callbacks that Node's native parser does not use.
 `Date::ValueOf` reads SpiderMonkey's internal date slot through the bridge,
 using the same pinned private `DateObject` interface as serialization; it never
 calls an overridable JavaScript method. Check that interface on engine upgrades.
+
+Private field reads keep SpiderMonkey's receiver checks. The Node realm error
+reporter uses the declared field name to format invalid receiver errors.
 
 [Maintained npm regressions](../node-browser-bundle/test/README.md) run offline
 and controlled-registry installation, lifecycle execution, CJS/ESM package use,

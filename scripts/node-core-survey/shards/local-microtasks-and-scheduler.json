@@ -1,0 +1,33 @@
+{
+  "id": "local-microtasks-and-scheduler",
+  "cases": [
+    {
+      "selector": "parallel/test-queue-microtask",
+      "file": "test/parallel/test-queue-microtask.js",
+      "family": "async",
+      "modules": [
+        "node:process",
+        "node:timers"
+      ],
+      "contract": "Microtasks interleave with Promise reactions in registration order, and thrown callbacks reach uncaughtException with the original assertions.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-promises-scheduler",
+      "file": "test/parallel/test-timers-promises-scheduler.js",
+      "family": "async",
+      "modules": [
+        "node:timers/promises"
+      ],
+      "contract": "Scheduler yield and wait preserve delivery order and handle active and pre-aborted signals with the expected errors.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

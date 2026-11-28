@@ -1,0 +1,36 @@
+{
+  "id": "fs-symlink-targets",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-symlink",
+      "file": "test/parallel/test-fs-symlink.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "File links preserve target text and distinguish link and target metadata. Dangling links and invalid argument types follow the upstream contract.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-symlink-dir",
+      "file": "test/parallel/test-fs-symlink-dir.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Relative, absolute and dangling directory links work using synchronous, callback and Promise calls.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "Kandelo filesystem and libc"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/cycles/root.js"
+  ]
+}

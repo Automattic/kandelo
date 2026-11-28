@@ -1,0 +1,20 @@
+{
+  "id": "dynamic-parser-formats",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-dynamic-parser-formats",
+      "file": "test/parallel/test-kandelo-dynamic-parser-formats.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Direct and indirect eval, ordinary, async and generator function constructors, vm.Script and vm.compileFunction preserve valid code and native data for declaration and script import errors.",
+      "owners": [
+        "maintained SpiderMonkey frontend",
+        "embedded Node compiler options"
+      ]
+    }
+  ],
+  "fixtures": []
+}

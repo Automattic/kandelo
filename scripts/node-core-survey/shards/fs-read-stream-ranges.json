@@ -1,0 +1,23 @@
+{
+  "id": "fs-read-stream-ranges",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-read-stream",
+      "file": "test/parallel/test-fs-read-stream.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:stream"
+      ],
+      "contract": "The upstream file readable covers ranges, pause and resumption, encoding, errors, and its conditional FIFO branch.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/elipses.txt",
+    "test/fixtures/x.txt"
+  ]
+}

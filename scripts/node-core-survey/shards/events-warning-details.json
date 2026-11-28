@@ -1,0 +1,45 @@
+{
+  "id": "events-warning-details",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-max-listeners-warning",
+      "file": "test/parallel/test-event-emitter-max-listeners-warning.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream max listeners warning assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-max-listeners-warning-for-null",
+      "file": "test/parallel/test-event-emitter-max-listeners-warning-for-null.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream max listeners warning for null assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-max-listeners-warning-for-symbol",
+      "file": "test/parallel/test-event-emitter-max-listeners-warning-for-symbol.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream max listeners warning for symbol assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

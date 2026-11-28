@@ -1,0 +1,32 @@
+{
+  "id": "pipe-push-and-resume",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-await-drain-push-while-write",
+      "file": "test/parallel/test-stream-pipe-await-drain-push-while-write.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe await drain push while write case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipe-manual-resume",
+      "file": "test/parallel/test-stream-pipe-manual-resume.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Full upstream pipe manual resume case.",
+      "owners": [
+        "upstream Node classic streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

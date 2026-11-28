@@ -662,7 +662,6 @@ export class ForkResumeTable {
     const ordered = [...targets].sort(
       (left, right) => left.functionOrdinal - right.functionOrdinal,
     );
-    const keys: string[] = [];
     let previous: number | undefined;
     for (const target of ordered) {
       assertU32(target.functionOrdinal, "resume function ordinal");
@@ -675,12 +674,38 @@ export class ForkResumeTable {
         );
       }
       previous = target.functionOrdinal;
-      const slot = this.allocateSlot();
-      this.table.set(slot, target.thunk);
-      const key = eventKey(activationId, target.functionOrdinal);
-      this.targets.set(key, { ...target, activationId, slot });
-      keys.push(key);
     }
+
+    // The artifact supplies the complete catalog. One exact reservation
+    // avoids growing the backing table in the engine for every entry.
+    const reusedSlots = Math.min(ordered.length, this.freeSlots.length);
+    const newSlots = ordered.length - reusedSlots;
+    const firstNewSlot = this.table.length;
+    if (newSlots > 0) this.table.grow(newSlots);
+
+    const keys: string[] = [];
+    try {
+      for (let index = 0; index < ordered.length; index++) {
+        const target = ordered[index]!;
+        const slot = index < reusedSlots
+          ? this.freeSlots[index]!
+          : firstNewSlot + index - reusedSlots;
+        const key = eventKey(activationId, target.functionOrdinal);
+        this.table.set(slot, target.thunk);
+        this.targets.set(key, { ...target, activationId, slot });
+        keys.push(key);
+      }
+    } catch (error) {
+      for (const key of keys) {
+        this.table.set(this.targets.get(key)!.slot, null);
+        this.targets.delete(key);
+      }
+      for (let slot = firstNewSlot; slot < firstNewSlot + newSlots; slot++) {
+        this.freeSlots.push(slot);
+      }
+      throw error;
+    }
+    this.freeSlots.splice(0, reusedSlots);
     this.activationKeys.set(activationId, keys);
   }
 
@@ -726,13 +751,5 @@ export class ForkResumeTable {
       this.unregisterActivation(activationId);
     }
     this.freeSlots = [];
-  }
-
-  private allocateSlot(): number {
-    const reused = this.freeSlots.shift();
-    if (reused !== undefined) return reused;
-    const slot = this.table.length;
-    this.table.grow(1);
-    return slot;
   }
 }

@@ -66,6 +66,37 @@ const SIGUSR1 = 10;
 const SA_RESTART = 0x10000000;
 
 describe("Rust-owned process wait lifecycle", () => {
+  it("keeps the exact exec handoff signal when a parent wait reaps the child", () => {
+    const pid = 42;
+    const memory = createSharedMemory();
+    const onExit = vi.fn();
+    const getParentPid = vi.fn(() => 7);
+    let exitSignal = SIGTERM;
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: () => exitSignal,
+      kernel_get_parent_pid: getParentPid,
+      kernel_drain_wakeup_events: () => {
+        exitSignal = -3;
+        return 0;
+      },
+    });
+    worker.processes = new Map([[pid, { channels: [], memory, source: memory }]]);
+    worker.execHandoffPids = new Set([pid]);
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+
+    worker.drainAndProcessWakeupEvents();
+    expect(onExit).not.toHaveBeenCalled();
+
+    expect(worker.finalizeExecHandoffTermination(pid)).toBe(SIGTERM);
+    expect(worker.finalizeExecHandoffTermination(pid)).toBe(SIGTERM);
+    expect(onExit).toHaveBeenCalledExactlyOnceWith(pid, 143);
+    expect(getParentPid).not.toHaveBeenCalled();
+
+    worker.finishProcessExecHandoff(pid);
+    expect(worker.finalizeExecHandoffTermination(pid)).toBe(-3);
+  });
+
 
 
 

@@ -1,0 +1,21 @@
+{
+  "id": "broadcast-waiter-engine-heap",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-broadcast-waiter-engine-heap",
+      "file": "test/parallel/test-kandelo-broadcast-waiter-engine-heap.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/iter",
+        "node:v8"
+      ],
+      "contract": "Supplemental engine heap growth and release control followed by 50,000 real detached broadcast consumers and the upstream retention bound.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey bridge and Kandelo runtime"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

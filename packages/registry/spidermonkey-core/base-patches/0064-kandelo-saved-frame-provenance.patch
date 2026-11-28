@@ -6,6 +6,9 @@
 # owns the shared source registry and release policy; a filename lookup would
 # confuse distinct compilations, and the OS cannot capture engine provenance.
 # The hook contains no untraced JS edges and may not run JavaScript.
+# An explicit throw must retain its own statement location after evaluating its
+# operand. Node uses that frame to underline the throw independently of the
+# error creation frame. Revisit this hunk if upstream tracks that position.
 #
 # Source-only cleanup; not rebuilt or behavior-qualified. Retention remains
 # subject to README.md: Future work: platform omissions.
@@ -255,3 +258,16 @@
 
    JSRuntime* runtime() { return runtime_; }
    const JSRuntime* runtime() const { return runtime_; }
+--- a/js/src/frontend/BytecodeEmitter.cpp
++++ b/js/src/frontend/BytecodeEmitter.cpp
+@@ -11660,4 +11660,10 @@
+     return false;
+   }
++  // Evaluating the operand can move the current source position. An exception
++  // from that evaluation keeps its own position. Attribute the explicit
++  // throw instruction itself to the statement that raises the exception.
++  if (op == JSOp::Throw && !updateSourceCoordNotes(unaryNode->pn_pos.begin)) {
++    return false;
++  }
+   return emit1(op);
+ }

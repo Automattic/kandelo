@@ -1,0 +1,20 @@
+{
+  "id": "filehandle-iterator-writer",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-promises-file-handle-writer",
+      "file": "test/parallel/test-fs-promises-file-handle-writer.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises",
+        "node:stream/iter"
+      ],
+      "contract": "Guest writes, writev, pipeline compression, disposal, abort and pending errors propagate through the FileHandle iterator writer.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

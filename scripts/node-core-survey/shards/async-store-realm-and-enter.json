@@ -1,0 +1,32 @@
+{
+  "id": "async-store-realm-and-enter",
+  "cases": [
+    {
+      "selector": "parallel/test-async-local-storage-contexts",
+      "file": "test/parallel/test-async-local-storage-contexts.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Independent main and VM context stores survive an await.",
+      "owners": [
+        "upstream Node AsyncLocalStorage",
+        "maintained SpiderMonkey promise and realm integration"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-local-storage-enter-with",
+      "file": "test/parallel/test-async-local-storage-enter-with.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "The stored value follows enterWith and the documented boundaries of promise continuations.",
+      "owners": [
+        "upstream Node AsyncLocalStorage",
+        "maintained SpiderMonkey promise and realm integration"
+      ]
+    }
+  ],
+  "fixtures": []
+}

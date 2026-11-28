@@ -20,6 +20,7 @@ patch -d "$SOURCE_DIR" -p1 -F0 < "$SCRIPT_DIR/patches/0005-kandelo-interface-enu
 patch -d "$SOURCE_DIR" -p1 -F0 < "$SCRIPT_DIR/patches/0006-kandelo-procfs-cpu-load.patch"
 patch -d "$SOURCE_DIR" -p1 -F0 < "$SCRIPT_DIR/patches/0007-guest-vfs-events.patch"
 patch -d "$SOURCE_DIR" -p1 -F0 < "$SCRIPT_DIR/patches/0008-kandelo-resource-usage-errors.patch"
+patch -d "$SOURCE_DIR" -p1 -F0 < "$SCRIPT_DIR/patches/0009-kandelo-posix-timestamps.patch"
 cp "$SCRIPT_DIR/src/kandelo-fs-events.c" "$SOURCE_DIR/src/unix/kandelo-fs-events.c"
 cp "$SCRIPT_DIR/src/kandelo-proctitle.c" "$SOURCE_DIR/src/unix/kandelo-proctitle.c"
 cp "$SCRIPT_DIR/src/kandelo-memory.c" "$SOURCE_DIR/src/unix/kandelo-memory.c"

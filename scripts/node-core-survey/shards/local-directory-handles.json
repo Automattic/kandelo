@@ -1,0 +1,20 @@
+{
+  "id": "local-directory-handles",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-opendir",
+      "file": "test/parallel/test-fs-opendir.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Read and close real directory handles through sync, callback and asynchronous interfaces; the original fixture rejects leaked-handle warnings.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

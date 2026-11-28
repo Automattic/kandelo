@@ -1,0 +1,19 @@
+{
+  "id": "local-webworker-messages",
+  "cases": [
+    {
+      "selector": "parallel/test-webworker-postmessage-overloads",
+      "file": "test/parallel/test-webworker-postmessage-overloads.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads"
+      ],
+      "contract": "A real dedicated worker and its creator use postMessage with transfer lists and iterable options, verify buffer detachment, and complete a round trip.",
+      "owners": [
+        "upstream Node web worker initialization",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "buffer-brands-and-bigints",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-fakes",
+      "file": "test/parallel/test-buffer-fakes.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Original Buffer operations reject incompatible receivers and arguments.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-bigint64",
+      "file": "test/parallel/test-buffer-bigint64.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Signed and unsigned 64-bit reads and writes preserve values, endianness, bounds, and return offsets.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

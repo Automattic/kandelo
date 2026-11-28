@@ -1,0 +1,32 @@
+{
+  "id": "writable-pipe-events",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipe-event",
+      "file": "test/parallel/test-stream-pipe-event.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The pipe event identifies its source when connecting to a destination.",
+      "owners": [
+        "upstream Node readable and writable streams",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-unpipe-event",
+      "file": "test/parallel/test-stream-unpipe-event.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Explicit and automatic unpipe events reflect the actual source and destination connections.",
+      "owners": [
+        "upstream Node readable and writable streams",
+        "maintained SpiderMonkey callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

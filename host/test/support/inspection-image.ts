@@ -21,7 +21,7 @@ export async function inspectionImage(large = false): Promise<Uint8Array> {
   fs.symlink("/foreign", "/inspection/foreign");
   fs.mkdir("/bin", 0o755);
   for (const program of ["bash", "coreutils"]) {
-    fs.writeFile(`/bin/${program}`, readFileSync(resolveBinary(`programs/${program}.wasm`)), 0o755);
+    fs.writeFile(`/bin/${program}`, readFileSync(resolveBinary(`programs/wasm32/${program}/${program}.wasm`)), 0o755);
   }
   for (const command of ["mkdir", "ln", "chmod", "chown"]) fs.symlink("/bin/coreutils", `/bin/${command}`);
   if (large) {

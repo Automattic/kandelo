@@ -1,0 +1,22 @@
+{
+  "id": "local-compile-cache-typescript-commonjs",
+  "cases": [
+    {
+      "selector": "parallel/test-compile-cache-typescript-commonjs",
+      "file": "test/parallel/test-compile-cache-typescript-commonjs.js",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Separate installed CLI processes populate and retrieve the TypeScript transpilation and CommonJS compile caches.",
+      "owners": [
+        "upstream Node loaders and workers",
+        "Kandelo Amaro and maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": [],
+  "fixtureDirectories": [
+    "test/fixtures/typescript"
+  ]
+}

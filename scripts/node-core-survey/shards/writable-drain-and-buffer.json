@@ -1,0 +1,32 @@
+{
+  "id": "writable-drain-and-buffer",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-writable-needdrain-state",
+      "file": "test/parallel/test-stream-writable-needdrain-state.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "needDrain changes when a write exceeds its high-water mark and clears before the write callback.",
+      "owners": [
+        "upstream Node Writable stream",
+        "Kandelo callback scheduling"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-writable-clear-buffer",
+      "file": "test/parallel/test-stream-writable-clear-buffer.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The buffered request count matches the queued writes as asynchronous corked writes complete.",
+      "owners": [
+        "upstream Node Writable stream",
+        "Kandelo callback scheduling"
+      ]
+    }
+  ],
+  "fixtures": []
+}

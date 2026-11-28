@@ -1,0 +1,62 @@
+{
+  "id": "next-tick-reentrancy-and-exit",
+  "cases": [
+    {
+      "selector": "parallel/test-next-tick-ordering2",
+      "file": "test/parallel/test-next-tick-ordering2.js",
+      "family": "async",
+      "modules": [
+        "node:process",
+        "node:timers"
+      ],
+      "contract": "A nextTick scheduled inside another tick precedes a zero-delay timer.",
+      "owners": [
+        "upstream Node scheduling",
+        "maintained SpiderMonkey promise job queue"
+      ]
+    },
+    {
+      "selector": "parallel/test-next-tick-fixed-queue-regression",
+      "file": "test/parallel/test-next-tick-fixed-queue-regression.js",
+      "family": "async",
+      "modules": [
+        "node:process",
+        "node:timers"
+      ],
+      "contract": "Drain all 2048 ticks inserted by a Promise reaction, including the tick that cancels an immediate.",
+      "owners": [
+        "upstream Node scheduling",
+        "maintained SpiderMonkey promise job queue"
+      ]
+    },
+    {
+      "selector": "parallel/test-next-tick-errors",
+      "file": "test/parallel/test-next-tick-errors.js",
+      "family": "async",
+      "modules": [
+        "node:process",
+        "node:timers"
+      ],
+      "contract": "An uncaught exception in a tick leaves the remaining ticks queued exactly once.",
+      "owners": [
+        "upstream Node scheduling",
+        "maintained SpiderMonkey promise job queue"
+      ]
+    },
+    {
+      "selector": "parallel/test-next-tick-when-exiting",
+      "file": "test/parallel/test-next-tick-when-exiting.js",
+      "family": "async",
+      "modules": [
+        "node:process",
+        "node:timers"
+      ],
+      "contract": "Ticks scheduled during explicit process exit never run.",
+      "owners": [
+        "upstream Node scheduling",
+        "maintained SpiderMonkey promise job queue"
+      ]
+    }
+  ],
+  "fixtures": []
+}

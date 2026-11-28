@@ -53,6 +53,7 @@ struct State {
   std::mutex globalRootsMutex;
   GlobalRoot* globalRootsHead=nullptr;
   std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
+  bool deliveringWeakCallback=false;
   std::vector<std::unique_ptr<Data>> eternalRoots;
   // V8's primitive constants use Isolate root slots, not HandleScope storage.
   // These values must survive a nested scope's return.

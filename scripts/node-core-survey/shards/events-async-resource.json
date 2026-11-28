@@ -1,0 +1,19 @@
+{
+  "id": "events-async-resource",
+  "cases": [
+    {
+      "selector": "parallel/test-eventemitter-asyncresource",
+      "file": "test/parallel/test-eventemitter-asyncresource.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream eventemitter asyncresource assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

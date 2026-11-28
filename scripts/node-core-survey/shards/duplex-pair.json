@@ -1,0 +1,19 @@
+{
+  "id": "duplex-pair",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-duplexpair",
+      "file": "test/parallel/test-stream-duplexpair.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Paired Duplex streams exchange data and complete pending writes and end events.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

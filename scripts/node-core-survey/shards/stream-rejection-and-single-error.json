@@ -1,0 +1,32 @@
+{
+  "id": "stream-rejection-and-single-error",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-catch-rejections",
+      "file": "test/parallel/test-stream-catch-rejections.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Rejected async event listeners trigger the original stream destruction path.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-error-once",
+      "file": "test/parallel/test-stream-error-once.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Readable and writable destruction emits each error once.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

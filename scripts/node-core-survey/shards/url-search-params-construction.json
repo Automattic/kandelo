@@ -1,0 +1,38 @@
+{
+  "id": "url-search-params-construction",
+  "cases": [
+    {
+      "selector": "wpt/test-url/urlsearchparams-constructor.any.html",
+      "file": "test/wpt/test-url.js",
+      "family": "values",
+      "modules": [
+        "node:url"
+      ],
+      "contract": "Original Web Platform Tests for URLSearchParams constructor.",
+      "owners": [
+        "upstream Node URL implementation",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "wpt/test-url/urlsearchparams-append.any.html",
+      "file": "test/wpt/test-url.js",
+      "family": "values",
+      "modules": [
+        "node:url"
+      ],
+      "contract": "Original Web Platform Tests for URLSearchParams append.",
+      "owners": [
+        "upstream Node URL implementation",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/wpt/resources/testharness.js",
+    "test/wpt/status/url.cjs"
+  ],
+  "fixtureDirectories": [
+    "test/fixtures/wpt/url"
+  ]
+}

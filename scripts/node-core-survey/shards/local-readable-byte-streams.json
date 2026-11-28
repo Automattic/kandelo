@@ -1,0 +1,49 @@
+{
+  "id": "local-readable-byte-streams",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-to-web-byob",
+      "file": "test/parallel/test-stream-readable-to-web-byob.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web",
+        "node:stream",
+        "node:buffer"
+      ],
+      "contract": "A byte-mode Readable.toWeb adapter validates the type option and delivers the expected bytes for 1000 caller-provided views",
+      "owners": [
+        "upstream Node byte streams",
+        "maintained SpiderMonkey view and Buffer storage"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-to-web-termination-byob",
+      "file": "test/parallel/test-stream-readable-to-web-termination-byob.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web",
+        "node:stream",
+        "node:buffer"
+      ],
+      "contract": "A pending BYOB read completes at EOF while the close listener cancels the reader",
+      "owners": [
+        "upstream Node byte streams",
+        "maintained SpiderMonkey view and Buffer storage"
+      ]
+    },
+    {
+      "selector": "parallel/test-whatwg-readablestream-byob-read-min",
+      "file": "test/parallel/test-whatwg-readablestream-byob-read-min.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "BYOB read rejects invalid minimum types, values, and oversized requests for typed arrays and DataView",
+      "owners": [
+        "upstream Node byte streams",
+        "maintained SpiderMonkey view and Buffer storage"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "event-error-routing",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-error-monitor",
+      "file": "test/parallel/test-event-emitter-error-monitor.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Error monitors observe an error before ordinary listeners and retain unhandled error semantics.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-capture-rejections",
+      "file": "test/parallel/test-event-capture-rejections.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Rejected listener promises reach the configured rejection handler or the error event.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,33 @@
+{
+  "id": "readable-watermark-and-web-strategy",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-strategy-option",
+      "file": "test/parallel/test-stream-readable-strategy-option.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/web"
+      ],
+      "contract": "Converting a classic Readable to a Web Stream applies its queuing strategy.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-hwm-0-no-flow-data",
+      "file": "test/parallel/test-stream-readable-hwm-0-no-flow-data.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A paused stream with zero high-water mark follows the expected flow transitions.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

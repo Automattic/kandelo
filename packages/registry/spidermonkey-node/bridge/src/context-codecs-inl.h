@@ -472,9 +472,15 @@ void MicrotaskQueue::PerformCheckpoint(Isolate* isolate){
   while(!data.Queues()->empty()&&!data.cx->isNativeExecutionTerminating()){
     task=data.Queues()->popFront();
     if(AllNativeMicrotaskQueuesEmpty(data))JS::JobQueueIsEmpty(data.cx);
+    // A nested drain may run an unrelated native callback. Only the current
+    // job contributes suspended callers to Error.captureStackTrace.
+    JS::RootedObject activeJob(data.cx, task.isObject() ? JS::ToMaybeWrappedJSMicroTask(task) : nullptr);
+    auto* previousJob = data.cx->activeErrorStackJob.ref();
+    data.cx->activeErrorStackJob = &activeJob;
+    auto restoreActiveJob = mozilla::MakeScopeExit([&]{ data.cx->activeErrorStackJob = previousJob; });
     bool success;
     if(task.isObject()){
-      job=JS::ToMaybeWrappedJSMicroTask(task);
+      job=activeJob;
       JS::RootedObject global(data.cx,JS::GetExecutionGlobalFromJSMicroTask(job));
       if(!global)continue;
       reportingGlobal=global;
@@ -593,6 +599,85 @@ bool ReportNativeException(Isolate* isolate,JS::HandleValue error,JS::HandleObje
 }
 }
 namespace {
+void ReportNodePrivateReadError(JSContext* cx, JS::HandleString name,
+                                JS::HandleValue receiver, JS::PrivateReadKind kind) {
+  auto bytes = JS_EncodeStringToUTF8(cx, name);
+  if (!bytes) return;
+  const char* label = JS_GetStringLength(name) == 0 ? "." : bytes.get();
+  static constexpr JSErrorFormatString errors[] = {
+      {"NodeCannotReadPrivateMember",
+       "Cannot read private member {0} from an object whose class did not declare it",
+       1, JSEXN_TYPEERR},
+      {"NodeCannotReadNullishProperty", "Cannot read properties of {0} (reading '{1}')",
+       2, JSEXN_TYPEERR},
+      {"NodeWrongPrivateInstance", "Receiver must be an instance of class {0}",
+       1, JSEXN_TYPEERR},
+      {"NodeWrongPrivateClass", "Receiver must be class {0}", 1, JSEXN_TYPEERR},
+  };
+  auto format = [](void*, unsigned index) -> const JSErrorFormatString* {
+    return &errors[index];
+  };
+  if (kind == JS::PrivateReadKind::StaticMember) {
+    JS_ReportErrorNumberUTF8(cx, format, nullptr, 3, label);
+  } else if (receiver.isNullOrUndefined()) {
+    JS_ReportErrorNumberUTF8(cx, format, nullptr, 1,
+                            receiver.isNull() ? "null" : "undefined", label);
+  } else {
+    CHECK(kind == JS::PrivateReadKind::Field ||
+          kind == JS::PrivateReadKind::InstanceMember);
+    JS_ReportErrorNumberUTF8(cx, format, nullptr,
+                            kind == JS::PrivateReadKind::Field ? 0 : 2, label);
+  }
+}
+
+void ReportNodeSymbolToStringError(JSContext* cx) {
+  auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+    static constexpr JSErrorFormatString error = {
+        "JSMSG_SYMBOL_TO_STRING",
+        "Cannot convert a Symbol value to a string",
+        0,
+        JSEXN_TYPEERR};
+    return &error;
+  };
+  JS_ReportErrorNumberASCII(cx, format, nullptr, JSMSG_SYMBOL_TO_STRING);
+}
+
+void ReportNodeStringRepeatError(JSContext* cx, double count) {
+  if (count < 0 || !std::isfinite(count)) {
+    JS::RootedValue value(cx, JS::DoubleValue(count));
+    JS::RootedString string(cx, JS::ToString(cx, value));
+    if (!string) return;
+    auto bytes = JS_EncodeStringToUTF8(cx, string);
+    if (!bytes) return;
+    auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+      static constexpr JSErrorFormatString error = {
+          "NodeInvalidRepeatCount", "Invalid count value: {0}", 1, JSEXN_RANGEERR};
+      return &error;
+    };
+    JS_ReportErrorNumberUTF8(cx, format, nullptr, 0, bytes.get());
+    return;
+  }
+  auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+    static constexpr JSErrorFormatString error = {
+        "NodeInvalidStringLength", "Invalid string length", 0, JSEXN_RANGEERR};
+    return &error;
+  };
+  JS_ReportErrorNumberUTF8(cx, format, nullptr, 0);
+}
+
+void ReportNodeTypedArrayLength(JSContext* cx, JS::HandleValue length) {
+  JS::RootedString string(cx, JS::ToString(cx, length));
+  if (!string) return;
+  auto bytes = JS_EncodeStringToUTF8(cx, string);
+  if (!bytes) return;
+  auto format = [](void*, unsigned) -> const JSErrorFormatString* {
+    static constexpr JSErrorFormatString error = {
+        "JSMSG_BAD_ARRAY_LENGTH", "Invalid typed array length: {0}", 1, JSEXN_RANGEERR};
+    return &error;
+  };
+  JS_ReportErrorNumberUTF8(cx, format, nullptr, JSMSG_BAD_ARRAY_LENGTH, bytes.get());
+}
+
 const JSClass nativeNodeGlobalClass={"global",JSCLASS_GLOBAL_FLAGS,&JS::DefaultGlobalClassOps};
 const JSClassOps nativeInterceptedGlobalOps=[] {
   auto ops=JS::DefaultGlobalClassOps;ops.newEnumerate=EnumerateNativeTemplate;return ops;
@@ -628,6 +713,15 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
     intercepted=constructor&&NativeTemplateHasInterceptors(frame,constructor);
   }
   JS::RealmOptions options;options.creationOptions().setSharedMemoryAndAtomicsEnabled(true);
+  options.creationOptions().setImmutableArrayBuffersEnabled(bridge::ImmutableArrayBuffersEnabled());
+  // Node 26's V8 configuration uses JSTypedArray::kMaxSizeInHeap (64 bytes).
+  options.creationOptions().setMaxLazyTypedArrayBytes(64);
+  options.creationOptions().setTypedArrayLengthErrorReporter(ReportNodeTypedArrayLength);
+  options.creationOptions().setStringRepeatErrorReporter(ReportNodeStringRepeatError);
+  options.creationOptions().setSymbolToStringErrorReporter(ReportNodeSymbolToStringError);
+  options.creationOptions().setPrivateReadErrorReporter(ReportNodePrivateReadError);
+  options.creationOptions().setCaptureCallReceivers(true);
+  options.creationOptions().setNodeNativeFunctionSource(true);
   JS::RootedObject global(frame.cx,JS_NewGlobalObject(frame.cx,
     intercepted?&nativeInterceptedGlobalClass:&nativeNodeGlobalClass,
     nullptr,JS::DontFireOnNewGlobalHook,options));
@@ -644,6 +738,18 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
   entry.CaptureAutoQueue(context);
   JS_FireOnNewGlobalObject(frame.cx,global);
   if(!JS::InitRealmStandardClasses(frame.cx))return {};
+  if (objectTemplate.IsEmpty()) {
+    // A plain Node global has a per-realm prototype between it and
+    // Object.prototype. Worker bootstrap installs its scope on that object.
+    JS::RootedObject globalPrototype(frame.cx, JS_NewPlainObject(frame.cx));
+    JS::RootedObject objectConstructor(frame.cx);
+    if (!globalPrototype ||
+        !JS_GetClassObject(frame.cx, JSProto_Object, &objectConstructor) ||
+        !JS_DefineProperty(frame.cx, globalPrototype, "constructor", objectConstructor, 0) ||
+        !JS_SetPrototype(frame.cx, global, globalPrototype)) {
+      return {};
+    }
+  }
   if(!InitializeNativeExtras(frame,context))return {};
   JS::RootedObject errorStacks(frame.cx,kandelo::node::CreateErrorStackState(frame.cx));
   if(!errorStacks)return {};
@@ -654,6 +760,22 @@ Local<Context> Context::New(Isolate* isolate,ExtensionConfiguration* extensions,
     // never write generic wrapper fields over SpiderMonkey's reserved slots.
     CHECK(TemplateInfo(record).fieldCount==0);
     if(!ApplyTemplateProperties(frame,record,global,context))return {};
+    if (constructor) {
+      // Like a template instance, a contextified global inherits the
+      // constructor's prototype from the new realm.
+      JS::RootedValue constructorRecord(frame.cx, JS::ObjectValue(*constructor));
+      Local<Function> function;
+      if (!frame.Own<FunctionTemplate>(constructorRecord)->GetFunction(context).ToLocal(&function)) {
+        return {};
+      }
+      JS::RootedObject callable(frame.cx, &Input(function).toObject());
+      JS::RootedValue prototype(frame.cx);
+      if (!JS_GetProperty(frame.cx, callable, "prototype", &prototype)) return {};
+      if (prototype.isObject()) {
+        JS::RootedObject globalPrototype(frame.cx, &prototype.toObject());
+        if (!JS_SetPrototype(frame.cx, global, globalPrototype)) return {};
+      }
+    }
   }
   return context;
 }

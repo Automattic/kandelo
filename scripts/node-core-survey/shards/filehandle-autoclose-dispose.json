@@ -1,0 +1,46 @@
+{
+  "id": "filehandle-autoclose-dispose",
+  "cases": [
+    {
+      "selector": "parallel/test-filehandle-autoclose",
+      "file": "test/parallel/test-filehandle-autoclose.mjs",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises",
+        "node:stream/web"
+      ],
+      "contract": "Consuming the Web stream closes or retains the file handle according to autoClose.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-promises-file-handle-dispose",
+      "file": "test/parallel/test-fs-promises-file-handle-dispose.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises"
+      ],
+      "contract": "File and directory disposal with explicit calls, using declarations, and repeated close.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    },
+    {
+      "selector": "parallel/test-filehandle-close",
+      "file": "test/parallel/test-filehandle-close.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises"
+      ],
+      "contract": "Closing an already closed descriptor rejects with EBADF.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -306,6 +306,8 @@ void Isolate::Initialize(Isolate* isolate,const CreateParams& params){
     }
     data.cx=bridge::NewProcessContext();
     if(data.cx){
+      // Node's guest isolate runs on a dedicated host worker.
+      if (params.allow_atomics_wait) JS_SetFutexCanWait(data.cx);
       // Node can enable Promise hooks after a reaction is registered. Keep
       // ordinary Then result objects available for those later notifications.
       data.cx->embedderPromiseLifecycleCapable=true;

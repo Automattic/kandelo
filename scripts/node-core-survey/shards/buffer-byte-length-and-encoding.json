@@ -1,0 +1,33 @@
+{
+  "id": "buffer-byte-length-and-encoding",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-bytelength",
+      "file": "test/parallel/test-buffer-bytelength.js",
+      "family": "values",
+      "modules": [
+        "node:buffer",
+        "node:vm"
+      ],
+      "contract": "Buffer.byteLength reports original byte sizes for supported encodings, views and cross-realm values.",
+      "owners": [
+        "upstream Node Buffer and string decoder",
+        "maintained SpiderMonkey backing storage and encoding"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-isencoding",
+      "file": "test/parallel/test-buffer-isencoding.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer.isEncoding recognizes the supported aliases and rejects the upstream invalid values.",
+      "owners": [
+        "upstream Node Buffer and string decoder",
+        "maintained SpiderMonkey backing storage and encoding"
+      ]
+    }
+  ],
+  "fixtures": []
+}

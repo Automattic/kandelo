@@ -1,0 +1,32 @@
+{
+  "id": "async-local-bind-and-snapshot",
+  "cases": [
+    {
+      "selector": "parallel/test-async-local-storage-bind",
+      "file": "test/parallel/test-async-local-storage-bind.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "Binding validates callbacks, forwards arguments, and preserves the return value.",
+      "owners": [
+        "upstream Node async hooks",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-async-local-storage-snapshot",
+      "file": "test/parallel/test-async-local-storage-snapshot.js",
+      "family": "async",
+      "modules": [
+        "node:async_hooks"
+      ],
+      "contract": "A captured store is restored when the callback runs inside a different store.",
+      "owners": [
+        "upstream Node async hooks",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

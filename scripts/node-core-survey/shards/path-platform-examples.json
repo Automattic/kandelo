@@ -1,0 +1,21 @@
+{
+  "id": "path-platform-examples",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-path-platform-examples",
+      "file": "test/parallel/test-kandelo-path-platform-examples.mjs",
+      "origin": "kandelo",
+      "family": "values",
+      "modules": [
+        "node:path",
+        "node:module"
+      ],
+      "contract": "CJS and ESM entry points expose the same selected platform namespace and documented path examples yield the expected POSIX and Windows strings.",
+      "owners": [
+        "upstream Node path functions",
+        "CJS and ESM builtin loaders"
+      ]
+    }
+  ],
+  "fixtures": []
+}

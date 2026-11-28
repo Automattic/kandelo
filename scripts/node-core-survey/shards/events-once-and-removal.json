@@ -1,0 +1,45 @@
+{
+  "id": "events-once-and-removal",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-once",
+      "file": "test/parallel/test-event-emitter-once.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream once assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-prepend",
+      "file": "test/parallel/test-event-emitter-prepend.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream prepend assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-remove-all-listeners",
+      "file": "test/parallel/test-event-emitter-remove-all-listeners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream remove all listeners assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

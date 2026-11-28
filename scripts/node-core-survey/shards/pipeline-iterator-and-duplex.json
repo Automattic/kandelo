@@ -1,0 +1,32 @@
+{
+  "id": "pipeline-iterator-and-duplex",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipeline-async-iterator",
+      "file": "test/parallel/test-stream-pipeline-async-iterator.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "A pipeline propagates the source error by identity to the async iterator after yielding the buffered bytes.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-pipeline-duplex",
+      "file": "test/parallel/test-stream-pipeline-duplex.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The original Duplex pipeline reports premature close when the peer stream ends.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

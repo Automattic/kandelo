@@ -1,0 +1,20 @@
+{
+  "id": "vm-chain-call-locations",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-vm-chain-call-locations",
+      "file": "test/parallel/test-kandelo-vm-chain-call-locations.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Optional chain continuation, computed calls and adjacent ordinary calls preserve the exact native caret and first frame. A nullish base short-circuits cleanly.",
+      "owners": [
+        "maintained SpiderMonkey frontend",
+        "Node VM diagnostic bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

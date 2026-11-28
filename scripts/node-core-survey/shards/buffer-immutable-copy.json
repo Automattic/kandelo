@@ -1,0 +1,19 @@
+{
+  "id": "buffer-immutable-copy",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-copy-immutable",
+      "file": "test/parallel/test-buffer-copy-immutable.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "The original flag-enabled Buffer.copy preserves immutable targets and copies from immutable sources.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

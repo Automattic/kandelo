@@ -1,0 +1,35 @@
+kind = "library"
+name = "toywasm-core"
+version = "0.0.0-rev.964e182c"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = []
+
+[source]
+provider = "archive"
+url = "https://github.com/yamt/toywasm/archive/964e182c1a1b09694f9f8f87c32fd26ba8b15e34.tar.gz"
+sha256 = "4502a2a9bd025017ff893ee10bc65bf6ead9630036af662c47af3d1311c13ed3"
+
+[license]
+spdx = "BSD-2-Clause"
+url = "https://github.com/yamt/toywasm/blob/964e182c1a1b09694f9f8f87c32fd26ba8b15e34/LICENSE"
+
+[build]
+script_path = "packages/registry/toywasm-core/build.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.16"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.10"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libtoywasm-core.a"]
+headers = ["include/toywasm"]
+pkgconfig = ["lib/pkgconfig/toywasm-core.pc"]
+files = ["share/licenses/toywasm-core/LICENSE"]

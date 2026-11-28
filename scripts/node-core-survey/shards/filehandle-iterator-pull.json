@@ -1,0 +1,20 @@
+{
+  "id": "filehandle-iterator-pull",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-promises-file-handle-pull",
+      "file": "test/parallel/test-fs-promises-file-handle-pull.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs/promises",
+        "node:stream/iter"
+      ],
+      "contract": "Asynchronous file pulls honor binary ranges, limits, transforms, cancellation and locking.",
+      "owners": [
+        "upstream Node filesystem and stream libraries",
+        "Kandelo descriptors and filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

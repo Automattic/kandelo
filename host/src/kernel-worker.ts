@@ -3355,6 +3355,7 @@ export class CentralizedKernelWorker {
   >();
   /** Pids whose old image committed exec but whose replacement has no channel yet. */
   private execHandoffPids = new Set<number>();
+  private execHandoffExitSignals = new Map<number, number>();
   /** Complete old-image transition captured by the successful exec entry. */
   private committedExecTransitions = new Map<number, {
     readonly secureExec: boolean;
@@ -11414,6 +11415,7 @@ export class CentralizedKernelWorker {
 
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
+    this.execHandoffExitSignals?.delete(pid);
     this.committedExecSecureExec.delete(pid);
     this.#releaseHostStdinForExitedProcess(pid, entry);
 
@@ -11915,6 +11917,7 @@ export class CentralizedKernelWorker {
     this.clearProcessThreadTransportState(pid);
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
+    this.execHandoffExitSignals?.delete(pid);
     this.committedExecSecureExec.delete(pid);
     this.#releaseHostStdinForExitedProcess(pid, entry);
     // Clean up pending poll retries
@@ -13226,6 +13229,7 @@ export class CentralizedKernelWorker {
       this.#revokeStatLeaseBinding(pid, registration.memory);
       this.releaseProcessViews(pid, registration.memory, "exec");
     }
+    this.execHandoffExitSignals?.delete(pid);
     (this.execHandoffPids ??= new Set()).add(pid);
     for (const channel of registration?.channels ?? []) {
       this.retireChannelListener(channel);
@@ -13321,6 +13325,7 @@ export class CentralizedKernelWorker {
   /** Release the exec guard only after the outer worker generation is installed. */
   finishProcessExecHandoff(pid: number): void {
     this.execHandoffPids?.delete(pid);
+    this.execHandoffExitSignals?.delete(pid);
   }
 
   /**
@@ -20247,6 +20252,16 @@ export class CentralizedKernelWorker {
   #drainAndProcessWakeupEventsWithinKernelEntry(
     entry: KernelWorkerEntryContext,
   ): void {
+    // A kernel-owned wait can reap the process while an ordinary exec has
+    // no installed replacement channel. Retain only the authoritative signal
+    // for that in-flight handoff, before the wait results can be consumed.
+    for (const pid of this.execHandoffPids ?? []) {
+      if (this.execHandoffExitSignals?.has(pid)) continue;
+      const registration = this.processes.get(pid);
+      if (!registration || registration.grouped || registration.channels.length !== 0) continue;
+      const signal = this.#getProcessExitSignal(pid, entry);
+      if (signal > 0) (this.execHandoffExitSignals ??= new Map()).set(pid, signal);
+    }
     // The kernel retains this coalesced flag until it is consumed. With no
     // parked waiters, leave it there rather than adding a scoped export call
     // to every syscall. A new wait checks authoritative readiness before it
@@ -27029,12 +27044,14 @@ export class CentralizedKernelWorker {
   ): number {
     const held = this.#holdCommittedGroupExecTermination(pid, entry);
     if (held !== undefined) return held;
-    const signal = this.#getProcessExitSignal(pid, entry);
+    const currentSignal = this.#getProcessExitSignal(pid, entry);
+    const reaped = currentSignal === -ESRCH;
+    const signal = reaped ? this.execHandoffExitSignals?.get(pid) ?? currentSignal : currentSignal;
     if (signal <= 0) return signal;
     // Grouped exec retires the old registration before its final callback.
     // Rust's existing publication bit survives that removal; no per-PID host
     // tombstone is needed to suppress a later generic finalizer.
-    if (this.#isKernelProcessExitPublished(pid, entry)) return signal;
+    if (!reaped && this.#isKernelProcessExitPublished(pid, entry)) return signal;
     this.discardStoppedChannelStateForProcess(pid);
     if (this.hostReaped.has(pid)) return signal;
 
@@ -27042,7 +27059,7 @@ export class CentralizedKernelWorker {
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
-    this.notifyParentOfExitedProcess(pid, entry, this.getParentPid(pid, entry));
+    if (!reaped) this.notifyParentOfExitedProcess(pid, entry, this.getParentPid(pid, entry));
     entry.deferProtocolEffect(() => {
       this.callbacks.onExit?.(pid, 128 + signal);
     });

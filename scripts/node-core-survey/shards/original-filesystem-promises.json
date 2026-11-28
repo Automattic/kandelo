@@ -1,0 +1,22 @@
+{
+  "id": "original-filesystem-promises",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-promises",
+      "file": "test/parallel/test-fs-promises.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Complete upstream filesystem promises and FileHandle original, including copies, timestamps, links, directories and errors.",
+      "owners": [
+        "upstream Node filesystem and loader implementations",
+        "guest VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/baz.js"
+  ]
+}

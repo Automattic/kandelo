@@ -1,0 +1,25 @@
+{
+  "id": "web-streams-readable-tee",
+  "cases": [
+    {
+      "selector": "wpt/test-streams/readable-streams/tee.any.html",
+      "file": "test/wpt/test-streams.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web"
+      ],
+      "contract": "The two tee branches preserve data, cancellation and source error propagation.",
+      "owners": [
+        "upstream Node web streams",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/wpt/resources/testharness.js",
+    "test/wpt/status/streams.json"
+  ],
+  "fixtureDirectories": [
+    "test/fixtures/wpt/streams"
+  ]
+}

@@ -158,7 +158,7 @@ struct Frame {
   JS::RootedObject binding;
   JS::RootedValue receiver;
   JS::RootedObject propertyHolder;
-  JS::RootedValue propertyData, propertyReturn, callbackData;
+  JS::RootedValue propertyData, callbackReturn, callbackData;
   std::optional<bool> propertyShouldThrow;
   std::shared_ptr<State> state;
   JS::CallArgs* arguments;
@@ -172,9 +172,17 @@ struct Frame {
   Frame(JSContext* cx, JS::HandleObject realm, std::shared_ptr<State> state,
         JS::CallArgs* arguments = nullptr, Domain domain =
         Domain::Native)
-      : cx(cx), realm(cx, realm), binding(cx), receiver(cx), propertyHolder(cx), propertyData(cx), propertyReturn(cx), callbackData(cx), state(std::move(state)), arguments(arguments), domain(domain),
+      : cx(cx), realm(cx, realm), binding(cx), receiver(cx), propertyHolder(cx), propertyData(cx), callbackReturn(cx), callbackData(cx), state(std::move(state)), arguments(arguments), domain(domain),
         previous(current) { current = this; }
   ~Frame();
+  // A callback may set its result inside a nested Context::Scope. Wrap it
+  // after the callback returns, in the realm that owns the output slot.
+  bool FinishCallback(JS::MutableHandleValue output) {
+    if (JS_IsExceptionPending(cx) || cx->isNativeExecutionTerminating()) return false;
+    if (!JS_WrapValue(cx, &callbackReturn)) return false;
+    output.set(callbackReturn);
+    return true;
+  }
   template<class T> Local<T> Own(JS::HandleValue value) {
     state->CheckLocalHandleAllocation();
     JS::RootedValue stored(cx,value);
@@ -434,10 +442,7 @@ Local<Value> Argument(Isolate* isolate, int index) {
   JS::RootedValue value(f.cx, f.arguments->get(index)); return f.OwnValue(value);
 }
 void Return(Isolate* isolate, Local<Value> value) {
-  auto& f = Current(isolate);
-  if (!value.IsEmpty() && !JS_IsExceptionPending(f.cx)) {
-    JS::RootedValue output(f.cx,Input(value));if(JS_WrapValue(f.cx,&output))ReturnRaw(isolate,output);
-  }
+  if (!value.IsEmpty()) ReturnRaw(isolate, Input(value));
 }
 void ReturnNumber(Isolate* isolate,double value) { ReturnRaw(isolate,JS::DoubleValue(value)); }
 void ReturnBoolean(Isolate* isolate,bool value) { ReturnRaw(isolate,JS::BooleanValue(value)); }
@@ -1013,7 +1018,7 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
   frame.binding=&JS::GetReservedSlot(closure,1).toObject();
   frame.receiver=args.thisv();
   FunctionCallbackInfo<Value> call(&state->isolate); callback->callback(call);
-  return !JS_IsExceptionPending(cx)&&!cx->isNativeExecutionTerminating();
+  return frame.FinishCallback(args.rval());
 }
 }
 }  // namespace v8

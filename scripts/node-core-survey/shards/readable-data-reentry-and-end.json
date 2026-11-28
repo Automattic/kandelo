@@ -1,0 +1,34 @@
+{
+  "id": "readable-data-reentry-and-end",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-add-chunk-during-data",
+      "file": "test/parallel/test-stream-readable-add-chunk-during-data.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:events"
+      ],
+      "contract": "Pushing or unshifting the current chunk from a data listener preserves the bytes and readable length.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and callback scheduling"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-ended",
+      "file": "test/parallel/test-stream-readable-ended.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:events"
+      ],
+      "contract": "The readableEnded getter changes at end delivery and repeated end markers preserve stream behavior.",
+      "owners": [
+        "upstream Node readable streams",
+        "Kandelo event and callback scheduling"
+      ]
+    }
+  ],
+  "fixtures": []
+}

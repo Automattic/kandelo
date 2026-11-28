@@ -1,0 +1,36 @@
+{
+  "id": "https-and-fetch",
+  "cases": [
+    {
+      "selector": "parallel/test-fetch",
+      "file": "test/parallel/test-fetch.mjs",
+      "family": "web",
+      "modules": ["globalThis.fetch", "node:http"],
+      "contract": "Fetch interface shape and a real HTTP loopback response including the complete body",
+      "owners": ["upstream Undici", "maintained Undici parser adaptation", "Kandelo guest TCP"]
+    },
+    {
+      "selector": "parallel/test-tls-set-default-ca-certificates-append-fetch",
+      "file": "test/parallel/test-tls-set-default-ca-certificates-append-fetch.mjs",
+      "family": "secure-network",
+      "modules": ["node:https", "node:tls", "globalThis.fetch"],
+      "contract": "Fetch rejects an untrusted HTTPS peer, then verifies it after adding the fixture CA",
+      "owners": ["node:tls certificate provider", "upstream Undici", "Node OpenSSL package"]
+    },
+    {
+      "selector": "parallel/test-https-agent-abort-controller",
+      "file": "test/parallel/test-https-agent-abort-controller.js",
+      "family": "secure-network",
+      "modules": ["node:https", "node:tls"],
+      "contract": "HTTPS Agent and request cancellation before and after connection creation",
+      "owners": ["lib/https.js", "Node TLS", "Kandelo libuv socket ownership"]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/keys/agent1-cert.pem",
+    "test/fixtures/keys/agent1-key.pem",
+    "test/fixtures/keys/agent8-cert.pem",
+    "test/fixtures/keys/agent8-key.pem",
+    "test/fixtures/keys/fake-startcom-root-cert.pem"
+  ]
+}

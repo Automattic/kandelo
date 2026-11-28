@@ -138,6 +138,38 @@ struct ValueSerializer::PrivateData final:internal::WireAllocationDelegate {
     if(delegate){Local<String> text;if(!String::NewFromUtf8(isolate,message).ToLocal(&text))return false;delegate->ThrowDataCloneError(text);return false;}
     return serialization::Fail(cx,message);
   }
+  bool SymbolCloneError(JS::HandleValue value) {
+    // Match the side-effect-free Symbol argument used by V8's clone errors.
+    constexpr size_t maxDescriptionLength = 128;
+    constexpr size_t retainedEndLength = 56;
+    JS::Rooted<JS::Symbol*> symbol(cx, value.toSymbol());
+    JS::RootedString description(cx, JS::GetSymbolDescription(cx, symbol));
+    js::JSStringBuilder message(cx);
+    if (!message.append("Symbol(")) return false;
+    if (description) {
+      if (description->length() > maxDescriptionLength) {
+        JS::RootedString prefix(cx, JS_NewDependentString(cx, description, 0, retainedEndLength));
+        if (!prefix) return false;
+        JS::RootedString suffix(cx, JS_NewDependentString(
+            cx, description, description->length() - retainedEndLength, retainedEndLength));
+        if (!suffix || !message.append(prefix) || !message.append("...<omitted>...") ||
+            !message.append(suffix)) return false;
+      } else if (!message.append(description)) {
+        return false;
+      }
+    }
+    if (!message.append(") could not be cloned.")) return false;
+    JS::RootedString text(cx, message.finishString());
+    if (!text) return false;
+    JS::RootedValue result(cx, JS::StringValue(text));
+    auto local = Current(isolate).Own<String>(result);
+    if (delegate) {
+      delegate->ThrowDataCloneError(local);
+    } else {
+      isolate->ThrowException(Exception::Error(local));
+    }
+    return false;
+  }
   bool Check(){
     if(JS_IsExceptionPending(cx)||cx->isNativeExecutionTerminating())return false;
     return !wire.Failed()||CloneError("Serialization failed due to an out-of-memory condition");
@@ -192,6 +224,7 @@ struct ValueSerializer::PrivateData final:internal::WireAllocationDelegate {
     else if(value.isDouble()){wire.WriteTag(Tag::kDouble);wire.WriteDouble(value.toDouble());}
     else if(value.isBigInt()){wire.WriteTag(Tag::kBigInt);JS::Rooted<JS::BigInt*> bigint(cx,value.toBigInt());serialization::WriteBigInt(wire,bigint);}
     else if(value.isString()){JS::RootedString string(cx,value.toString());return serialization::WriteString(cx,wire,string)&&Check();}
+    else if(value.isSymbol())return SymbolCloneError(value);
     else if(value.isObject()){
       JS::RootedObject object(cx,js::CheckedUnwrapDynamic(&value.toObject(),cx,false));
       if(!object)return CloneError("Object could not be cloned");

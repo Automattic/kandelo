@@ -72,7 +72,8 @@ describe("ordinary guest UDP state in dedicated Node kernel workers", () => {
       expect(await joiner.spawn(probe, ["interface-observation"])).toBe(0);
       expect(outputs[1]).toBe(
         "lo flags=0x49 addr=127.0.0.1 netmask=255.0.0.0 broadcast=-\n" +
-        "eth0 flags=0 addr=- netmask=- broadcast=-\n");
+        "eth0 flags=0 addr=- netmask=- broadcast=-\n" +
+        "lo flags=0x49 addr=::1 netmask=ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff broadcast=-\n");
       outputs[1] = "";
       await hosting.hostRemoteNetwork();
       const { port1, port2 } = new MessageChannel();

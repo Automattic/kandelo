@@ -1,0 +1,34 @@
+{
+  "id": "readable-web-wrapper-termination",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-from-web-termination",
+      "file": "test/parallel/test-stream-readable-from-web-termination.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/web"
+      ],
+      "contract": "Destroying the classic wrapper during data delivery completes cleanly.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-to-web-termination",
+      "file": "test/parallel/test-stream-readable-to-web-termination.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/web"
+      ],
+      "contract": "A Web reader can cancel during close and observe EOF on a readable Duplex half.",
+      "owners": [
+        "upstream Node streams",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

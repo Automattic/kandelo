@@ -1,0 +1,45 @@
+{
+  "id": "events-listeners-add-and-count",
+  "cases": [
+    {
+      "selector": "parallel/test-event-emitter-add-listeners",
+      "file": "test/parallel/test-event-emitter-add-listeners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream add listeners assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-listeners",
+      "file": "test/parallel/test-event-emitter-listeners.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream listeners assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-event-emitter-listener-count",
+      "file": "test/parallel/test-event-emitter-listener-count.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Upstream listener count assertions.",
+      "owners": [
+        "upstream Node events implementation",
+        "maintained engine bridge and guest process runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

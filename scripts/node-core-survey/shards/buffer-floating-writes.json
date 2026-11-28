@@ -1,0 +1,32 @@
+{
+  "id": "buffer-floating-writes",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-writefloat",
+      "file": "test/parallel/test-buffer-writefloat.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Single- and double-precision writes in both byte orders.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-writedouble",
+      "file": "test/parallel/test-buffer-writedouble.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Single- and double-precision writes in both byte orders.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

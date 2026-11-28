@@ -1,0 +1,21 @@
+{
+  "id": "fs-byte-paths",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-fs-byte-paths",
+      "file": "test/parallel/test-kandelo-fs-byte-paths.js",
+      "origin": "kandelo",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:buffer"
+      ],
+      "contract": "Two distinct non-UTF-8 guest filenames retain their bytes through creation, enumeration, reading and deletion. The authenticated native result records its host filesystem behavior.",
+      "owners": [
+        "upstream Node filesystem bindings",
+        "guest filesystem"
+      ]
+    }
+  ],
+  "fixtures": []
+}

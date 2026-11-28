@@ -1,0 +1,32 @@
+{
+  "id": "buffer-compare-and-swap",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-compare-offset",
+      "file": "test/parallel/test-buffer-compare-offset.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Subrange comparisons preserve ordering, zero-length behavior and argument checks.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-swap",
+      "file": "test/parallel/test-buffer-swap.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "In-place 16-, 32- and 64-bit swaps give the original expected byte sequences and reject unsupported lengths.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

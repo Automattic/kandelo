@@ -1,0 +1,20 @@
+{
+  "id": "await-receiver-and-alias",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-await-receiver",
+      "file": "test/parallel/test-kandelo-await-receiver.js",
+      "family": "engine",
+      "modules": [
+        "node:assert",
+        "node:fs/promises"
+      ],
+      "contract": "Live method aliases and receiver type on a suspended caller and the actual asynchronous assert.rejects filesystem frame.",
+      "owners": [
+        "maintained engine bridge and SpiderMonkey suspended frames"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

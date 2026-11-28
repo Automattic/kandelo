@@ -1,0 +1,528 @@
+# Preserve the lexical class atom for private method and accessor diagnostics.
+# Keep the symbol key and the engine private-access checks intact.
+--- a/js/public/RealmOptions.h
++++ b/js/public/RealmOptions.h
+@@ -51,6 +51,13 @@
+ 
+   // Create a new realm in an existing compartment.
+   ExistingCompartment,
++};
++
++enum class PrivateReadKind : uint8_t {
++  None,
++  Field,
++  InstanceMember,
++  StaticMember,
+ };
+ 
+ struct LocaleString : js::RefCounted<LocaleString> {
+@@ -194,15 +201,15 @@
+     return *this;
+   }
+ 
+-  // Called only for an invalid receiver when reading a declared private field.
+-  using PrivateFieldReadErrorReporter =
+-      void (*)(JSContext*, HandleString, HandleValue);
+-  PrivateFieldReadErrorReporter getPrivateFieldReadErrorReporter() const {
+-    return privateFieldReadErrorReporter_;
+-  }
+-  RealmCreationOptions& setPrivateFieldReadErrorReporter(
+-      PrivateFieldReadErrorReporter reporter) {
+-    privateFieldReadErrorReporter_ = reporter;
++  // Called only after an invalid receiver is detected for a private read.
++  using PrivateReadErrorReporter =
++      void (*)(JSContext*, HandleString, HandleValue, PrivateReadKind);
++  PrivateReadErrorReporter getPrivateReadErrorReporter() const {
++    return privateReadErrorReporter_;
++  }
++  RealmCreationOptions& setPrivateReadErrorReporter(
++      PrivateReadErrorReporter reporter) {
++    privateReadErrorReporter_ = reporter;
+     return *this;
+   }
+ 
+@@ -296,7 +303,7 @@
+   bool defineSharedArrayBufferConstructor_ = true;
+   bool coopAndCoep_ = false;
+   bool immutableArrayBuffers_ = false;
+-  PrivateFieldReadErrorReporter privateFieldReadErrorReporter_ = nullptr;
++  PrivateReadErrorReporter privateReadErrorReporter_ = nullptr;
+   StringRepeatErrorReporter stringRepeatErrorReporter_ = nullptr;
+   TypedArrayLengthErrorReporter typedArrayLengthErrorReporter_ = nullptr;
+   uint32_t maxLazyTypedArrayBytes_ = UINT32_MAX;
+--- a/js/src/frontend/BytecodeEmitter.cpp
++++ b/js/src/frontend/BytecodeEmitter.cpp
+@@ -12076,9 +12076,15 @@
+ 
+ bool BytecodeEmitter::emitNewPrivateName(TaggedParserAtomIndex bindingName,
+                                          TaggedParserAtomIndex symbolName,
+-                                         bool isField) {
++                                         TaggedParserAtomIndex className,
++                                         JS::PrivateReadKind readKind) {
+   GCThingIndex index;
+   if (!makeAtomIndex(symbolName, ParserAtom::Atomize::Yes, &index)) {
++    return false;
++  }
++  GCThingIndex classIndex = index;
++  if (className &&
++      !makeAtomIndex(className, ParserAtom::Atomize::Yes, &classIndex)) {
+     return false;
+   }
+   constexpr JSOp op = JSOp::NewPrivateName;
+@@ -12089,7 +12095,8 @@
+   jsbytecode* code = bytecodeSection().code(offset);
+   code[0] = jsbytecode(op);
+   SET_GCTHING_INDEX(code, index);
+-  SET_UINT8(code + GCTHING_INDEX_LEN, isField);
++  SET_GCTHING_INDEX(code + NewPrivateNameClassIndexOffset, classIndex);
++  SET_UINT8(code + NewPrivateNameReadKindOffset, uint8_t(readKind));
+   bytecodeSection().updateDepth(op, offset);
+   //                [stack] HERITAGE PRIVATENAME
+ 
+@@ -12109,7 +12116,13 @@
+ }
+ 
+ bool BytecodeEmitter::emitNewPrivateNames(
+-    TaggedParserAtomIndex privateBrandName, ListNode* classMembers) {
++    TaggedParserAtomIndex privateBrandName, TaggedParserAtomIndex declaredName,
++    ListNode* classMembers) {
++  // Retain the explicit lexical name. An inferred name remains available in
++  // the existing symbol description, including for debugger consumers.
++  auto diagnosticClass = declaredName
++                             ? declaredName
++                             : TaggedParserAtomIndex::WellKnown::empty();
+   bool hasPrivateBrand = false;
+ 
+   for (ParseNode* classElement : classMembers->contents()) {
+@@ -12139,9 +12152,18 @@
+ 
+     if (!isOptimized) {
+       auto privateName = elementName->as<NameNode>().name();
+-      bool isField =
+-          elementName->as<NameNode>().privateNameKind() == PrivateNameKind::Field;
+-      if (!emitNewPrivateName(privateName, privateName, isField)) {
++      auto readKind = JS::PrivateReadKind::None;
++      TaggedParserAtomIndex className;
++      if (elementName->as<NameNode>().privateNameKind() ==
++          PrivateNameKind::Field) {
++        readKind = JS::PrivateReadKind::Field;
++      } else if (classElement->is<ClassMethod>()) {
++        readKind = classElement->as<ClassMethod>().isStatic()
++                       ? JS::PrivateReadKind::StaticMember
++                       : JS::PrivateReadKind::InstanceMember;
++        className = diagnosticClass;
++      }
++      if (!emitNewPrivateName(privateName, privateName, className, readKind)) {
+         return false;
+       }
+     }
+@@ -12152,7 +12174,8 @@
+     // private name per class, the `.privateBrand`.
+     if (!emitNewPrivateName(
+             TaggedParserAtomIndex::WellKnown::dot_privateBrand_(),
+-            privateBrandName)) {
++            privateBrandName, diagnosticClass,
++            JS::PrivateReadKind::InstanceMember)) {
+       return false;
+     }
+   }
+@@ -12233,7 +12256,7 @@
+                              ? nameForAnonymousClass
+                              : TaggedParserAtomIndex::WellKnown::anonymous();
+     }
+-    if (!emitNewPrivateNames(privateBrandName, classMembers)) {
++    if (!emitNewPrivateNames(privateBrandName, innerName, classMembers)) {
+       return false;
+     }
+   }
+--- a/js/src/frontend/BytecodeEmitter.h
++++ b/js/src/frontend/BytecodeEmitter.h
+@@ -1052,9 +1052,11 @@
+ 
+   [[nodiscard]] bool emitNewPrivateName(TaggedParserAtomIndex bindingName,
+                                         TaggedParserAtomIndex symbolName,
+-                                        bool isField = false);
++                                        TaggedParserAtomIndex className,
++                                        JS::PrivateReadKind readKind);
+ 
+   [[nodiscard]] bool emitNewPrivateNames(TaggedParserAtomIndex privateBrandName,
++                                         TaggedParserAtomIndex declaredName,
+                                          ListNode* classMembers);
+ 
+   [[nodiscard]] js::UniquePtr<ImmutableScriptData> createImmutableScriptData();
+--- a/js/src/gc/TraceMethods-inl.h
++++ b/js/src/gc/TraceMethods-inl.h
+@@ -255,6 +255,9 @@
+     js::TraceManuallyBarrieredEdge(trc, &description, "symbol description");
+     MOZ_ASSERT(description == &cell->as<JSString>()->asAtom());
+   }
++  if (privateClassName_) {
++    js::TraceManuallyBarrieredEdge(trc, &privateClassName_, "private class name");
++  }
+ }
+ 
+ template <typename SlotInfo>
+--- a/js/src/jit/BaselineCodeGen.cpp
++++ b/js/src/jit/BaselineCodeGen.cpp
+@@ -3695,18 +3695,27 @@
+ bool BaselineCodeGen<Handler>::emit_NewPrivateName() {
+   prepareVMCall();
+ 
++  Register operand = R0.scratchReg();
+   if (auto* pc = handler.maybePC()) {
+-    pushArg(Imm32(GetNewPrivateNameIsField(pc)));
++    pushArg(Imm32(uint32_t(GetNewPrivateNameReadKind(pc))));
++    pushArg(Imm32(GetNewPrivateNameClassIndex(pc).index));
+   } else {
+-    Register operand = R0.scratchReg();
+     Register pcReg = LoadBytecodePC(masm, operand);
+-    masm.load8ZeroExtend(Address(pcReg, sizeof(jsbytecode) + GCTHING_INDEX_LEN),
+-                         operand);
++    masm.load8ZeroExtend(
++        Address(pcReg, sizeof(jsbytecode) + NewPrivateNameReadKindOffset),
++        operand);
+     pushArg(operand);
+-  }
+-  pushScriptNameArg(R0.scratchReg(), R1.scratchReg());
+-
+-  using Fn = JS::Symbol* (*)(JSContext*, Handle<JSAtom*>, bool);
++    pcReg = LoadBytecodePC(masm, operand);
++    masm.load32(
++        Address(pcReg, sizeof(jsbytecode) + NewPrivateNameClassIndexOffset),
++        operand);
++    pushArg(operand);
++  }
++  pushScriptNameArg(operand, R1.scratchReg());
++  pushScriptArg();
++
++  using Fn = JS::Symbol* (*)(JSContext*, HandleScript, Handle<JSAtom*>, uint32_t,
++                             uint32_t);
+   if (!callVM<Fn, NewPrivateName>()) {
+     return false;
+   }
+--- a/js/src/jit/CodeGenerator.cpp
++++ b/js/src/jit/CodeGenerator.cpp
+@@ -18252,10 +18252,13 @@
+ }
+ 
+ void CodeGenerator::visitNewPrivateName(LNewPrivateName* ins) {
+-  pushArg(Imm32(ins->mir()->isField()));
++  pushArg(Imm32(ins->mir()->readKind()));
++  pushArg(Imm32(ins->mir()->classIndex()));
+   pushArg(ImmGCPtr(ins->mir()->name()));
+-
+-  using Fn = JS::Symbol* (*)(JSContext*, Handle<JSAtom*>, bool);
++  pushArg(ImmGCPtr(ins->mir()->script()));
++
++  using Fn = JS::Symbol* (*)(JSContext*, HandleScript, Handle<JSAtom*>, uint32_t,
++                             uint32_t);
+   callVM<Fn, NewPrivateName>(ins);
+ }
+ 
+--- a/js/src/jit/MIROps.yaml
++++ b/js/src/jit/MIROps.yaml
+@@ -3438,8 +3438,10 @@
+ 
+ - name: NewPrivateName
+   arguments:
++    script: JSScript*
+     name: JSOffThreadAtom*
+-    isField: bool
++    classIndex: uint32_t
++    readKind: uint32_t
+   result_type: Symbol
+   possibly_calls: true
+   generate_lir: true
+--- a/js/src/jit/WarpBuilder.cpp
++++ b/js/src/jit/WarpBuilder.cpp
+@@ -2856,8 +2856,10 @@
+ bool WarpBuilder::build_NewPrivateName(BytecodeLocation loc) {
+   JSAtom* name = loc.getAtom(script_);
+ 
+-  auto* ins = MNewPrivateName::New(alloc(), &name->asOffThreadAtom(),
+-                                   GetNewPrivateNameIsField(loc.toRawBytecode()));
++  auto* pc = loc.toRawBytecode();
++  auto* ins = MNewPrivateName::New(alloc(), script_, &name->asOffThreadAtom(),
++                                   GetNewPrivateNameClassIndex(pc).index,
++                                   uint32_t(GetNewPrivateNameReadKind(pc)));
+   current->add(ins);
+   current->push(ins);
+   return resumeAfter(ins, loc);
+--- a/js/src/vm/BytecodeUtil.cpp
++++ b/js/src/vm/BytecodeUtil.cpp
+@@ -1413,7 +1413,8 @@
+         return 0;
+       }
+       sp->printf(" %s", bytes.get());
+-      if (op == JSOp::NewPrivateName && GetNewPrivateNameIsField(pc)) {
++      if (op == JSOp::NewPrivateName &&
++          GetNewPrivateNameReadKind(pc) == JS::PrivateReadKind::Field) {
+         sp->put(" (field)");
+       }
+       break;
+--- a/js/src/vm/BytecodeUtil.h
++++ b/js/src/vm/BytecodeUtil.h
+@@ -21,6 +21,7 @@
+ #include "jstypes.h"
+ #include "NamespaceImports.h"
+ 
++#include "js/RealmOptions.h"  // JS::PrivateReadKind
+ #include "js/TypeDecls.h"
+ #include "js/Utility.h"
+ #include "js/Value.h"
+@@ -554,11 +555,17 @@
+ 
+ inline bool BytecodeOpHasIC(JSOp op) { return CodeSpec(op).format & JOF_IC; }
+ 
+-inline bool GetNewPrivateNameIsField(const jsbytecode* pc) {
++constexpr size_t NewPrivateNameClassIndexOffset = GCTHING_INDEX_LEN;
++constexpr size_t NewPrivateNameReadKindOffset = 2 * GCTHING_INDEX_LEN;
++
++inline GCThingIndex GetNewPrivateNameClassIndex(const jsbytecode* pc) {
+   MOZ_ASSERT(JSOp(*pc) == JSOp::NewPrivateName);
+-  uint8_t isField = GET_UINT8(pc + GCTHING_INDEX_LEN);
+-  MOZ_ASSERT(isField <= 1);
+-  return isField != 0;
++  return GET_GCTHING_INDEX(pc + NewPrivateNameClassIndexOffset);
++}
++
++inline JS::PrivateReadKind GetNewPrivateNameReadKind(const jsbytecode* pc) {
++  MOZ_ASSERT(JSOp(*pc) == JSOp::NewPrivateName);
++  return JS::PrivateReadKind(GET_UINT8(pc + NewPrivateNameReadKindOffset));
+ }
+ 
+ inline void GetCheckPrivateFieldOperands(jsbytecode* pc,
+--- a/js/src/vm/Interpreter-inl.h
++++ b/js/src/vm/Interpreter-inl.h
+@@ -564,16 +564,28 @@
+     }
+   }
+ 
+-  JS::RealmCreationOptions::PrivateFieldReadErrorReporter reportFieldRead =
+-      nullptr;
+-  if (msgKind == ThrowMsgKind::MissingPrivateOnGet &&
+-      idval.toSymbol()->isPrivateFieldName()) {
+-    reportFieldRead =
+-        cx->realm()->creationOptions().getPrivateFieldReadErrorReporter();
+-  }
+-  if (reportFieldRead && val.isNullOrUndefined()) {
+-    RootedString name(cx, idval.toSymbol()->description());
+-    reportFieldRead(cx, name, val);
++  JS::RealmCreationOptions::PrivateReadErrorReporter reportRead = nullptr;
++  if (msgKind == ThrowMsgKind::MissingPrivateOnGet) {
++    reportRead = cx->realm()->creationOptions().getPrivateReadErrorReporter();
++  }
++  auto reportInvalidReceiver = [&]() {
++    JS::Symbol* key = idval.toSymbol();
++    if (key->isPrivateFieldName()) {
++      RootedString name(cx, key->description());
++      reportRead(cx, name, val, JS::PrivateReadKind::Field);
++      return true;
++    }
++    if (key->privateClassName()) {
++      RootedString name(cx, key->privateClassName());
++      auto kind = key->isPrivateStaticMember()
++                      ? JS::PrivateReadKind::StaticMember
++                      : JS::PrivateReadKind::InstanceMember;
++      reportRead(cx, name, val, kind);
++      return true;
++    }
++    return false;
++  };
++  if (reportRead && val.isNullOrUndefined() && reportInvalidReceiver()) {
+     return false;
+   }
+ 
+@@ -585,22 +597,40 @@
+     return true;
+   }
+ 
+-  if (reportFieldRead) {
+-    RootedString name(cx, idval.toSymbol()->description());
+-    reportFieldRead(cx, name, val);
+-  } else {
++  if (!reportRead || !reportInvalidReceiver()) {
+     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                               ThrowMsgKindToErrNum(msgKind));
+   }
+   return false;
+ }
+ 
+-static inline JS::Symbol* NewPrivateName(JSContext* cx, Handle<JSAtom*> name,
+-                                         bool isField = false) {
+-  return JS::Symbol::new_(cx,
+-                          isField ? JS::SymbolCode::PrivateFieldNameSymbol
+-                                  : JS::SymbolCode::PrivateNameSymbol,
+-                          name);
++static inline JS::Symbol* NewPrivateName(JSContext* cx, HandleScript script,
++                                         Handle<JSAtom*> name,
++                                         uint32_t classIndex,
++                                         uint32_t readKind) {
++  if (readKind > uint32_t(JS::PrivateReadKind::StaticMember)) {
++    JS_ReportErrorASCII(cx, "Invalid private name diagnostic kind");
++    return nullptr;
++  }
++  auto kind = JS::PrivateReadKind(readKind);
++  if (kind == JS::PrivateReadKind::Field) {
++    return JS::Symbol::new_(cx, JS::SymbolCode::PrivateFieldNameSymbol, name);
++  }
++  if (kind == JS::PrivateReadKind::None ||
++      !cx->realm()->creationOptions().getPrivateReadErrorReporter()) {
++    return JS::Symbol::new_(cx, JS::SymbolCode::PrivateNameSymbol, name);
++  }
++
++  // Use the same checked metadata lookup in every execution tier.
++  auto things = script->gcthings();
++  if (classIndex >= things.size() || !things[classIndex].is<JSString>() ||
++      !things[classIndex].as<JSString>().isAtom()) {
++    JS_ReportErrorASCII(cx, "Invalid private name diagnostic class atom");
++    return nullptr;
++  }
++  Rooted<JSAtom*> className(cx, &things[classIndex].as<JSString>().asAtom());
++  return JS::Symbol::new_(cx, JS::SymbolCode::PrivateNameSymbol, name, className,
++                          kind == JS::PrivateReadKind::StaticMember);
+ }
+ 
+ inline bool InitElemIncOperation(JSContext* cx, Handle<ArrayObject*> arr,
+--- a/js/src/vm/Interpreter.cpp
++++ b/js/src/vm/Interpreter.cpp
+@@ -2413,8 +2413,9 @@
+     CASE(NewPrivateName) {
+       ReservedRooted<JSAtom*> name(&rootAtom0, script->getAtom(REGS.pc));
+ 
+-      auto* symbol =
+-          NewPrivateName(cx, name, GetNewPrivateNameIsField(REGS.pc));
++      auto* symbol = NewPrivateName(
++          cx, script, name, GetNewPrivateNameClassIndex(REGS.pc).index,
++          uint32_t(GetNewPrivateNameReadKind(REGS.pc)));
+       if (!symbol) {
+         goto error;
+       }
+--- a/js/src/vm/Opcodes.h
++++ b/js/src/vm/Opcodes.h
+@@ -1227,15 +1227,15 @@
+      */ \
+     MACRO(CheckPrivateField, check_private_field, NULL, 3, 2, 3, JOF_TWO_UINT8|JOF_CHECKSTRICT|JOF_IC) \
+     /*
+-     * Push a new private name. Retain whether it names a declared field
+-     * so the embedding can distinguish field and brand diagnostics.
++     * Push a new private name with the metadata needed for read diagnostics.
++     * The diagnostic class atom can differ from the symbol description.
+      *
+      *   Category: Objects
+      *   Type: Accessing properties
+-     *   Operands: uint32_t nameIndex, uint8_t isField
++     *   Operands: uint32_t nameIndex, uint32_t classIndex, uint8_t readKind
+      *   Stack: => private_name
+      */ \
+-    MACRO(NewPrivateName, new_private_name, NULL, 6, 0, 1, JOF_ATOM) \
++    MACRO(NewPrivateName, new_private_name, NULL, 10, 0, 1, JOF_ATOM) \
+     /*
+      * Push the SuperBase of the method `callee`. The SuperBase is
+      * `callee.[[HomeObject]].[[GetPrototypeOf]]()`, the object where `super`
+--- a/js/src/vm/PortableBaselineInterpret.cpp
++++ b/js/src/vm/PortableBaselineInterpret.cpp
+@@ -7372,7 +7372,10 @@
+           JS::Symbol* symbol;
+           {
+             PUSH_EXIT_FRAME();
+-            symbol = NewPrivateName(cx, atom0, GetNewPrivateNameIsField(pc));
++            RootedScript script(cx, frame->script());
++            symbol = NewPrivateName(cx, script, atom0,
++                                    GetNewPrivateNameClassIndex(pc).index,
++                                    uint32_t(GetNewPrivateNameReadKind(pc)));
+             if (!symbol) {
+               GOTO_ERROR();
+             }
+--- a/js/src/vm/SymbolType.cpp
++++ b/js/src/vm/SymbolType.cpp
+@@ -40,10 +40,13 @@
+ }
+ 
+ Symbol* Symbol::newSharedSymbol(JSContext* cx, JS::SymbolCode code,
+-                                uint32_t hash, Handle<JSAtom*> description) {
++                                uint32_t hash, Handle<JSAtom*> description,
++                                Handle<JSAtom*> privateClassName,
++                                bool privateStaticMember) {
+   MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
+   AutoAllocInAtomsZone az(cx);
+-  return cx->newCell<Symbol>(code, hash, description);
++  return cx->newCell<Symbol>(code, hash, description, privateClassName,
++                             privateStaticMember);
+ }
+ 
+ Symbol* Symbol::newLocalSymbol(JSContext* cx, JS::SymbolCode code,
+@@ -55,7 +58,10 @@
+ }
+ 
+ Symbol* Symbol::new_(JSContext* cx, JS::SymbolCode code,
+-                     HandleString description) {
++                     HandleString description, Handle<JSAtom*> privateClassName,
++                     bool privateStaticMember) {
++  MOZ_ASSERT_IF(privateClassName, code == JS::SymbolCode::PrivateNameSymbol);
++  MOZ_ASSERT_IF(privateStaticMember, privateClassName);
+   MOZ_ASSERT(code == JS::SymbolCode::UniqueSymbol ||
+              code == JS::SymbolCode::PrivateFieldNameSymbol ||
+              code == JS::SymbolCode::PrivateNameSymbol ||
+@@ -70,7 +76,8 @@
+   }
+ 
+   Rooted<Symbol*> sym(
+-      cx, newSharedSymbol(cx, code, cx->runtime()->randomHashCode(), atom));
++      cx, newSharedSymbol(cx, code, cx->runtime()->randomHashCode(), atom,
++                          privateClassName, privateStaticMember));
+   if (!sym) {
+     return nullptr;
+   }
+--- a/js/src/vm/SymbolType.h
++++ b/js/src/vm/SymbolType.h
+@@ -84,16 +84,25 @@
+   // addresses as hash codes (a security hazard).
+   const js::HashNumber hash_;
+ 
+-  Symbol(SymbolCode code, js::HashNumber hash, Handle<JSAtom*> desc)
++  // The class atom is diagnostic metadata, independent of the symbol key.
++  JSAtom* privateClassName_ = nullptr;
++  bool privateStaticMember_ = false;
++
++  Symbol(SymbolCode code, js::HashNumber hash, Handle<JSAtom*> desc,
++         Handle<JSAtom*> privateClassName, bool privateStaticMember)
+       : CellWithTenuredGCPointer(desc ? &desc->asTenured() : nullptr),
+         code_(code),
+-        hash_(hash) {}
++        hash_(hash),
++        privateClassName_(privateClassName),
++        privateStaticMember_(privateStaticMember) {}
+   Symbol(SymbolCode code, js::HashNumber hash, Handle<JS::Symbol*> shared)
+       : CellWithTenuredGCPointer(shared), code_(code), hash_(hash) {}
+ 
+   static Symbol* newSharedSymbol(JSContext* cx, SymbolCode code,
+                                  js::HashNumber hash,
+-                                 Handle<JSAtom*> description);
++                                 Handle<JSAtom*> description,
++                                 Handle<JSAtom*> privateClassName = nullptr,
++                                 bool privateStaticMember = false);
+   static Symbol* newLocalSymbol(JSContext* cx, SymbolCode code,
+                                 js::HashNumber hash,
+                                 Handle<JS::Symbol*> shared);
+@@ -113,7 +122,9 @@
+ 
+  public:
+   static Symbol* new_(JSContext* cx, SymbolCode code,
+-                      js::HandleString description);
++                      js::HandleString description,
++                      Handle<JSAtom*> privateClassName = nullptr,
++                      bool privateStaticMember = false);
+   static Symbol* newWellKnown(JSContext* cx, SymbolCode code,
+                               Handle<js::PropertyName*> description);
+   static Symbol* for_(JSContext* cx, js::HandleString description);
+@@ -157,6 +168,9 @@
+   bool isEmbeddingPrivateName() const {
+     return code_ == SymbolCode::EmbeddingPrivateSymbol;
+   }
++
++  JSAtom* privateClassName() const { return privateClassName_; }
++  bool isPrivateStaticMember() const { return privateStaticMember_; }
+ 
+   bool isUnique() const { return code_ == JS::SymbolCode::UniqueSymbol; }
+ 

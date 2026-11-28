@@ -1,0 +1,22 @@
+{
+  "id": "transfer-after-rejection",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-transfer-after-rejection",
+      "file": "test/parallel/test-kandelo-transfer-after-rejection.js",
+      "family": "streams",
+      "modules": [
+        "node:stream/web",
+        "node:worker_threads"
+      ],
+      "contract": "Transfer a fresh stream or FileHandle, then compare a separate sender after a rejected unlisted transfer. Observe upstream hooks, immediate sender ownership and receiver bytes.",
+      "owners": [
+        "upstream Node core",
+        "maintained SpiderMonkey engine bridge",
+        "Kandelo guest process and descriptor lifecycle"
+      ],
+      "origin": "kandelo"
+    }
+  ],
+  "fixtures": []
+}

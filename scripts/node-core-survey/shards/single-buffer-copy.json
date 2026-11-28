@@ -1,0 +1,19 @@
+{
+  "id": "single-buffer-copy",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-copy",
+      "file": "test/parallel/test-buffer-copy.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer copy ranges, partial copies and Uint8Array arguments.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,22 @@
+{
+  "id": "fs-links-and-readv",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-link",
+      "file": "test/parallel/test-fs-link.js",
+      "family": "filesystem",
+      "modules": ["node:fs"],
+      "contract": "Create and read actual guest hard links through the original fs API",
+      "owners": ["upstream Node fs", "Kandelo VFS"]
+    },
+    {
+      "selector": "parallel/test-fs-readv-promises",
+      "file": "test/parallel/test-fs-readv-promises.js",
+      "family": "filesystem",
+      "modules": ["node:fs/promises", "node:buffer"],
+      "contract": "A Promise FileHandle fills the supplied readv segments with the original file bytes",
+      "owners": ["upstream Node fs", "Kandelo libuv fs and VFS"]
+    }
+  ],
+  "fixtures": []
+}

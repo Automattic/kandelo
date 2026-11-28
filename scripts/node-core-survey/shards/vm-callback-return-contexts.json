@@ -1,0 +1,78 @@
+{
+  "id": "vm-callback-return-contexts",
+  "cases": [
+    {
+      "selector": "parallel/test-vm-cross-context",
+      "file": "test/parallel/test-vm-cross-context.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Original VM context entry, return and property callback behavior.",
+      "owners": [
+        "upstream Node VM and maintained SpiderMonkey callback bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-vm-create-and-run-in-context",
+      "file": "test/parallel/test-vm-create-and-run-in-context.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Original VM context entry, return and property callback behavior.",
+      "owners": [
+        "upstream Node VM and maintained SpiderMonkey callback bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-vm-create-context-accessors",
+      "file": "test/parallel/test-vm-create-context-accessors.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Original VM context entry, return and property callback behavior.",
+      "owners": [
+        "upstream Node VM and maintained SpiderMonkey callback bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-vm-context-property-forwarding",
+      "file": "test/parallel/test-vm-context-property-forwarding.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Original VM context entry, return and property callback behavior.",
+      "owners": [
+        "upstream Node VM and maintained SpiderMonkey callback bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-vm-run-in-new-context",
+      "file": "test/parallel/test-vm-run-in-new-context.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Original VM context entry, return and property callback behavior.",
+      "owners": [
+        "upstream Node VM and maintained SpiderMonkey callback bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-vm-new-script-new-context",
+      "file": "test/parallel/test-vm-new-script-new-context.js",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "contract": "Original VM context entry, return and property callback behavior.",
+      "owners": [
+        "upstream Node VM and maintained SpiderMonkey callback bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

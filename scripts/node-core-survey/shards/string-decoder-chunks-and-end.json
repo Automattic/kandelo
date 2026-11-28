@@ -1,0 +1,34 @@
+{
+  "id": "string-decoder-chunks-and-end",
+  "cases": [
+    {
+      "selector": "parallel/test-string-decoder",
+      "file": "test/parallel/test-string-decoder.js",
+      "family": "values",
+      "modules": [
+        "node:string_decoder",
+        "node:buffer"
+      ],
+      "contract": "StringDecoder preserves upstream output across splits in encoded input.",
+      "owners": [
+        "upstream Node Buffer and string decoder",
+        "maintained SpiderMonkey backing storage and encoding"
+      ]
+    },
+    {
+      "selector": "parallel/test-string-decoder-end",
+      "file": "test/parallel/test-string-decoder-end.js",
+      "family": "values",
+      "modules": [
+        "node:string_decoder",
+        "node:buffer"
+      ],
+      "contract": "Ending a decoder flushes the remaining bytes with the expected output.",
+      "owners": [
+        "upstream Node Buffer and string decoder",
+        "maintained SpiderMonkey backing storage and encoding"
+      ]
+    }
+  ],
+  "fixtures": []
+}

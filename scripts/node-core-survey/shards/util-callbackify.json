@@ -1,0 +1,22 @@
+{
+  "id": "util-callbackify",
+  "cases": [
+    {
+      "selector": "parallel/test-util-callbackify",
+      "file": "test/parallel/test-util-callbackify.js",
+      "family": "values",
+      "modules": [
+        "node:util"
+      ],
+      "contract": "Callbackify preserves receiver and function metadata, delivers primitive rejection reasons, and propagates uncaught callback errors through original child fixtures.",
+      "owners": [
+        "upstream Node util and async scheduling",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/uncaught-exceptions/callbackify1.js",
+    "test/fixtures/uncaught-exceptions/callbackify2.js"
+  ]
+}

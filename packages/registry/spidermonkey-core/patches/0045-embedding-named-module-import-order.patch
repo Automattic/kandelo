@@ -1,0 +1,67 @@
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -6,6 +6,9 @@
+ 
+ #include "mozilla/DebugOnly.h"
+ #include "mozilla/ScopeExit.h"
++#include "mozilla/Vector.h"
++
++#include <algorithm>  // std::sort
+ 
+ #include "builtin/Promise.h"
+ #include "builtin/SelfHostingDefines.h"
+@@ -16,6 +19,7 @@
+ #include "gc/GCContext.h"
+ #include "gc/Tracer.h"
+ #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::LimitedColumnNumberOneOrigin
++#include "js/ContextOptions.h"  // JS::ContextOptionsRef
+ #include "js/friend/ErrorMessages.h"  // JSMSG_*
+ #include "js/Modules.h"  // JS::GetModulePrivate, JS::ModuleDynamicImportHook, JS::ModuleType
+ #include "vm/EqualityOperations.h"  // js::SameValue
+@@ -2114,7 +2118,34 @@
+     return false;
+   }
+ 
+-  for (const StencilModuleEntry& entry : importEntries) {
++  // The Node diagnostic formatter uses the same first missing binding as
++  // Node's native linker. That linker resolves regular imports by local
++  // name. Keep namespace and source-phase entries in their existing slots.
++  const bool orderNamedImports =
++      JS::ContextOptionsRef(cx).moduleResolutionErrorFormatter() &&
++      importEntries.length() > 1;
++  mozilla::Vector<const StencilModuleEntry*, 8, SystemAllocPolicy> namedImports;
++  if (orderNamedImports) {
++    for (const StencilModuleEntry& entry : importEntries) {
++      if (entry.importName && !namedImports.append(&entry)) {
++        ReportOutOfMemory(cx);
++        return false;
++      }
++    }
++    std::sort(namedImports.begin(), namedImports.end(),
++              [&](const StencilModuleEntry* lhs, const StencilModuleEntry* rhs) {
++                return CompareStrings(
++                           atomCache.getExistingAtomAt(cx, lhs->localName),
++                           atomCache.getExistingAtomAt(cx, rhs->localName)) < 0;
++              });
++  }
++
++  size_t nextNamedImport = 0;
++  for (const StencilModuleEntry& originalEntry : importEntries) {
++    const StencilModuleEntry& entry =
++        orderNamedImports && originalEntry.importName
++            ? *namedImports[nextNamedImport++]
++            : originalEntry;
+     Rooted<ModuleRequestObject*> moduleRequest(cx);
+     moduleRequest = moduleRequests[entry.moduleRequest.value()].get();
+     MOZ_ASSERT(moduleRequest);
+--- a/js/public/ContextOptions.h
++++ b/js/public/ContextOptions.h
+@@ -14,7 +14,7 @@
+ #include "js/WasmFeatures.h"
+ 
+ struct JS_PUBLIC_API JSContext;
+-struct JSErrorReport;
++class JSErrorReport;
+ class JSScript;
+ 
+ namespace JS {

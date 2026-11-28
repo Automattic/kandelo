@@ -1,0 +1,32 @@
+{
+  "id": "transform-object-mode",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-transform-objectmode-falsey-value",
+      "file": "test/parallel/test-stream-transform-objectmode-falsey-value.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Object mode delivers the original sequence of falsey chunks.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-transform-split-objectmode",
+      "file": "test/parallel/test-stream-transform-split-objectmode.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Independent readable and writable object modes convert the original test inputs and preserve separate high-water marks.",
+      "owners": [
+        "upstream Node Transform stream",
+        "Kandelo stream and callback lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

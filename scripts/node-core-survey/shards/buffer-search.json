@@ -1,0 +1,32 @@
+{
+  "id": "buffer-search",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-includes",
+      "file": "test/parallel/test-buffer-includes.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Membership, forward and reverse searches over bytes and encoded strings.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-indexof",
+      "file": "test/parallel/test-buffer-indexof.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Membership, forward and reverse searches over bytes and encoded strings.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

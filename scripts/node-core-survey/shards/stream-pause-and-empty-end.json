@@ -1,0 +1,32 @@
+{
+  "id": "stream-pause-and-empty-end",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-ispaused",
+      "file": "test/parallel/test-stream-ispaused.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Observable pause state before and after flowing mode.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-end-paused",
+      "file": "test/parallel/test-stream-end-paused.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "End delivery when a paused empty stream is resumed.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

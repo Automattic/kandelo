@@ -1,0 +1,20 @@
+{
+  "id": "zlib-dictionary",
+  "cases": [
+    {
+      "selector": "parallel/test-zlib-dictionary",
+      "file": "test/parallel/test-zlib-dictionary.js",
+      "family": "compression",
+      "modules": [
+        "node:zlib",
+        "node:stream"
+      ],
+      "contract": "Streaming deflate and inflate use the supplied dictionary and preserve the expected output after reset.",
+      "owners": [
+        "upstream Node zlib binding and bundled codecs",
+        "maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

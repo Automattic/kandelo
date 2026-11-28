@@ -1,0 +1,19 @@
+{
+  "id": "private-brand-lexical-name",
+  "fixtures": [],
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-private-brand-lexical-name",
+      "file": "test/parallel/test-kandelo-private-brand-lexical-name.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": [
+        "node:vm"
+      ],
+      "owners": [
+        "maintained engine bridge"
+      ],
+      "contract": "Compare lexical class name diagnostics and private symbol lifetime across receiver kinds, collection and cached scripts"
+    }
+  ]
+}

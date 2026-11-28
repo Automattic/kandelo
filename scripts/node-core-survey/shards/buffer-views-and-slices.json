@@ -1,0 +1,32 @@
+{
+  "id": "buffer-views-and-slices",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-arraybuffer",
+      "file": "test/parallel/test-buffer-arraybuffer.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer, Uint8Array and DataView share actual bytes and preserve backing identity and offsets.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-slice",
+      "file": "test/parallel/test-buffer-slice.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer slices preserve bytes and honor empty, fractional, large and negative boundary indices.",
+      "owners": [
+        "upstream Node Buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

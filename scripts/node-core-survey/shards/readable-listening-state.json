@@ -1,0 +1,19 @@
+{
+  "id": "readable-listening-state",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readableListening-state",
+      "file": "test/parallel/test-stream-readableListening-state.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Readable listener state follows registration and remains false in flowing data mode.",
+      "owners": [
+        "upstream Node node:stream",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

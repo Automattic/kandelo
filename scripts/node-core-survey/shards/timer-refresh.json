@@ -1,0 +1,34 @@
+{
+  "id": "timer-refresh",
+  "cases": [
+    {
+      "selector": "parallel/test-timers-refresh",
+      "file": "test/parallel/test-timers-refresh.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "Refreshing timers preserves ref state and relative execution order.",
+      "owners": [
+        "upstream Node timers",
+        "libuv event loop",
+        "Kandelo runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-timers-refresh-in-callback",
+      "file": "test/parallel/test-timers-refresh-in-callback.js",
+      "family": "async",
+      "modules": [
+        "node:timers"
+      ],
+      "contract": "Refreshing from a timer callback runs the callback again and retains the event loop.",
+      "owners": [
+        "upstream Node timers",
+        "libuv event loop",
+        "Kandelo runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

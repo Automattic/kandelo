@@ -1,0 +1,45 @@
+{
+  "id": "readable-flags-and-resume",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-readable-didRead",
+      "file": "test/parallel/test-stream-readable-didRead.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "readableDidRead reflects actual consumption across read and flowing modes.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-readable",
+      "file": "test/parallel/test-stream-readable-readable.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "The public readable flag tracks destruction and completion.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-readable-resumeScheduled",
+      "file": "test/parallel/test-stream-readable-resumeScheduled.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Resume scheduling changes at the expected points in the read lifecycle.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained SpiderMonkey runtime and callback dispatch"
+      ]
+    }
+  ],
+  "fixtures": []
+}

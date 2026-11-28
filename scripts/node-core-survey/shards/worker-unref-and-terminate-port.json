@@ -1,0 +1,32 @@
+{
+  "id": "worker-unref-and-terminate-port",
+  "cases": [
+    {
+      "selector": "parallel/test-worker-ref-onexit",
+      "file": "test/parallel/test-worker-ref-onexit.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads"
+      ],
+      "contract": "An unreferenced worker with a timer permits parent exit without emitting a worker exit event.",
+      "owners": [
+        "upstream Node worker threads",
+        "maintained engine bridge and guest worker lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-worker-terminate-ref-public-port",
+      "file": "test/parallel/test-worker-terminate-ref-public-port.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads"
+      ],
+      "contract": "Terminating a worker whose public port is referenced permits the parent to exit.",
+      "owners": [
+        "upstream Node worker threads",
+        "maintained engine bridge and guest worker lifecycle"
+      ]
+    }
+  ],
+  "fixtures": []
+}

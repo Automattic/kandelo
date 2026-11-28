@@ -1,0 +1,23 @@
+{
+  "id": "esm-entry",
+  "cases": [
+    {
+      "selector": "es-module/test-esm-basic-imports",
+      "file": "test/es-module/test-esm-basic-imports.mjs",
+      "family": "loading",
+      "modules": [
+        "node:module"
+      ],
+      "contract": "Normal ES module entry, relative modules, shebang and percent-encoded module identity",
+      "owners": [
+        "lib/internal/modules/esm/loader.js",
+        "src/module_wrap.cc",
+        "SpiderMonkey engine bridge module records"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/es-modules/test-esm-ok.mjs",
+    "test/es-module/test-esm-shebang.mjs"
+  ]
+}

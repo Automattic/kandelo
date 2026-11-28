@@ -1,0 +1,20 @@
+{
+  "id": "parser-initializer-and-import",
+  "cases": [
+    {
+      "selector": "parallel/test-kandelo-parser-initializer-and-import",
+      "file": "test/parallel/test-kandelo-parser-initializer-and-import.js",
+      "family": "engine",
+      "modules": [
+        "node:vm",
+        "node:module"
+      ],
+      "origin": "kandelo",
+      "contract": "Script, function and module compilation preserve the native exception class and initializer wording, script imports fail with the script diagnostic, and valid declarations and imports still execute.",
+      "owners": [
+        "maintained SpiderMonkey parser diagnostics and Node compilation bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

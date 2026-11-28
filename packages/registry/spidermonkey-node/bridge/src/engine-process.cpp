@@ -30,6 +30,7 @@ struct EngineProcess {
   bool firstContextCreated=false;
   bool freezeFlagsAfterInit=true,flagsFrozen=false;
   std::atomic<bool> sourcePhaseImports{false},abortOnUncaught{false},exposeGc{false};
+  std::atomic<bool> immutableArrayBuffers{false};
   std::atomic<uint32_t> externalMemoryReasonableGiB{32};
   std::thread::id foreground;
 };
@@ -59,6 +60,7 @@ bool ApplyEngineOption(std::string_view input){
     std::printf("SpiderMonkey %s engine options:\n"
         "  --harmony-import-attributes (standard syntax, always enabled)\n"
         "  --[no-]js-source-phase-imports\n"
+        "  --[no-]js-immutable-arraybuffer\n"
         "  --[no-]freeze-flags-after-init\n"
         "  --[no-]abort-on-uncaught-exception\n"
         "  --[no-]expose-gc (synchronous full gc() only)\n"
@@ -67,6 +69,8 @@ bool ApplyEngineOption(std::string_view input){
     return true;
   }
   const bool source=option=="--js-source-phase-imports"||option=="--no-js-source-phase-imports";
+  const bool immutable = option == "--js-immutable-arraybuffer" ||
+                         option == "--no-js-immutable-arraybuffer";
   const bool freeze=option=="--freeze-flags-after-init"||option=="--no-freeze-flags-after-init";
   const bool abort=option=="--abort-on-uncaught-exception"||option=="--no-abort-on-uncaught-exception";
   const bool expose=option=="--expose-gc"||option=="--no-expose-gc";
@@ -85,8 +89,11 @@ bool ApplyEngineOption(std::string_view input){
   // This runtime constructs a fresh heap, so there are no restored tables to
   // rehash. Actual snapshot creation/restoration remains explicitly rejected.
   const bool freshHeapRehash=option=="--rehash-snapshot"||option=="--no-rehash-snapshot";
-  if(!source&&!freeze&&!memory&&!abort&&!expose&&!importAttributes&&!freshHeapRehash)return false;
+  if(!source&&!freeze&&!memory&&!abort&&!expose&&!importAttributes&&!freshHeapRehash&&!immutable)return false;
   CHECK(!process.flagsFrozen);
+  if (immutable) {
+    process.immutableArrayBuffers.store(option == "--js-immutable-arraybuffer", std::memory_order_release);
+  }
   if(abort)process.abortOnUncaught.store(option=="--abort-on-uncaught-exception",std::memory_order_release);
   if(expose)process.exposeGc.store(option=="--expose-gc",std::memory_order_release);
   if(source)process.sourcePhaseImports.store(option=="--js-source-phase-imports",std::memory_order_release);
@@ -171,6 +178,9 @@ namespace bridge {
 bool SourcePhaseImportsEnabled(){return Process().sourcePhaseImports.load(std::memory_order_acquire);}
 bool AbortOnUncaughtEnabled(){return Process().abortOnUncaught.load(std::memory_order_acquire);}
 bool ExposedGcEnabled(){return Process().exposeGc.load(std::memory_order_acquire);}
+bool ImmutableArrayBuffersEnabled() {
+  return Process().immutableArrayBuffers.load(std::memory_order_acquire);
+}
 void CheckExternalMemoryDelta(int64_t bytes){
   const auto limit=Process().externalMemoryReasonableGiB.load(std::memory_order_acquire);
   const auto maximum=int64_t(limit)*(int64_t(1)<<30);
@@ -194,6 +204,7 @@ JSContext* NewProcessContext(){
   JSContext* cx=JS_NewContext(UINT32_MAX);if(!cx)return nullptr;
   InitializeNativeContextMetadata(cx);
   if(!JS::InitSelfHostedCode(cx)){JS_DestroyContext(cx);return nullptr;}
+  InitializeNativeDiagnosticFormats(cx);
   process.firstContextCreated=true;CHECK(process.contexts!=SIZE_MAX);++process.contexts;return cx;
 }
 void DestroyProcessContext(JSContext* cx){

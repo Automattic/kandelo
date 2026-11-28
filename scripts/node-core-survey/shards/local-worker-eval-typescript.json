@@ -1,0 +1,20 @@
+{
+  "id": "local-worker-eval-typescript",
+  "cases": [
+    {
+      "selector": "parallel/test-worker-eval-typescript",
+      "file": "test/parallel/test-worker-eval-typescript.js",
+      "family": "workers",
+      "modules": [
+        "node:worker_threads",
+        "node:module"
+      ],
+      "contract": "Worker evaluation uses the requested module and CommonJS TypeScript modes, preserving messages and mode-specific errors.",
+      "owners": [
+        "upstream Node loaders and workers",
+        "Kandelo Amaro and maintained engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "stream-drop-take-collect",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-drop-take",
+      "file": "test/parallel/test-stream-drop-take.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Drop and take over async sequences and their abort signals.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-stream-toArray",
+      "file": "test/parallel/test-stream-toArray.js",
+      "family": "streams",
+      "modules": [
+        "node:stream"
+      ],
+      "contract": "Collection from an async sequence, validation and cancellation.",
+      "owners": [
+        "upstream Node stream implementation",
+        "maintained engine bridge and guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}

@@ -42,11 +42,12 @@ const hostCc = join(repoRoot, "sdk/bin/wasm32posix-cc");
 const hostAr = join(repoRoot, "sdk/bin/wasm32posix-ar");
 
 const utilityNames = ["coreutils", "grep", "sed"];
+const utilityPaths = utilityNames.map((name) => `programs/wasm32/${name}/${name}.wasm`);
 const artifactNames = [
   "kernel.wasm",
   "programs/wasm32/shell.vfs.zst",
   "programs/wasm32/kandelo-sdk.zip",
-  ...utilityNames.map((name) => `programs/wasm32/${name}.wasm`),
+  ...utilityPaths,
 ];
 const sourceOnly = process.env.WASM_POSIX_RESOLUTION_POLICY === "source-only-v1";
 const artifacts = sourceOnly
@@ -329,7 +330,7 @@ describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build ma
           size: sdk!.byteLength,
           bytes: sdk!,
         }, ...utilities.map((bytes, index) => ({
-          url: `${lazyBase}assets/programs/wasm32/${utilityNames[index]}.wasm`,
+          url: `${lazyBase}assets/${utilityPaths[index]}`,
           sha256: sha256(bytes),
           size: bytes.byteLength,
           bytes,

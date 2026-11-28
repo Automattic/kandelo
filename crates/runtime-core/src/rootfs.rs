@@ -6330,6 +6330,19 @@ pub(crate) fn owns_inode_description(handle: i64, directory: bool) -> bool {
     ROOTFS.with(|state| state.get(index).is_some_and(|inode| inode.open_count != 0 && inode.is_dir() == directory))
 }
 
+/// Pin the directory inode until its last open description reference is dropped.
+pub(crate) fn retain_directory(path: &[u8]) -> Result<(i64, WasmStat), Errno> {
+    let index = walk_to_inode(path)?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::ENOENT)?;
+        if !matches!(inode.kind, InodeKind::Dir(_)) {
+            return Err(Errno::ENOTDIR);
+        }
+        inode.open_count = inode.open_count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok((inode_to_file_handle(index), inode.stat()))
+    })
+}
+
 // Directory descriptions retain the dev/inode observed when opened. Validate
 // that identity even if the pathname was renamed and replaced before binding.
 pub(crate) fn watch_directory(

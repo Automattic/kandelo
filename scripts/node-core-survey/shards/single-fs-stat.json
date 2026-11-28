@@ -1,0 +1,19 @@
+{
+  "id": "single-fs-stat",
+  "cases": [
+    {
+      "selector": "parallel/test-fs-stat",
+      "file": "test/parallel/test-fs-stat.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs"
+      ],
+      "contract": "Stat, lstat and fstat values, types, callbacks and input errors.",
+      "owners": [
+        "upstream Node filesystem and loader implementations",
+        "guest VFS and libuv"
+      ]
+    }
+  ],
+  "fixtures": []
+}

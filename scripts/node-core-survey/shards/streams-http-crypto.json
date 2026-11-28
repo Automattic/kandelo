@@ -1,0 +1,70 @@
+{
+  "id": "streams-http-crypto",
+  "cases": [
+    {
+      "selector": "parallel/test-stream-pipeline",
+      "file": "test/parallel/test-stream-pipeline.js",
+      "family": "streams",
+      "modules": [
+        "node:stream",
+        "node:stream/promises"
+      ],
+      "contract": "Classic and Promise pipeline over streams, files and sockets, including teardown and error delivery",
+      "owners": [
+        "lib/internal/streams/pipeline.js",
+        "src/stream_base.cc",
+        "Kandelo libuv stream and file providers"
+      ]
+    },
+    {
+      "selector": "parallel/test-http-server",
+      "file": "test/parallel/test-http-server.js",
+      "family": "http",
+      "modules": [
+        "node:http"
+      ],
+      "contract": "HTTP/1 Server and returned request/response objects with an actual guest TCP peer",
+      "owners": [
+        "lib/_http_server.js",
+        "src/node_http_parser.cc",
+        "llhttp",
+        "Kandelo guest TCP"
+      ]
+    },
+    {
+      "selector": "parallel/test-https-hwm",
+      "file": "test/parallel/test-https-hwm.js",
+      "family": "secure-network",
+      "modules": [
+        "node:https",
+        "node:tls"
+      ],
+      "contract": "HTTPS request and response high-water marks across a controlled guest TLS peer",
+      "owners": [
+        "lib/https.js",
+        "src/crypto/crypto_tls.cc",
+        "Node OpenSSL package",
+        "Kandelo guest TCP"
+      ]
+    },
+    {
+      "selector": "parallel/test-crypto-hash",
+      "file": "test/parallel/test-crypto-hash.js",
+      "family": "crypto",
+      "modules": [
+        "node:crypto"
+      ],
+      "contract": "Hash creation, encodings, streaming, errors and the original file fixture",
+      "owners": [
+        "lib/internal/crypto/hash.js",
+        "src/crypto/crypto_hash.cc",
+        "Node OpenSSL package"
+      ]
+    }
+  ],
+  "fixtures": [
+    "test/fixtures/keys/agent1-key.pem",
+    "test/fixtures/keys/agent1-cert.pem",
+    "test/fixtures/sample.png"
+  ]
+}

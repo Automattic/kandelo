@@ -1,0 +1,19 @@
+{
+  "id": "single-buffer-compare",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-compare",
+      "file": "test/parallel/test-buffer-compare.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "Buffer and Uint8Array byte ordering and comparison ranges.",
+      "owners": [
+        "upstream Node node:buffer",
+        "maintained SpiderMonkey bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

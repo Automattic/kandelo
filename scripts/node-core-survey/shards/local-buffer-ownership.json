@@ -1,0 +1,33 @@
+{
+  "id": "local-buffer-ownership",
+  "cases": [
+    {
+      "selector": "parallel/test-buffer-sharedarraybuffer",
+      "file": "test/parallel/test-buffer-sharedarraybuffer.js",
+      "family": "values",
+      "modules": [
+        "node:buffer"
+      ],
+      "contract": "A Buffer view observes writes to a shared backing store and reports the correct length.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-buffer-pool-untransferable",
+      "file": "test/parallel/test-buffer-pool-untransferable.js",
+      "family": "values",
+      "modules": [
+        "node:buffer",
+        "node:worker_threads"
+      ],
+      "contract": "MessagePort and direct transfer reject a pooled Buffer backing store and preserve its length and identity.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

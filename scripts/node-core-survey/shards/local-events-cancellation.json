@@ -1,0 +1,32 @@
+{
+  "id": "local-events-cancellation",
+  "cases": [
+    {
+      "selector": "parallel/test-events-once",
+      "file": "test/parallel/test-events-once.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "EventEmitter and EventTarget once promises handle values, errors, pre-aborted signals, later abort and listener removal.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    },
+    {
+      "selector": "parallel/test-events-on-async-iterator",
+      "file": "test/parallel/test-events-on-async-iterator.js",
+      "family": "async",
+      "modules": [
+        "node:events"
+      ],
+      "contract": "Event iteration handles values, errors, abort and listener cleanup on EventEmitter and EventTarget.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo runtime and engine bridge"
+      ]
+    }
+  ],
+  "fixtures": []
+}

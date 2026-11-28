@@ -1,0 +1,50 @@
+{
+  "id": "filesystem-vectored-reads",
+  "fixtures": [
+    "test/fixtures/x.txt"
+  ],
+  "cases": [
+    {
+      "selector": "parallel/test-fs-readv",
+      "file": "test/parallel/test-fs-readv.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Scatter reads, offsets, callback and promisified results against guest files.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-readv-sync",
+      "file": "test/parallel/test-fs-readv-sync.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Scatter reads, offsets, callback and promisified results against guest files.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    },
+    {
+      "selector": "parallel/test-fs-readv-promisify",
+      "file": "test/parallel/test-fs-readv-promisify.js",
+      "family": "filesystem",
+      "modules": [
+        "node:fs",
+        "node:fs/promises"
+      ],
+      "contract": "Scatter reads, offsets, callback and promisified results against guest files.",
+      "owners": [
+        "upstream Node fs and libuv",
+        "Kandelo guest VFS and descriptor lifecycle"
+      ]
+    }
+  ]
+}

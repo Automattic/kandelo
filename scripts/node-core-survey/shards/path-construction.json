@@ -1,0 +1,45 @@
+{
+  "id": "path-construction",
+  "cases": [
+    {
+      "selector": "parallel/test-path-join",
+      "file": "test/parallel/test-path-join.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 joining, component round trips and absolute path detection.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-parse-format",
+      "file": "test/parallel/test-path-parse-format.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 joining, component round trips and absolute path detection.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    },
+    {
+      "selector": "parallel/test-path-isabsolute",
+      "file": "test/parallel/test-path-isabsolute.js",
+      "family": "values",
+      "modules": [
+        "node:path"
+      ],
+      "contract": "Original POSIX and win32 joining, component round trips and absolute path detection.",
+      "owners": [
+        "upstream Node core",
+        "Kandelo guest runtime"
+      ]
+    }
+  ],
+  "fixtures": []
+}
