@@ -161,8 +161,12 @@ Local<Message> NativeMessage(Isolate* isolate,Local<Value> exception,JS::HandleO
   column=mappedColumn-1;
   JS::SetReservedSlot(record,MessageLine,JS::Int32Value(NativeStackNumber(line)));
   JS::SetReservedSlot(record,MessageColumn,JS::Int32Value(NativeStackNumber(column)));
-  if (atThrow && sourceLine && sourceRecord && !compilationOrigin &&
-      !report->linebuf() && column < INT_MAX) {
+  const uint64_t bindingEndColumn = uint64_t(column) + report->moduleBindingLength;
+  if (sourceLine && report->moduleBindingLength && bindingEndColumn <= INT_MAX) {
+    JS::SetReservedSlot(record, MessageEndColumn,
+                        JS::Int32Value(static_cast<int>(bindingEndColumn)));
+  } else if (atThrow && sourceLine && sourceRecord && !compilationOrigin &&
+             !report->linebuf() && column < INT_MAX) {
     // V8's Isolate::ComputeLocation spans one UTF-16 code unit for a runtime
     // frame with a known source position. Use the captured throw position;
     // an Error can have been constructed on a different line.

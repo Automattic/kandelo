@@ -1,0 +1,303 @@
+Retain the parser's import and re-export token ranges for module embedders.
+Preserve the original import token when an exported local resolves through an
+import entry. Keep the ranges through stencil serialization, instantiated
+module entries, and the error report used by the opt-in diagnostic formatter.
+
+diff --git a/js/public/ErrorReport.h b/js/public/ErrorReport.h
+index 6efb3d0..e3938f5 100644
+--- a/js/public/ErrorReport.h
++++ b/js/public/ErrorReport.h
+@@ -316,6 +316,9 @@ class JSErrorReport : public JSErrorBase {
+   // Structured facts of the failure that produced this report.
+   JS::ParserDiagnostic parserDiagnostic;
+
++  // UTF-16 extent of an embedded module binding diagnostic, when recorded.
++  uint32_t moduleBindingLength = 0;
++
+   // One of the JSExnType constants.
+   int16_t exnType;
+
+@@ -345,6 +348,7 @@ class JSErrorReport : public JSErrorBase {
+         tokenOffset_(other.tokenOffset_),
+         notes(std::move(other.notes)),
+         parserDiagnostic(std::move(other.parserDiagnostic)),
++        moduleBindingLength(other.moduleBindingLength),
+         exnType(other.exnType),
+         isMuted(other.isMuted),
+         isWarning_(other.isWarning_),
+diff --git a/js/src/builtin/ModuleObject.cpp b/js/src/builtin/ModuleObject.cpp
+index 67f3f83..d086fc2 100644
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -103,12 +103,14 @@ static ImportPhase ValueToImportPhase(const Value& value) {
+ ImportEntry::ImportEntry(Handle<ModuleRequestObject*> moduleRequest,
+                          Handle<JSAtom*> maybeImportName,
+                          Handle<JSAtom*> localName, uint32_t lineNumber,
+-                         JS::ColumnNumberOneOrigin columnNumber)
++                         JS::ColumnNumberOneOrigin columnNumber,
++                         const ModuleBindingRange& bindingRange)
+     : moduleRequest_(moduleRequest),
+       importName_(maybeImportName),
+       localName_(localName),
+       lineNumber_(lineNumber),
+-      columnNumber_(columnNumber) {}
++      columnNumber_(columnNumber),
++      bindingRange_(bindingRange) {}
+
+ void ImportEntry::trace(JSTracer* trc) {
+   TraceEdge(trc, &moduleRequest_, "ImportEntry::moduleRequest_");
+@@ -123,13 +125,15 @@ ExportEntry::ExportEntry(Handle<JSAtom*> maybeExportName,
+                          Handle<ModuleRequestObject*> moduleRequest,
+                          Handle<JSAtom*> maybeImportName,
+                          Handle<JSAtom*> maybeLocalName, uint32_t lineNumber,
+-                         JS::ColumnNumberOneOrigin columnNumber)
++                         JS::ColumnNumberOneOrigin columnNumber,
++                         const ModuleBindingRange& bindingRange)
+     : exportName_(maybeExportName),
+       moduleRequest_(moduleRequest),
+       importName_(maybeImportName),
+       localName_(maybeLocalName),
+       lineNumber_(lineNumber),
+-      columnNumber_(columnNumber) {
++      columnNumber_(columnNumber),
++      bindingRange_(bindingRange) {
+   // Line and column numbers are optional for export entries since direct
+   // entries are checked at parse time.
+ }
+@@ -2016,6 +2020,9 @@ bool ModuleBuilder::buildTables(frontend::StencilModuleMetadata& metadata) {
+           auto entry = frontend::StencilModuleEntry::exportFromEntry(
+               importEntry->moduleRequest, importEntry->importName,
+               exp.exportName, exp.lineno, exp.column);
++          // When a local export refers to an imported binding, report the
++          // original import token to embedders that use binding ranges.
++          entry.bindingRange = importEntry->bindingRange;
+           if (!metadata.indirectExportEntries.append(entry)) {
+             js::ReportOutOfMemory(fc_);
+             return false;
+@@ -2165,7 +2172,7 @@ bool frontend::StencilModuleMetadata::createImportEntries(
+     MOZ_ASSERT(!entry.exportName);
+
+     output.infallibleEmplaceBack(moduleRequest, importName, localName,
+-                                 entry.lineno, entry.column);
++                                 entry.lineno, entry.column, entry.bindingRange);
+   }
+
+   return true;
+@@ -2207,7 +2214,8 @@ bool frontend::StencilModuleMetadata::createExportEntries(
+     }
+
+     output.infallibleEmplaceBack(exportName, moduleRequestObject, importName,
+-                                 localName, entry.lineno, entry.column);
++                                 localName, entry.lineno, entry.column,
++                                 entry.bindingRange);
+   }
+
+   return true;
+@@ -2409,6 +2417,9 @@ bool ModuleBuilder::processImport(frontend::BinaryNode* importNode) {
+       entry = StencilModuleEntry::importEntry(
+           moduleRequestIndex, localName, importName, line,
+           JS::ColumnNumberOneOrigin(column));
++      entry.bindingRange = {
++          line, JS::ColumnNumberOneOrigin(column),
++          importNameNode->pn_pos.end - importNameNode->pn_pos.begin};
+     } else {
+       MOZ_ASSERT(item->isKind(ParseNodeKind::ImportNamespaceSpec));
+       auto* spec = &item->as<UnaryNode>();
+@@ -2652,6 +2663,8 @@ bool ModuleBuilder::processExportFrom(frontend::BinaryNode* exportNode) {
+       entry = StencilModuleEntry::exportFromEntry(
+           moduleRequestIndex, importName, exportName, line,
+           JS::ColumnNumberOneOrigin(column));
++      entry.bindingRange = {line, JS::ColumnNumberOneOrigin(column),
++                            spec->pn_pos.end - spec->pn_pos.begin};
+     } else if (spec->isKind(ParseNodeKind::ExportNamespaceSpec)) {
+       auto* exportNameNode = &spec->as<UnaryNode>().kid()->as<NameNode>();
+
+diff --git a/js/src/builtin/ModuleObject.h b/js/src/builtin/ModuleObject.h
+index b6d8d15..d686401 100644
+--- a/js/src/builtin/ModuleObject.h
++++ b/js/src/builtin/ModuleObject.h
+@@ -27,7 +27,7 @@
+ #include "vm/JSObject.h"   // JSObject
+ #include "vm/NativeObject.h"   // NativeObject
+ #include "vm/ProxyObject.h"    // ProxyObject
+-#include "vm/SharedStencil.h"  // FunctionDeclarationVector
++#include "vm/SharedStencil.h"  // FunctionDeclarationVector, ModuleBindingRange
+
+ class JSAtom;
+ class JSScript;
+@@ -125,17 +125,20 @@ class ImportEntry {
+
+   // Column number in UTF-16 code units.
+   const JS::ColumnNumberOneOrigin columnNumber_;
++  const ModuleBindingRange bindingRange_;
+
+  public:
+   ImportEntry(Handle<ModuleRequestObject*> moduleRequest,
+               Handle<JSAtom*> maybeImportName, Handle<JSAtom*> localName,
+-              uint32_t lineNumber, JS::ColumnNumberOneOrigin columnNumber);
++              uint32_t lineNumber, JS::ColumnNumberOneOrigin columnNumber,
++              const ModuleBindingRange& bindingRange = {});
+
+   ModuleRequestObject* moduleRequest() const { return moduleRequest_; }
+   JSAtom* importName() const { return importName_; }
+   JSAtom* localName() const { return localName_; }
+   uint32_t lineNumber() const { return lineNumber_; }
+   JS::ColumnNumberOneOrigin columnNumber() const { return columnNumber_; }
++  const ModuleBindingRange& bindingRange() const { return bindingRange_; }
+
+   void trace(JSTracer* trc);
+ };
+@@ -153,18 +156,21 @@ class ExportEntry {
+
+   // Column number in UTF-16 code units.
+   const JS::ColumnNumberOneOrigin columnNumber_;
++  const ModuleBindingRange bindingRange_;
+
+  public:
+   ExportEntry(Handle<JSAtom*> maybeExportName,
+               Handle<ModuleRequestObject*> maybeModuleRequest,
+               Handle<JSAtom*> maybeImportName, Handle<JSAtom*> maybeLocalName,
+-              uint32_t lineNumber, JS::ColumnNumberOneOrigin columnNumber);
++              uint32_t lineNumber, JS::ColumnNumberOneOrigin columnNumber,
++              const ModuleBindingRange& bindingRange = {});
+   JSAtom* exportName() const { return exportName_; }
+   ModuleRequestObject* moduleRequest() const { return moduleRequest_; }
+   JSAtom* importName() const { return importName_; }
+   JSAtom* localName() const { return localName_; }
+   uint32_t lineNumber() const { return lineNumber_; }
+   JS::ColumnNumberOneOrigin columnNumber() const { return columnNumber_; }
++  const ModuleBindingRange& bindingRange() const { return bindingRange_; }
+
+   void trace(JSTracer* trc);
+ };
+diff --git a/js/src/frontend/Stencil.h b/js/src/frontend/Stencil.h
+index c912e4c..3653430 100644
+--- a/js/src/frontend/Stencil.h
++++ b/js/src/frontend/Stencil.h
+@@ -695,6 +695,7 @@ class StencilModuleEntry {
+
+   // Column number in UTF-16 code units.
+   JS::ColumnNumberOneOrigin column;
++  ModuleBindingRange bindingRange;
+
+  private:
+   StencilModuleEntry(uint32_t lineno, JS::ColumnNumberOneOrigin column)
+@@ -714,7 +715,8 @@ class StencilModuleEntry {
+         importName(other.importName),
+         exportName(other.exportName),
+         lineno(other.lineno),
+-        column(other.column) {}
++        column(other.column),
++        bindingRange(other.bindingRange) {}
+
+   StencilModuleEntry& operator=(StencilModuleEntry& other) = default;
+
+@@ -725,6 +727,7 @@ class StencilModuleEntry {
+     exportName = other.exportName;
+     lineno = other.lineno;
+     column = other.column;
++    bindingRange = other.bindingRange;
+     return *this;
+   }
+
+diff --git a/js/src/frontend/StencilXdr.cpp b/js/src/frontend/StencilXdr.cpp
+index f68321a..61c2f5e 100644
+--- a/js/src/frontend/StencilXdr.cpp
++++ b/js/src/frontend/StencilXdr.cpp
+@@ -625,6 +625,10 @@ template <XDRMode mode>
+   MOZ_TRY(xdr->codeUint32(stencil.exportName.rawDataRef()));
+   MOZ_TRY(xdr->codeUint32(&stencil.lineno));
+   MOZ_TRY(xdr->codeUint32(stencil.column.addressOfValueForTranscode()));
++  MOZ_TRY(xdr->codeUint32(&stencil.bindingRange.line));
++  MOZ_TRY(xdr->codeUint32(
++      stencil.bindingRange.column.addressOfValueForTranscode()));
++  MOZ_TRY(xdr->codeUint32(&stencil.bindingRange.length));
+
+   return Ok();
+ }
+diff --git a/js/src/vm/ErrorObject.cpp b/js/src/vm/ErrorObject.cpp
+index 912a673..1ef8fad 100644
+--- a/js/src/vm/ErrorObject.cpp
++++ b/js/src/vm/ErrorObject.cpp
+@@ -1228,6 +1228,7 @@ bool CopyExtraData(JSContext* cx, uint8_t** cursor, JSErrorReport* copy,
+   copy->isMuted = report->isMuted;
+   copy->exnType = report->exnType;
+   copy->isWarning_ = report->isWarning_;
++  copy->moduleBindingLength = report->moduleBindingLength;
+
+   /* Deep copy notes. */
+   if (report->notes) {
+diff --git a/js/src/vm/Modules.cpp b/js/src/vm/Modules.cpp
+index cb4b188..d98f8ed 100644
+--- a/js/src/vm/Modules.cpp
++++ b/js/src/vm/Modules.cpp
+@@ -1474,7 +1474,8 @@ static void ThrowResolutionError(JSContext* cx, Handle<ModuleObject*> module,
+                                  Handle<Value> resolution, Handle<JSAtom*> name,
+                                  ModuleErrorInfo* errorInfo,
+                                  Handle<ModuleRequestObject*> request,
+-                                 Handle<JSAtom*> requestedName) {
++                                 Handle<JSAtom*> requestedName,
++                                 const ModuleBindingRange& bindingRange) {
+   MOZ_ASSERT(errorInfo);
+
+   bool isAmbiguous = resolution == StringValue(cx->names().ambiguous);
+@@ -1497,8 +1498,11 @@ static void ThrowResolutionError(JSContext* cx, Handle<ModuleObject*> module,
+     RootedString specifier(cx, request->specifier());
+     RootedString bindingName(cx, requestedName);
+     RootedScript script(cx, module->maybeScript());
+-    report.lineno = errorInfo->lineNumber;
+-    report.column = errorInfo->columnNumber;
++    report.lineno =
++        bindingRange.line ? bindingRange.line : errorInfo->lineNumber;
++    report.column =
++        bindingRange.line ? bindingRange.column : errorInfo->columnNumber;
++    report.moduleBindingLength = bindingRange.length;
+     report.exnType = JSEXN_SYNTAXERR;
+     if (script) {
+       report.sourceId = script->scriptSource()->id();
+@@ -1547,7 +1551,8 @@ static void ThrowResolutionError(JSContext* cx, Handle<ModuleObject*> module,
+
+   RootedValue error(cx);
+   if (!JS::CreateError(cx, JSEXN_SYNTAXERR, nullptr, filename,
+-                       errorInfo->lineNumber, errorInfo->columnNumber,
++                       formatter ? report.lineno : errorInfo->lineNumber,
++                       formatter ? report.column : errorInfo->columnNumber,
+                        formatter ? &report : nullptr, message,
+                        JS::NothingHandleValue, &error)) {
+     ReportOutOfMemory(cx);
+@@ -1591,7 +1596,7 @@ static bool ModuleInitializeEnvironment(JSContext* cx,
+       moduleRequest = e.moduleRequest();
+       importName = e.importName() ? e.importName() : e.exportName();
+       ThrowResolutionError(cx, module, resolution, exportName, &errorInfo,
+-                           moduleRequest, importName);
++                           moduleRequest, importName, e.bindingRange());
+       return false;
+     }
+
+@@ -1690,7 +1695,7 @@ static bool ModuleInitializeEnvironment(JSContext* cx,
+       //              exception.
+       if (!IsResolvedBinding(cx, resolution)) {
+         ThrowResolutionError(cx, module, resolution, importName, &errorInfo,
+-                             moduleRequest, importName);
++                             moduleRequest, importName, in.bindingRange());
+         return false;
+       }
+
+diff --git a/js/src/vm/SharedStencil.h b/js/src/vm/SharedStencil.h
+index 08d5965..3620f6a 100644
+--- a/js/src/vm/SharedStencil.h
++++ b/js/src/vm/SharedStencil.h
+@@ -126,6 +126,13 @@ struct ScopeNote {
+   uint32_t parent = 0;
+ };
+
++// Source range of an import or re-export binding for linker diagnostics.
++struct ModuleBindingRange {
++  uint32_t line = 0;
++  JS::ColumnNumberOneOrigin column;
++  uint32_t length = 0;
++};
++
+ // Range of characters in scriptSource which contains a script's source,
+ // that is, the range used by the Parser to produce a script.
+ //
