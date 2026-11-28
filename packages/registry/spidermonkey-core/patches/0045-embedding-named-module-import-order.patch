@@ -1,14 +1,12 @@
 --- a/js/src/builtin/ModuleObject.cpp
 +++ b/js/src/builtin/ModuleObject.cpp
-@@ -4,8 +4,11 @@
+@@ -6,6 +6,9 @@
  
- #include "builtin/ModuleObject.h"
- 
-+#include <algorithm>  // std::sort
-+
  #include "mozilla/DebugOnly.h"
  #include "mozilla/ScopeExit.h"
 +#include "mozilla/Vector.h"
++
++#include <algorithm>  // std::sort
  
  #include "builtin/Promise.h"
  #include "builtin/SelfHostingDefines.h"
