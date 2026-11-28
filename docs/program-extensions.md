@@ -204,9 +204,12 @@ moves records:
 - `kernel_kgpu_set_renderer` says whether a renderer exists. Without one,
   context creation answers `-19`.
 - `kernel_kgpu_reset` resets the device after the host's GPU worker dies.
-  The host calls it only once the worker is proven gone: its exit was
-  observed, or its termination completed. A worker that might still run
-  could otherwise write frames the reset has released. In one step the
+  The host calls it after terminating the worker. On Node the worker's
+  exit is observed first. In browsers `Worker.terminate()` returns before
+  the worker has stopped, so a worker still inside a readback could write
+  frames the reset has released. Closing that race is required before
+  shipped programs can reach kgpu (see the known gaps in
+  `docs/architecture.md`). In one step the
   reset loses every context and unpins every in-flight submission without
   retiring it, so those waits answer `-5`. It also discards the outbox and
   its backlog, and clears the renderer. The host sets the renderer again

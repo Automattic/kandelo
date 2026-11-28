@@ -6,7 +6,7 @@
 // (fixtures/kgpu-host-worker.ts) so a crash case cannot leak into the next.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -29,6 +29,7 @@ const ENODEV = 19, EIO = 5;
 let directory: string, image: string;
 
 beforeAll(async () => {
+  mkdirSync(join(root, '.scratch'), { recursive: true });
   directory = mkdtempSync(join(root, '.scratch/kgpu-host-'));
   image = join(directory, 'rootfs.vfs');
   const fixture = compileSdkFixture(new URL('./fixtures/kgpu-host.c', import.meta.url), [], { forkInstrument: true });

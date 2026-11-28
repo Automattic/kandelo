@@ -71,6 +71,7 @@ gets `--skip-pass=constraint-analysis`. Tagged sites:
 - `crates/kandelo-image-module/build-wasm.sh`: the `wasm-opt -Oz` shrink
   step.
 - `crates/program-policy/build-wasm.sh`: the `wasm-opt -Oz` step.
+- `crates/gpu-executor/build-wasm.sh`: the `wasm-opt -Oz` step.
 - Tests: `crates/fork-instrument/tests/cli_post_optimize.rs`
   (`the_default_level_is_os` checks the flag reaches `wasm-opt`) and
   `crates/kandelo-cc/tests/driver.rs`

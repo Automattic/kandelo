@@ -16652,8 +16652,9 @@ fn channel_kgpu(arg: *mut u8, size: i32, op: i32) -> i32 {
     result
 }
 
-/// Re-decide parked kgpu calls whose sources fired (a retirement, a loss, a
-/// drained outbox), and destroy the GPU contexts of retired images.
+/// Re-decide parked kgpu waits whose sources fired (a retirement or a loss),
+/// and destroy the GPU contexts of retired images. A drained outbox wakes a
+/// refused submit through the host's broad blocking retry instead.
 fn settle_kgpu_waits() {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     table.kgpu_settle(&WasmHostIO);
@@ -16686,8 +16687,9 @@ pub extern "C" fn kernel_kgpu_drain(out_ptr: *mut u8, out_len: u32) -> u32 {
 }
 
 /// Apply `len` bytes of executor completion records (`wasm_posix_shared::kgpu`
-/// completion wire). Returns 0, or a negative errno for a malformed batch,
-/// which changes nothing but loses every context: the host adapter and the
+/// completion wire). Returns 0, or a negative errno for a malformed batch.
+/// A malformed batch applies none of its records, retires nothing and
+/// releases no pins, but loses every context: the host adapter and the
 /// kernel no longer agree, so the host also retires its GPU worker and,
 /// once the worker is gone, calls `kernel_kgpu_reset`.
 #[unsafe(no_mangle)]

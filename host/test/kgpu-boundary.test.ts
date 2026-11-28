@@ -5,7 +5,7 @@
 // entries (`kernel_kgpu_drain` / `kernel_kgpu_complete`).
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -39,6 +39,7 @@ const EINVAL = 22, EIO = 5;
 let directory: string, image: string;
 
 beforeAll(async () => {
+  mkdirSync(join(root, '.scratch'), { recursive: true });
   directory = mkdtempSync(join(root, '.scratch/kgpu-boundary-'));
   image = join(directory, 'rootfs.vfs');
   const fixture = compileSdkFixture(new URL('./fixtures/kgpu-boundary.c', import.meta.url), [], { forkInstrument: true });

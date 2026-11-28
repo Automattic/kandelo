@@ -28,8 +28,9 @@
 //! A violation faults the submitting context: its surface is released, it
 //! answers `ContextLost` with a negative errno, and every later record for it
 //! answers `ContextLost` too. No other context's state is consulted or
-//! changed, and nothing here can panic, so hostile input can neither trap the
-//! module nor reach a neighbour.
+//! changed. No guest input reaches a panic, so hostile input can neither trap
+//! the module nor reach a neighbour. Allocation failure still aborts, but the
+//! kernel's context limit bounds what the executor allocates.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;

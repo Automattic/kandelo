@@ -1591,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn outbox_full_parks_submitter_until_drain() {
+    fn outbox_full_refuses_submit_without_committing() {
         // R13: the submitter "parks" in the host's generic blocking retry.
         // The refused attempt commits nothing; the host re-executes the
         // request from the guest's own bytes after a drain, and only the

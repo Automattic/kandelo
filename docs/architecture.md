@@ -7779,8 +7779,9 @@ executor drives a `Backend`. It uses the WebGL 2 backend through
 a null backend.
 
 When the worker exits, throws, reports a fault or breaks the protocol, the
-host terminates it. This includes the loss of its WebGL context. Only once
-termination has completed does it call `kernel_kgpu_reset`. The reset
+host terminates it. This includes the loss of its WebGL context. It then
+calls `kernel_kgpu_reset`: on Node after the worker's exit is observed, in
+browsers as soon as `Worker.terminate()` returns (see the known gaps). The reset
 loses every context and unpins all in-flight work, so those waits answer
 `-5` (`EIO`). It also discards the outbox and clears the renderer. The same
 reset happens when the group backing the worker was given is replaced.
@@ -7822,8 +7823,7 @@ across exit, worker crash and reset, and the no-renderer answer.
 - **Lost-context status.** The executor's errno for a lost context is not
   passed on. A wait reports only `-5`.
 - **Bounds not yet tightened.** Context ids are never reused, so 2^32
-  creates exhaust them. Create and destroy records wait in an unbounded
-  backlog while the host is not draining. The 16 MiB executor ceiling is
+  creates exhaust them. The 16 MiB executor ceiling is
   budgeted, but no production caller checks the machine's declared
   reservation against it.
 - **Evidence not yet gathered.** `./run.sh test browser-memory` has not

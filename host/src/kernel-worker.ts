@@ -60,8 +60,7 @@ import type { VfsChangeEvent } from "./vfs/types";
  * The generated `CH_*` constants below are authoritative; this summary is
  * explanatory only and generated-file drift tests cover the live values.
  */
-import { ERRNO } from "./generated/abi";
-import { KGPU_OUTBOX_CAPACITY } from "./generated/abi";
+import { ERRNO, KGPU_OUTBOX_CAPACITY } from "./generated/abi";
 import { KgpuHost, type KgpuHostStatus } from "./kgpu/kgpu-host";
 import { isProcessMemoryCreatorAdmissionClosed } from "./process-memory-creator-gate";
 import { selectRootfsHostMetadataBytes, selectRootfsIoBytes, selectRootfsJournalStateBytes, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
