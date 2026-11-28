@@ -21,41 +21,53 @@ use core::ffi::{CStr, c_char, c_void};
 static DRIVER: DriverLock<Driver> = DriverLock::new(Driver::new());
 
 /// The `pthread_atfork` child handler: a fork child did not inherit the
-/// parent's kgpu contexts, so it drops the driver state without destroying
-/// any (`Driver::reset_after_fork`), and releases the lock another parent
-/// thread may have held.
+/// parent's kgpu contexts, so it forgets the driver state without
+/// destroying or freeing any of it (`Driver::reset_after_fork`), and
+/// releases the lock another parent thread may have held.
 extern "C" fn fork_child() {
     reset_in_fork_child(&DRIVER);
 }
 
 fn reset_in_fork_child(lock: &DriverLock<Driver>) {
     // SAFETY: a child handler runs on the child's only thread.
-    let (mut driver, was_held) = unsafe { lock.reset_after_fork() };
-    driver.reset_after_fork(!was_held);
+    let mut driver = unsafe { lock.reset_after_fork() };
+    driver.reset_after_fork();
 }
 
 /// Registers `fork_child` once, at the first `eglInitialize`: before it no
-/// state exists to reset.
+/// state exists to reset. A failed registration leaves it unregistered, so
+/// the next `eglInitialize` tries again.
 fn register_fork_handler() {
-    use core::sync::atomic::{AtomicBool, Ordering};
-    static REGISTERED: AtomicBool = AtomicBool::new(false);
-    if REGISTERED.swap(true, Ordering::AcqRel) {
+    use core::sync::atomic::{AtomicU8, Ordering};
+    const UNREGISTERED: u8 = 0;
+    const REGISTERING: u8 = 1;
+    const REGISTERED: u8 = 2;
+    static STATE: AtomicU8 = AtomicU8::new(UNREGISTERED);
+    // A thread that finds another thread registering returns at once
+    // rather than wait; a failed registration is retried by the next call.
+    if STATE.compare_exchange(UNREGISTERED, REGISTERING, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return;
     }
     #[cfg(not(test))]
-    {
+    let registered = {
         type Handler = Option<extern "C" fn()>;
         unsafe extern "C" {
             fn pthread_atfork(prepare: Handler, parent: Handler, child: Handler) -> core::ffi::c_int;
         }
-        if unsafe { pthread_atfork(None, None, Some(fork_child)) } != 0 {
+        let ok = unsafe { pthread_atfork(None, None, Some(fork_child)) } == 0;
+        if !ok {
             // Only ENOMEM is possible; a fork child would then reuse the
             // parent's context ids, which the kernel refuses loudly.
             crate::diag(format_args!("eglInitialize: pthread_atfork failed; fork children inherit EGL state"));
         }
-    }
+        ok
+    };
     #[cfg(test)]
-    let _ = fork_child;
+    let registered = {
+        let _ = fork_child;
+        true
+    };
+    STATE.store(if registered { REGISTERED } else { UNREGISTERED }, Ordering::Release);
 }
 
 /// Test hook: the fork child handler, over a test's own lock.

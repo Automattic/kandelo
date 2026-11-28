@@ -190,16 +190,15 @@ impl<T> DriverLock<T> {
 }
 
 impl<T> DriverLock<T> {
-    /// Releases the lock in a fork child, whatever thread held it in the
-    /// parent, and returns the state with whether it was held: if it was,
-    /// that thread may have been midway through changing it.
+    /// Takes the lock in a fork child, whatever thread held it in the
+    /// parent; dropping the guard leaves it free.
     ///
     /// # Safety
     /// The calling thread is the only thread (a `pthread_atfork` child
     /// handler), so no guard of the lock is live.
-    pub(crate) unsafe fn reset_after_fork(&self) -> (DriverGuard<'_, T>, bool) {
-        let was_held = self.held.swap(true, Ordering::Acquire);
-        (DriverGuard { lock: self }, was_held)
+    pub(crate) unsafe fn reset_after_fork(&self) -> DriverGuard<'_, T> {
+        self.held.swap(true, Ordering::Acquire);
+        DriverGuard { lock: self }
     }
 }
 

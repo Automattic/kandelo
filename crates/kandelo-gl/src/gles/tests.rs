@@ -361,14 +361,20 @@ fn read_pixels_bad_format_invalid_operation() {
     for (format, type_) in [
         (GL_RGB, GL_UNSIGNED_BYTE),
         (GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4),
-        (GL_LUMINANCE, GL_UNSIGNED_BYTE),
+        (GL_ALPHA, GL_UNSIGNED_BYTE),
         (GL_RGB, GL_UNSIGNED_SHORT_5_6_5),
     ] {
         read(&mut g, 0, 0, 4, 4, format, type_, &mut pixels);
         assert_eq!(get_error(&mut g), GL_INVALID_OPERATION, "{format:#x} {type_:#x}");
     }
     // Not allowable for ReadPixels at all (§2.5).
-    for (format, type_) in [(GL_RGBA, 0x1406), (0x1234, GL_UNSIGNED_BYTE), (GL_DEPTH_BITS, GL_UNSIGNED_BYTE)] {
+    for (format, type_) in [
+        (GL_RGBA, 0x1406),
+        (0x1234, GL_UNSIGNED_BYTE),
+        (GL_DEPTH_BITS, GL_UNSIGNED_BYTE),
+        (GL_LUMINANCE, GL_UNSIGNED_BYTE),
+        (GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE),
+    ] {
         read(&mut g, 0, 0, 4, 4, format, type_, &mut pixels);
         assert_eq!(get_error(&mut g), GL_INVALID_ENUM, "{format:#x} {type_:#x}");
     }
@@ -600,6 +606,20 @@ fn unmodeled_valid_pname_aborts() {
 }
 
 #[test]
+fn unmodeled_pname_aborts_after_releasing_the_lock() {
+    // The shared driver's Mutex stands for the driver lock: aborting while
+    // holding it would poison it.
+    let (g, _) = Gl::current_pbuffer(4, 4);
+    let shared = Mutex::new(g);
+    let unmodeled = || get(&mut &shared, "glGetIntegerv", GL_LINE_WIDTH);
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(unmodeled));
+    assert!(r.is_err());
+    assert!(!shared.is_poisoned(), "not_implemented ran under the driver lock");
+    assert_eq!(diags(), ["kandelo-gl: glGetIntegerv 0x0b21 not implemented
+"]);
+}
+
+#[test]
 fn every_unmodeled_pname_is_a_valid_one() {
     // A pname is modeled or unmodeled, never both, and every one is a GLES
     // 2.0 token (checked against gl2.h below).
@@ -655,7 +675,7 @@ fn tokens_match_the_gles2_header() {
 }
 
 #[test]
-fn fork_child_drops_state_without_destroys() {
+fn fork_child_forgets_state_without_destroys_or_frees() {
     let lock = egl::thread::DriverLock::new(Gl::init().drv);
     let mut dev = FakeDevice::new();
     let (c, s);
@@ -672,11 +692,14 @@ fn fork_child_drops_state_without_destroys() {
     }
     assert!(egl::current().is_some());
     let calls = dev.calls();
+    let drops = egl::driver_drops_for_test();
     // Another parent thread held the lock at the fork.
     core::mem::forget(lock.lock());
     egl::fork_child_reset_for_test(&lock);
-    // The lock is free and the state forgotten, with no kgpu call: the
+    // The lock is free and the state forgotten, never dropped (freeing in a
+    // fork child can deadlock on the allocator), with no kgpu call: the
     // parent's contexts are not the child's.
+    assert_eq!(egl::driver_drops_for_test(), drops);
     let mut drv = lock.lock();
     assert_eq!(egl::current(), None);
     assert_eq!(drv.get_current_context(), NO_HANDLE);
@@ -690,8 +713,10 @@ fn fork_child_drops_state_without_destroys() {
     assert_eq!(egl::thread::get_error(), egl::EGL_BAD_CONTEXT);
     assert!(!dev.log().iter().any(|call| matches!(call, Call::ContextDestroy { context: 1 })));
     drop(drv);
-    // And a child whose lock was free drops its state the same way.
+    // And a child whose lock was free forgets its state the same way.
+    let drops = egl::driver_drops_for_test();
     egl::fork_child_reset_for_test(&lock);
+    assert_eq!(egl::driver_drops_for_test(), drops);
     assert!(!lock.lock().initialized_for_test());
 }
 
@@ -700,7 +725,9 @@ fn gl_calls_in_a_fork_child_are_noops() {
     let (mut g, _) = Gl::current_pbuffer(4, 4);
     clear(&mut g, 0x1);
     let lock = egl::thread::DriverLock::new(Driver::new());
+    let drops = egl::driver_drops_for_test();
     egl::fork_child_reset_for_test(&lock);
+    assert_eq!(egl::driver_drops_for_test(), drops);
     // The child thread's record is gone: no current context.
     let calls = g.dev.calls();
     assert_eq!(get_error(&mut g), GL_NO_ERROR);

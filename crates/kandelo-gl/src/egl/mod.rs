@@ -243,6 +243,32 @@ pub struct Driver {
     next_surface: usize,
     contexts: BTreeMap<usize, Context>,
     surfaces: BTreeMap<usize, Surface>,
+    /// Counts drops of driver states, so the fork tests can prove the
+    /// child handler frees nothing.
+    #[cfg(test)]
+    _drop_probe: DropProbe,
+}
+
+/// A test-only member whose drop is counted per thread.
+#[cfg(test)]
+struct DropProbe;
+
+#[cfg(test)]
+std::thread_local! {
+    static DRIVER_DROPS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        DRIVER_DROPS.with(|d| d.set(d.get() + 1));
+    }
+}
+
+/// How many driver states this thread has dropped.
+#[cfg(test)]
+pub(crate) fn driver_drops_for_test() -> usize {
+    DRIVER_DROPS.with(|d| d.get())
 }
 
 impl Default for Driver {
@@ -260,6 +286,8 @@ impl Driver {
             next_surface: 1,
             contexts: BTreeMap::new(),
             surfaces: BTreeMap::new(),
+            #[cfg(test)]
+            _drop_probe: DropProbe,
         }
     }
 
@@ -291,16 +319,17 @@ impl Driver {
     /// its current-context record is the only one to clear, and GL calls
     /// then find no current context.
     ///
-    /// `consistent` is false when another thread held the driver lock at
-    /// the fork: that thread may have been midway through changing this
-    /// state, so it is leaked rather than walked to free it.
-    pub(crate) fn reset_after_fork(&mut self, consistent: bool) {
-        let inherited = core::mem::replace(self, Driver::new());
-        if consistent {
-            drop(inherited);
-        } else {
-            core::mem::forget(inherited);
-        }
+    /// The inherited state is always leaked, never freed. Kandelo's
+    /// `fork` runs the atfork handlers without musl's malloc-lock handling
+    /// (`libc/musl-overlay/src/process/wasm32posix/fork.c`), so `free` in
+    /// the child can deadlock on an allocator lock another parent thread
+    /// held at the fork, as in a multithreaded fork-then-exec. Another
+    /// thread may also have held the driver lock midway through changing
+    /// this state. The leak is the parent's state at the fork, once per
+    /// fork, and an exec or exit reclaims it.
+    pub(crate) fn reset_after_fork(&mut self) {
+        // `Driver::new` allocates nothing.
+        core::mem::forget(core::mem::replace(self, Driver::new()));
         self.epoch = thread::fresh_epoch();
         thread::set_current(None);
     }

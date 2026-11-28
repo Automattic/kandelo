@@ -242,15 +242,21 @@ pub fn get_string(g: &mut impl Gpu, name: GLenum) -> Option<&'static CStr> {
 /// the value of `pname`, or `None` after recording `GL_INVALID_ENUM`.
 /// `function` names the caller in a not-implemented diagnostic.
 pub fn get(g: &mut impl Gpu, function: &str, pname: GLenum) -> Option<state::Value> {
-    with_context(g, |c, _| match c.gl.query(pname) {
-        state::Query::Value(v) => Some(v),
-        state::Query::Invalid => {
+    let query = with_context(g, |c, _| {
+        let query = c.gl.query(pname);
+        if matches!(query, state::Query::Invalid) {
             c.gl.set_error(GL_INVALID_ENUM);
-            None
         }
+        query
+    })?;
+    match query {
+        state::Query::Value(v) => Some(v),
+        state::Query::Invalid => None,
+        // Aborts only after the driver lock is released, so nothing else
+        // in the process (an atexit handler, another thread's report)
+        // spins on it.
         state::Query::NotImplemented => crate::sys::not_implemented(function, pname),
-    })
-    .flatten()
+    }
 }
 
 /// `glViewport`.
@@ -337,6 +343,10 @@ struct Clip {
     h: i32,
 }
 
+/// The errno of a wait on a context the renderer lost; the kernel has
+/// retired the context's work by then.
+const EIO: i32 = 5;
+
 /// The largest pixel buffer a read may name: its byte length must fit a
 /// kgpu buffer's `u32` length and a Rust slice.
 const MAX_READ_BYTES: u64 = if (u32::MAX as u64) < (isize::MAX as u64) { u32::MAX as u64 } else { isize::MAX as u64 };
@@ -363,10 +373,13 @@ pub unsafe fn read_pixels(
             gl.set_error(GL_INVALID_VALUE);
             return None;
         }
-        // §2.5: a format or type outside table 3.4 is not an allowable
-        // enum; an allowable pair other than RGBA/UNSIGNED_BYTE (also the
-        // implementation read pair) is unsupported.
-        let formats = [GL_ALPHA, GL_RGB, GL_RGBA, GL_LUMINANCE, GL_LUMINANCE_ALPHA];
+        // §2.5: a format or type ReadPixels cannot take is not an allowable
+        // enum. §4.3.1 admits RGBA/UNSIGNED_BYTE and the implementation
+        // read pair, whose format is ALPHA, RGB or RGBA (LUMINANCE and
+        // LUMINANCE_ALPHA are texture formats only); an allowable pair
+        // other than RGBA/UNSIGNED_BYTE (also the implementation read
+        // pair) is unsupported.
+        let formats = [GL_ALPHA, GL_RGB, GL_RGBA];
         let types = [GL_UNSIGNED_BYTE, GL_UNSIGNED_SHORT_5_6_5, GL_UNSIGNED_SHORT_4_4_4_4, GL_UNSIGNED_SHORT_5_5_5_1];
         if !formats.contains(&format) || !types.contains(&type_) {
             gl.set_error(GL_INVALID_ENUM);
@@ -427,7 +440,16 @@ pub unsafe fn read_pixels(
     .flatten();
     let Some(read) = pending else { return };
     let result = g.wait(read.kgpu, read.seqno);
-    if !apply_wait(g, "glReadPixels", result) {
+    if let Err(errno) = result {
+        // After -EIO the kernel has retired the context's work. Any other
+        // failure leaves the readback possibly in flight, so the GPU may
+        // still write the staging buffer: it is leaked, never freed.
+        if errno != -EIO
+            && let Some((staging, _)) = read.staging
+        {
+            core::mem::forget(staging);
+        }
+        apply_wait(g, "glReadPixels", result);
         return;
     }
     if let Some((staging, clip)) = read.staging {
