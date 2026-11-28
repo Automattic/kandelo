@@ -286,4 +286,28 @@ describe("ForkResumeTable", () => {
     ]);
     expect(table.slotFor({ activationId: 2, functionOrdinal: 7 })).toBe(slot);
   });
+
+  it("rolls back a rejected thunk and reuses both reserved slots on retry", () => {
+    const table = new ForkResumeTable();
+    const thunk = wasmFunction();
+    table.registerActivation(1, [{ functionOrdinal: 1, thunk }]);
+    const reusedSlot = table.slotFor({ activationId: 1, functionOrdinal: 1 });
+    table.unregisterActivation(1);
+
+    const targets = [
+      { functionOrdinal: 3, thunk },
+      { functionOrdinal: 7, thunk: () => {} },
+    ];
+    expect(() => table.registerActivation(2, targets)).toThrow(TypeError);
+    expect(table.table.get(reusedSlot)).toBeNull();
+    expect(() => table.slotFor({ activationId: 2, functionOrdinal: 3 }))
+      .toThrow("is not registered");
+    const reservedLength = table.table.length;
+
+    table.registerActivation(2, targets.map(({ functionOrdinal }) => ({ functionOrdinal, thunk })));
+    expect(table.slotFor({ activationId: 2, functionOrdinal: 3 })).toBe(reusedSlot);
+    const newSlot = table.slotFor({ activationId: 2, functionOrdinal: 7 });
+    expect(table.table.get(newSlot)).toBe(thunk);
+    expect(table.table.length).toBe(reservedLength);
+  });
 });
