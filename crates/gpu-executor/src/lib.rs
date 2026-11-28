@@ -24,10 +24,20 @@
 //!   executor never silently misreads a future flag.
 //! - Dimensions are non-negative and clear masks name only known bits.
 //! - `ReadPixels.buffer` indexes a WRITE buffer of at least `w*h*4` bytes.
+//! - Surface commands keep the context's surface table consistent, checked
+//!   in stream order against the table as earlier commands leave it: a
+//!   context starts with no surface; `SurfaceCreate` names a free nonzero
+//!   name (`EEXIST` if taken, `EINVAL` for 0), with both dimensions in
+//!   `1..=MAX_SURFACE_DIM` (`EINVAL`) and room in the table
+//!   (`MAX_SURFACES_PER_CONTEXT`, else `ENOSPC`); `SurfaceDestroy` and a
+//!   nonzero `SurfaceBind` name a live surface (`ENOENT`); `Clear` and
+//!   `ReadPixels` need a bound surface (`EINVAL`). Destroying the bound
+//!   surface leaves none bound. The table changes only when the whole
+//!   stream has run.
 //!
-//! A violation faults the submitting context: its surface is released, it
-//! answers `ContextLost` with a negative errno, and every later record for it
-//! answers `ContextLost` too. No other context's state is consulted or
+//! A violation faults the submitting context: the backend releases it and
+//! every surface it holds, it answers `ContextLost` with a negative errno,
+//! and every later record for it answers `ContextLost` too. No other context's state is consulted or
 //! changed. No guest input reaches a panic, so hostile input can neither trap
 //! the module nor reach a neighbour. Allocation failure still aborts, but the
 //! kernel's context limit bounds what the executor allocates.
@@ -44,8 +54,8 @@ use alloc::vec::Vec;
 
 use backend::Backend;
 use kgpu_stream::{
-    CLEAR_COLOR_BIT, CLEAR_DEPTH_BIT, CLEAR_STENCIL_BIT, Command, Op, RECORD_HEADER_SIZE,
-    STREAM_HEADER_SIZE,
+    CLEAR_COLOR_BIT, CLEAR_DEPTH_BIT, CLEAR_STENCIL_BIT, Command, MAX_SURFACE_DIM, Op,
+    RECORD_HEADER_SIZE, STREAM_HEADER_SIZE,
 };
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::kgpu::{
@@ -53,10 +63,10 @@ use wasm_posix_shared::kgpu::{
     SubmissionKind, SubmissionView, decode_submission,
 };
 
-/// Slice 1 gives every context a fixed 4x4 surface; sized surfaces arrive
-/// with the EGL surface work.
-pub const SURFACE_WIDTH: u32 = 4;
-pub const SURFACE_HEIGHT: u32 = 4;
+/// The most surfaces one context may hold at once. A guest driver needs one
+/// per EGL surface it has made current with the context; 64 is far above
+/// that and bounds what one context can make the backend allocate.
+pub const MAX_SURFACES_PER_CONTEXT: usize = 64;
 
 const fn neg(errno: Errno) -> i32 {
     -(errno as i32)
@@ -67,13 +77,83 @@ const EIO: i32 = neg(Errno::EIO);
 const ENOENT: i32 = neg(Errno::ENOENT);
 const EEXIST: i32 = neg(Errno::EEXIST);
 const ENOMEM: i32 = neg(Errno::ENOMEM);
+const ENOSPC: i32 = neg(Errno::ENOSPC);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A context's surface names and which one is bound, in a fixed array so
+/// validating a stream against a scratch copy never allocates.
+#[derive(Clone, Copy, Debug)]
+struct Surfaces {
+    names: [u32; MAX_SURFACES_PER_CONTEXT],
+    len: usize,
+    /// 0 when no surface is bound.
+    bound: u32,
+}
+
+impl Surfaces {
+    const EMPTY: Surfaces = Surfaces {
+        names: [0; MAX_SURFACES_PER_CONTEXT],
+        len: 0,
+        bound: 0,
+    };
+
+    fn position(&self, surface: u32) -> Option<usize> {
+        self.names[..self.len].iter().position(|&n| n == surface)
+    }
+
+    /// Check one surface-related command against the table and apply its
+    /// effect on the table.
+    fn apply(&mut self, command: &Command) -> Result<(), i32> {
+        match *command {
+            Command::SurfaceCreate {
+                surface,
+                width,
+                height,
+            } => {
+                let dim = 1..=MAX_SURFACE_DIM;
+                if surface == 0 || !dim.contains(&width) || !dim.contains(&height) {
+                    return Err(EINVAL);
+                }
+                if self.position(surface).is_some() {
+                    return Err(EEXIST);
+                }
+                if self.len == MAX_SURFACES_PER_CONTEXT {
+                    return Err(ENOSPC);
+                }
+                self.names[self.len] = surface;
+                self.len += 1;
+            }
+            Command::SurfaceDestroy { surface } => {
+                let at = self.position(surface).filter(|_| surface != 0);
+                let at = at.ok_or(ENOENT)?;
+                self.len -= 1;
+                self.names[at] = self.names[self.len];
+                if self.bound == surface {
+                    self.bound = 0;
+                }
+            }
+            Command::SurfaceBind { surface } => {
+                if surface != 0 && self.position(surface).is_none() {
+                    return Err(ENOENT);
+                }
+                self.bound = surface;
+            }
+            Command::Clear { .. } | Command::ReadPixels { .. } => {
+                if self.bound == 0 {
+                    return Err(EINVAL);
+                }
+            }
+            Command::Viewport { .. } | Command::ClearColor { .. } => {}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 enum State {
-    /// The backend holds a surface for the context.
-    Live,
-    /// Faulted, or creation failed: no surface, and every record fails
-    /// until the kernel's destroy removes the entry.
+    /// The backend holds the context and the surfaces in the table.
+    Live(Surfaces),
+    /// Faulted, or creation failed: the backend holds nothing for it, and
+    /// every record fails until the kernel's destroy removes the entry.
     Lost,
 }
 
@@ -128,6 +208,7 @@ impl<B: Backend> Executor<B> {
     /// Ruling R4: a created context answers `ContextReady`; a failed one
     /// answers `ContextLost` with the backend's errno and stays as a lost
     /// entry, matching the kernel's view of it until its destroy arrives.
+    /// A new context holds no surface; its streams create them.
     fn create(&mut self, h: SubmissionHeader) -> Completion {
         if self.contexts.contains_key(&h.context) {
             // The kernel never reuses an id, so a second create means the
@@ -137,12 +218,12 @@ impl<B: Backend> Executor<B> {
         let result = if self.backend.is_lost() {
             Err(EIO)
         } else {
-            self.backend
-                .create_surface(h.context, SURFACE_WIDTH, SURFACE_HEIGHT)
+            self.backend.create_context(h.context)
         };
         match result {
             Ok(()) => {
-                self.contexts.insert(h.context, State::Live);
+                self.contexts
+                    .insert(h.context, State::Live(Surfaces::EMPTY));
                 completion(CompletionKind::ContextReady, h, 0)
             }
             Err(status) => {
@@ -156,8 +237,8 @@ impl<B: Backend> Executor<B> {
     /// before it has already been answered.
     fn destroy(&mut self, h: SubmissionHeader) -> Completion {
         match self.contexts.remove(&h.context) {
-            Some(State::Live) => {
-                self.backend.destroy_surface(h.context);
+            Some(State::Live(_)) => {
+                self.backend.destroy_context(h.context);
                 completion(CompletionKind::Retired, h, 0)
             }
             Some(State::Lost) => completion(CompletionKind::Retired, h, 0),
@@ -167,16 +248,16 @@ impl<B: Backend> Executor<B> {
 
     fn submit(&mut self, view: &SubmissionView<'_>, stream: &[u8]) -> Completion {
         let h = view.header;
-        match self.contexts.get(&h.context) {
+        let surfaces = match self.contexts.get(&h.context) {
             None => return completion(CompletionKind::ContextLost, h, ENOENT),
             Some(State::Lost) => return completion(CompletionKind::ContextLost, h, EIO),
-            Some(State::Live) => {}
-        }
+            Some(State::Live(surfaces)) => *surfaces,
+        };
         if self.backend.is_lost() {
             return self.fault(h.context, h.seqno, EIO);
         }
-        let commands = match plan(view, stream) {
-            Ok(commands) => commands,
+        let (commands, after) = match plan(view, stream, surfaces) {
+            Ok(planned) => planned,
             Err(status) => return self.fault(h.context, h.seqno, status),
         };
         if let Err(status) = self.execute(view, &commands) {
@@ -185,6 +266,7 @@ impl<B: Backend> Executor<B> {
         if self.backend.is_lost() {
             return self.fault(h.context, h.seqno, EIO);
         }
+        self.contexts.insert(h.context, State::Live(after));
         completion(CompletionKind::Retired, h, 0)
     }
 
@@ -204,6 +286,18 @@ impl<B: Backend> Executor<B> {
                         .read_pixels(context, x, y, w, h, &dst)
                         .map_err(errno)?;
                 }
+                Command::SurfaceCreate {
+                    surface,
+                    width,
+                    height,
+                } => self
+                    .backend
+                    .create_surface(context, surface, width, height)
+                    .map_err(errno)?,
+                Command::SurfaceDestroy { surface } => {
+                    self.backend.destroy_surface(context, surface)
+                }
+                Command::SurfaceBind { surface } => self.backend.bind_surface(context, surface),
             }
         }
         Ok(())
@@ -212,8 +306,8 @@ impl<B: Backend> Executor<B> {
     /// Fault `context` (if it exists) and answer `ContextLost`.
     fn fault(&mut self, context: u32, seqno: u64, status: i32) -> Completion {
         if let Some(state) = self.contexts.get_mut(&context) {
-            if *state == State::Live {
-                self.backend.destroy_surface(context);
+            if let State::Live(_) = state {
+                self.backend.destroy_context(context);
             }
             *state = State::Lost;
         }
@@ -272,11 +366,20 @@ fn command_op(command: &Command) -> Op {
         Command::ClearColor { .. } => Op::ClearColor,
         Command::Clear { .. } => Op::Clear,
         Command::ReadPixels { .. } => Op::ReadPixels,
+        Command::SurfaceCreate { .. } => Op::SurfaceCreate,
+        Command::SurfaceDestroy { .. } => Op::SurfaceDestroy,
+        Command::SurfaceBind { .. } => Op::SurfaceBind,
     }
 }
 
 /// Decode and validate a whole stream into commands, or refuse it.
-fn plan(view: &SubmissionView<'_>, stream: &[u8]) -> Result<Vec<Command>, i32> {
+/// `surfaces` is the context's table before the stream; the table the
+/// stream leaves is returned for the caller to keep once it has run.
+fn plan(
+    view: &SubmissionView<'_>,
+    stream: &[u8],
+    mut surfaces: Surfaces,
+) -> Result<(Vec<Command>, Surfaces), i32> {
     if stream.len() > KGPU_MAX_STREAM as usize {
         return Err(EPROTO);
     }
@@ -306,11 +409,12 @@ fn plan(view: &SubmissionView<'_>, stream: &[u8]) -> Result<Vec<Command>, i32> {
             return Err(EPROTO);
         }
         check(view, &command)?;
+        surfaces.apply(&command)?;
         commands.try_reserve(1).map_err(|_| ENOMEM)?;
         commands.push(command);
         at += RECORD_HEADER_SIZE + command_op(&command).payload_size() as usize;
     }
-    Ok(commands)
+    Ok((commands, surfaces))
 }
 
 fn check(view: &SubmissionView<'_>, command: &Command) -> Result<(), i32> {
@@ -318,7 +422,10 @@ fn check(view: &SubmissionView<'_>, command: &Command) -> Result<(), i32> {
         Command::Viewport { w, h, .. } => {
             pixel_bytes(w, h)?;
         }
-        Command::ClearColor { .. } => {}
+        Command::ClearColor { .. }
+        | Command::SurfaceCreate { .. }
+        | Command::SurfaceDestroy { .. }
+        | Command::SurfaceBind { .. } => {}
         Command::Clear { mask } => {
             if mask & !(CLEAR_COLOR_BIT | CLEAR_DEPTH_BIT | CLEAR_STENCIL_BIT) != 0 {
                 return Err(EINVAL);

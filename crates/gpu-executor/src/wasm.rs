@@ -38,10 +38,16 @@ const _: () = assert!(core::mem::size_of::<Extent>() == EXTENT_SIZE);
 
 #[link(wasm_import_module = "kgpu_backend")]
 unsafe extern "C" {
+    #[link_name = "create_context"]
+    fn import_create_context(context: u32) -> i32;
+    #[link_name = "destroy_context"]
+    fn import_destroy_context(context: u32);
     #[link_name = "create_surface"]
-    fn import_create_surface(context: u32, width: u32, height: u32) -> i32;
+    fn import_create_surface(context: u32, surface: u32, width: u32, height: u32) -> i32;
     #[link_name = "destroy_surface"]
-    fn import_destroy_surface(context: u32);
+    fn import_destroy_surface(context: u32, surface: u32);
+    #[link_name = "bind_surface"]
+    fn import_bind_surface(context: u32, surface: u32);
     #[link_name = "viewport"]
     fn import_viewport(context: u32, x: i32, y: i32, w: i32, h: i32);
     #[link_name = "clear_color"]
@@ -67,14 +73,32 @@ unsafe extern "C" {
 pub struct ImportBackend;
 
 impl Backend for ImportBackend {
-    fn create_surface(&mut self, context: u32, width: u32, height: u32) -> Result<(), i32> {
-        match unsafe { import_create_surface(context, width, height) } {
+    fn create_context(&mut self, context: u32) -> Result<(), i32> {
+        match unsafe { import_create_context(context) } {
             0 => Ok(()),
             status => Err(status),
         }
     }
-    fn destroy_surface(&mut self, context: u32) {
-        unsafe { import_destroy_surface(context) }
+    fn destroy_context(&mut self, context: u32) {
+        unsafe { import_destroy_context(context) }
+    }
+    fn create_surface(
+        &mut self,
+        context: u32,
+        surface: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), i32> {
+        match unsafe { import_create_surface(context, surface, width, height) } {
+            0 => Ok(()),
+            status => Err(status),
+        }
+    }
+    fn destroy_surface(&mut self, context: u32, surface: u32) {
+        unsafe { import_destroy_surface(context, surface) }
+    }
+    fn bind_surface(&mut self, context: u32, surface: u32) {
+        unsafe { import_bind_surface(context, surface) }
     }
     fn viewport(&mut self, context: u32, x: i32, y: i32, w: i32, h: i32) {
         unsafe { import_viewport(context, x, y, w, h) }

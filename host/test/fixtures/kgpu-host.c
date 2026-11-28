@@ -51,10 +51,17 @@ static void finish(uint32_t context) {
   memcpy(stream, &h, sizeof h);
 }
 
-/* Viewport, clear color, clear and (with `readback`) a 4x4 RGBA readback
- * into buffer 0. */
-static void clear_stream(uint32_t context, int readback) {
+/* With `surface`, create and bind 4x4 surface 1 (a context's first
+ * stream: it starts with no surface); then viewport, clear color, clear and
+ * (with `readback`) a 4x4 RGBA readback into buffer 0. */
+static void clear_stream(uint32_t context, int readback, int surface) {
   begin();
+  if (surface) {
+    struct kgpu_surface_create s = {1, 4, 4};
+    record(KGPU_OP_SURFACE_CREATE, &s, sizeof s);
+    struct kgpu_surface_bind b = {1};
+    record(KGPU_OP_SURFACE_BIND, &b, sizeof b);
+  }
   struct kgpu_viewport v = {0, 0, 4, 4};
   record(KGPU_OP_VIEWPORT, &v, sizeof v);
   struct kgpu_clear_color c = {0.2f, 0.4f, 0.6f, 1.0f};
@@ -75,17 +82,22 @@ static int create(uint32_t *context) {
   return r;
 }
 
-static int submit(uint32_t context, uint32_t buffer_count, uint64_t *seqno) {
+static int submit_from(const uint8_t *bytes, size_t len, uint32_t context, uint32_t buffer_count,
+                       uint64_t *seqno) {
   struct kgpu_submit s = {
       .context = context,
-      .stream_addr = (uintptr_t)stream,
-      .stream_len = (uint32_t)stream_len,
+      .stream_addr = (uintptr_t)bytes,
+      .stream_len = (uint32_t)len,
       .buffer_count = buffer_count,
       .buffers_addr = (uintptr_t)buffers,
   };
   int r = __kandelo_kgpu_v1(&s, sizeof s, KGPU_OP_SUBMIT);
   *seqno = s.seqno;
   return r;
+}
+
+static int submit(uint32_t context, uint32_t buffer_count, uint64_t *seqno) {
+  return submit_from(stream, stream_len, context, buffer_count, seqno);
 }
 
 static int wait_for(uint32_t context, uint64_t seqno) {
@@ -111,7 +123,7 @@ int main(int argc, char **argv) {
   if (strcmp(mode, "clear") == 0 || strcmp(mode, "wait") == 0) {
     memset(pixels, 0xee, sizeof pixels);
     readback_buffer();
-    clear_stream(context, 1);
+    clear_stream(context, 1, 1);
     r = submit(context, 1, &seqno);
     printf("submit %d %llu\n", r, (unsigned long long)seqno);
     if (r != 0) return 1;
@@ -126,7 +138,7 @@ int main(int argc, char **argv) {
 
   if (strcmp(mode, "exit") == 0) {
     readback_buffer();
-    clear_stream(context, 1);
+    clear_stream(context, 1, 1);
     r = submit(context, 1, &seqno);
     printf("submit %d %llu\n", r, (unsigned long long)seqno);
     return r == 0 ? 0 : 1;
@@ -136,13 +148,13 @@ int main(int argc, char **argv) {
     readback_buffer();
     /* Valid header and records, but the stream claims another context:
      * the executor must refuse it and fault only this context. */
-    clear_stream(context + 1000, 1);
+    clear_stream(context + 1000, 1, 1);
     r = submit(context, 1, &seqno);
     printf("submit %d %llu\n", r, (unsigned long long)seqno);
     if (r != 0) return 1;
     printf("wait %d\n", wait_for(context, seqno));
     /* The lost context refuses new work. */
-    clear_stream(context, 1);
+    clear_stream(context, 1, 1);
     printf("resubmit %d\n", submit(context, 1, &seqno));
     return 0;
   }
@@ -153,7 +165,7 @@ int main(int argc, char **argv) {
     printf("create-busy %d %u\n", r, busy);
     if (r != 0) return 1;
     readback_buffer();
-    clear_stream(busy, 1);
+    clear_stream(busy, 1, 1);
     r = submit(busy, 1, &seqno);
     printf("submit %d %llu\n", r, (unsigned long long)seqno);
     if (r != 0) return 1;
@@ -161,7 +173,7 @@ int main(int argc, char **argv) {
     char go;
     if (read(0, &go, 1) != 1) return 1;
     /* The context that was idle when the renderer was lost. */
-    clear_stream(context, 1);
+    clear_stream(context, 1, 1);
     printf("idle-submit %d\n", submit(context, 1, &seqno));
     uint32_t later = 0;
     printf("create-after %d\n", create(&later));
@@ -175,7 +187,21 @@ int main(int argc, char **argv) {
     for (int i = 0; i < KGPU_MAX_BUFFERS; i++)
       buffers[i] = (struct kgpu_buffer){
           .addr = (uintptr_t)pixels, .len = sizeof pixels, .access = KGPU_ACCESS_READ};
-    clear_stream(context, 0);
+    /* The first submission gives the context its surface. It has a buffer
+     * of its own, since the GPU worker reads a stream's bytes only when it
+     * handles the record, and it is not waited for: the whole batch must
+     * queue while the GPU worker is still starting. */
+    static uint8_t setup[sizeof stream] __attribute__((aligned(64)));
+    clear_stream(context, 0, 1);
+    size_t setup_len = stream_len;
+    memcpy(setup, stream, setup_len);
+    uint64_t setup_seqno = 0;
+    r = submit_from(setup, setup_len, context, 0, &setup_seqno);
+    if (r != 0) {
+      printf("many-setup %d\n", r);
+      return 1;
+    }
+    clear_stream(context, 0, 0);
     uint64_t first = 0, last = 0;
     for (long i = 0; i < count; i++) {
       r = submit(context, KGPU_MAX_BUFFERS, &seqno);
@@ -189,6 +215,11 @@ int main(int argc, char **argv) {
         return 1;
       }
       last = seqno;
+    }
+    r = wait_for(context, setup_seqno);
+    if (r != 0) {
+      printf("many-setup-wait %d\n", r);
+      return 1;
     }
     long waited = 0;
     for (uint64_t s = first; s <= last; s++) {

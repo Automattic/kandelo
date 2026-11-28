@@ -15,6 +15,7 @@
 // The executor runs on the page's thread rather than in a GPU worker: the
 // crossing and the WebGL calls cost the same on either thread, and the bench
 // must not include ring or doorbell transport, which is not being measured.
+// A setup submission first creates and binds the context's 4x4 surface.
 // Each repetition hands the executor the same record and stream, already in
 // executor memory, so only `ge_handle` is timed; a read of the surface after
 // each repetition (outside the timed window) drains queued GPU work and
@@ -73,11 +74,25 @@ test('kgpu executor crossing cost per backend call @slow', async ({ page }, info
             s.setUint32(at, 0x4000, true);
             at += 4;
         }
-        s.setUint32(0, 0x5547_4b4b, true);
-        s.setUint16(4, 1, true);
-        s.setUint32(8, CONTEXT, true);
-        s.setUint32(12, at - 16, true);
+        // Stream version 2 (crates/kgpu-stream KGPU_STREAM_VERSION).
+        const header = (view: DataView, end: number) => {
+            view.setUint32(0, 0x5547_4b4b, true);
+            view.setUint16(4, 2, true);
+            view.setUint32(8, CONTEXT, true);
+            view.setUint32(12, end - 16, true);
+        };
+        header(s, at);
         const calls = 1 + 2 * PAIRS;
+
+        // Setup: SurfaceCreate(1, 4, 4) and SurfaceBind(1), since a new
+        // context holds no surface.
+        const setup = new Uint8Array(16 + 8 + 12 + 8 + 4);
+        const sv = new DataView(setup.buffer);
+        sv.setUint16(16, 5, true); sv.setUint32(20, 12, true);
+        [1, 4, 4].forEach((v, i) => sv.setUint32(24 + i * 4, v, true));
+        sv.setUint16(36, 7, true); sv.setUint32(40, 4, true);
+        sv.setUint32(44, 1, true);
+        header(sv, setup.byteLength);
 
         const create = new Uint8Array(abi.KGPU_SUBMISSION_HEADER_SIZE);
         const c = new DataView(create.buffer);
@@ -91,6 +106,10 @@ test('kgpu executor crossing cost per backend call @slow', async ({ page }, info
         u.setBigUint64(F.submission.seqno, 2n, true);
         u.setUint32(F.submission.streamExtentCount, 1, true);
         u.setUint32(abi.KGPU_SUBMISSION_HEADER_SIZE + F.extent.len, stream.byteLength, true);
+        const setupSubmit = submit.slice();
+        const su = new DataView(setupSubmit.buffer);
+        su.setBigUint64(F.submission.seqno, 3n, true);
+        su.setUint32(abi.KGPU_SUBMISSION_HEADER_SIZE + F.extent.len, setup.byteLength, true);
 
         const expectedPixels = Array.from({ length: 16 }, () => '51,102,153,255').join();
         // Instantiates the executor over its own renderer and returns one
@@ -104,8 +123,12 @@ test('kgpu executor crossing cost per backend call @slow', async ({ page }, info
             const { instance } = await WebAssembly.instantiate(bytes, {
                 env: { memory },
                 kgpu_backend: {
-                    create_surface: (ctx: number, w: number, h: number) => backend.createSurface(ctx >>> 0, w >>> 0, h >>> 0),
-                    destroy_surface: (ctx: number) => backend.destroySurface(ctx >>> 0),
+                    create_context: (ctx: number) => backend.createContext(ctx >>> 0),
+                    destroy_context: (ctx: number) => backend.destroyContext(ctx >>> 0),
+                    create_surface: (ctx: number, sf: number, w: number, h: number) =>
+                        backend.createSurface(ctx >>> 0, sf >>> 0, w >>> 0, h >>> 0),
+                    destroy_surface: (ctx: number, sf: number) => backend.destroySurface(ctx >>> 0, sf >>> 0),
+                    bind_surface: (ctx: number, sf: number) => backend.bindSurface(ctx >>> 0, sf >>> 0),
                     viewport: (ctx: number, x: number, y: number, w: number, h: number) => backend.viewport(ctx >>> 0, x, y, w, h),
                     clear_color: (ctx: number, r: number, g: number, b: number, a: number) => backend.clearColor(ctx >>> 0, r, g, b, a),
                     clear: (ctx: number, mask: number) => backend.clear(ctx >>> 0, mask >>> 0),
@@ -123,14 +146,16 @@ test('kgpu executor crossing cost per backend call @slow', async ({ page }, info
                 return ptr;
             };
             const createPtr = place(create), submitPtr = place(submit), streamPtr = place(stream);
+            const setupSubmitPtr = place(setupSubmit), setupPtr = place(setup);
             const outPtr = e.ge_alloc(abi.KGPU_COMPLETION_SIZE);
-            const handle = (ptr: number, len: number, streamLen: number, expected: number) => {
-                if (e.ge_handle(ptr, len, streamPtr, streamLen, outPtr) !== abi.KGPU_COMPLETION_SIZE) throw new Error('ge_handle refused');
+            const handle = (ptr: number, len: number, streamLen: number, expected: number, from = streamPtr) => {
+                if (e.ge_handle(ptr, len, from, streamLen, outPtr) !== abi.KGPU_COMPLETION_SIZE) throw new Error('ge_handle refused');
                 const done = new DataView(memory.buffer, outPtr, abi.KGPU_COMPLETION_SIZE);
                 const kind = done.getUint32(F.completion.kind, true), status = done.getInt32(F.completion.status, true);
                 if (kind !== expected || status !== 0) throw new Error(`completion kind ${kind} status ${status}`);
             };
             handle(createPtr, create.byteLength, 0, abi.KGPU_COMPLETION_CONTEXT_READY);
+            handle(setupSubmitPtr, setupSubmit.byteLength, setup.byteLength, abi.KGPU_COMPLETION_RETIRED, setupPtr);
             const pixels = new Uint8Array(4 * 4 * 4);
             return () => {
                 const start = performance.now();

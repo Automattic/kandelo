@@ -17,11 +17,18 @@
 //!
 //! `record_bytes` counts every record byte after the stream header, so a
 //! reader can bound its single copy of the stream before interpreting it.
+//!
+//! Version 2 adds named, sized surfaces: a context starts with none, and
+//! `SurfaceCreate`, `SurfaceBind` and `SurfaceDestroy` manage them by a
+//! nonzero name the guest driver chooses within its context. Name 0 is
+//! never a surface; binding 0 leaves the context with no draw surface.
+//! Version 1 streams are refused, since they assume the fixed 4x4 surface
+//! version 1 gave every context.
 //! Decoding treats the input as hostile: all arithmetic is checked and every
 //! malformed input yields a `StreamError`, never a panic.
 #![cfg_attr(not(test), no_std)]
 
-pub const KGPU_STREAM_VERSION: u16 = 1;
+pub const KGPU_STREAM_VERSION: u16 = 2;
 /// "KKGU" read as little-endian bytes.
 pub const KGPU_STREAM_MAGIC: u32 = 0x5547_4B4B;
 pub const STREAM_HEADER_SIZE: usize = 16;
@@ -36,6 +43,14 @@ pub const VIEWPORT_PAYLOAD_SIZE: u32 = 16;
 pub const CLEAR_COLOR_PAYLOAD_SIZE: u32 = 16;
 pub const CLEAR_PAYLOAD_SIZE: u32 = 4;
 pub const READ_PIXELS_PAYLOAD_SIZE: u32 = 20;
+pub const SURFACE_CREATE_PAYLOAD_SIZE: u32 = 12;
+pub const SURFACE_DESTROY_PAYLOAD_SIZE: u32 = 4;
+pub const SURFACE_BIND_PAYLOAD_SIZE: u32 = 4;
+
+/// The largest surface width or height a stream may create. It matches the
+/// `GL_MAX_VIEWPORT_DIMS` the guest driver reports, and every WebGL 2
+/// implementation supports renderbuffers this large.
+pub const MAX_SURFACE_DIM: u32 = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
@@ -45,6 +60,11 @@ pub enum Op {
     Clear = 3,
     /// RGBA8 into entry `buffer` of the submission's buffer table.
     ReadPixels = 4,
+    /// Create surface `surface` of `width`x`height` RGBA8 in the context.
+    SurfaceCreate = 5,
+    SurfaceDestroy = 6,
+    /// Make `surface` the context's draw and read surface; 0 = none.
+    SurfaceBind = 7,
 }
 
 impl Op {
@@ -54,6 +74,9 @@ impl Op {
             2 => Some(Op::ClearColor),
             3 => Some(Op::Clear),
             4 => Some(Op::ReadPixels),
+            5 => Some(Op::SurfaceCreate),
+            6 => Some(Op::SurfaceDestroy),
+            7 => Some(Op::SurfaceBind),
             _ => None,
         }
     }
@@ -64,6 +87,9 @@ impl Op {
             Op::ClearColor => CLEAR_COLOR_PAYLOAD_SIZE,
             Op::Clear => CLEAR_PAYLOAD_SIZE,
             Op::ReadPixels => READ_PIXELS_PAYLOAD_SIZE,
+            Op::SurfaceCreate => SURFACE_CREATE_PAYLOAD_SIZE,
+            Op::SurfaceDestroy => SURFACE_DESTROY_PAYLOAD_SIZE,
+            Op::SurfaceBind => SURFACE_BIND_PAYLOAD_SIZE,
         }
     }
 }
@@ -74,6 +100,9 @@ pub enum Command {
     ClearColor { r: f32, g: f32, b: f32, a: f32 },
     Clear { mask: u32 },
     ReadPixels { x: i32, y: i32, w: i32, h: i32, buffer: u32 },
+    SurfaceCreate { surface: u32, width: u32, height: u32 },
+    SurfaceDestroy { surface: u32 },
+    SurfaceBind { surface: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +192,27 @@ impl<'a> Encoder<'a> {
         b[12..16].copy_from_slice(&h.to_le_bytes());
         b[16..20].copy_from_slice(&buffer.to_le_bytes());
         self.record(Op::ReadPixels, &b)
+    }
+
+    pub fn surface_create(
+        &mut self,
+        surface: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), StreamError> {
+        let mut b = [0u8; 12];
+        b[0..4].copy_from_slice(&surface.to_le_bytes());
+        b[4..8].copy_from_slice(&width.to_le_bytes());
+        b[8..12].copy_from_slice(&height.to_le_bytes());
+        self.record(Op::SurfaceCreate, &b)
+    }
+
+    pub fn surface_destroy(&mut self, surface: u32) -> Result<(), StreamError> {
+        self.record(Op::SurfaceDestroy, &surface.to_le_bytes())
+    }
+
+    pub fn surface_bind(&mut self, surface: u32) -> Result<(), StreamError> {
+        self.record(Op::SurfaceBind, &surface.to_le_bytes())
     }
 
     /// Writes the stream header and returns the total stream length.
@@ -283,6 +333,13 @@ impl<'a> RecordIter<'a> {
                 h: i32_at(p, 12),
                 buffer: u32_at(p, 16),
             },
+            Op::SurfaceCreate => Command::SurfaceCreate {
+                surface: u32_at(p, 0),
+                width: u32_at(p, 4),
+                height: u32_at(p, 8),
+            },
+            Op::SurfaceDestroy => Command::SurfaceDestroy { surface: u32_at(p, 0) },
+            Op::SurfaceBind => Command::SurfaceBind { surface: u32_at(p, 0) },
         };
         self.rest = &b[total..];
         Ok(cmd)
@@ -331,7 +388,7 @@ mod tests {
         assert_eq!(decode(&m).err(), Some(StreamError::BadMagic));
 
         let mut v = good.clone();
-        v[4] = 2;
+        v[4] = KGPU_STREAM_VERSION as u8 + 1;
         assert_eq!(decode(&v).err(), Some(StreamError::BadVersion));
 
         assert_eq!(decode(&good[..8]).err(), Some(StreamError::Truncated));
@@ -380,6 +437,40 @@ mod tests {
         m[20..24].copy_from_slice(&u32::MAX.wrapping_sub(3).to_le_bytes());
         let r: Vec<_> = decode(&m).unwrap().records.collect();
         assert_eq!(r, vec![Err(StreamError::Truncated)]);
+    }
+
+    #[test]
+    fn surface_ops_round_trip() {
+        let mut buf = [0u8; 256];
+        let mut e = Encoder::new(&mut buf, 3);
+        e.surface_create(5, 16, 8).unwrap();
+        e.surface_bind(5).unwrap();
+        e.surface_bind(0).unwrap();
+        e.surface_destroy(5).unwrap();
+        let n = e.finish().unwrap();
+        let d = decode(&buf[..n]).unwrap();
+        assert_eq!(d.context, 3);
+        let cmds: Vec<_> = d.records.collect::<Result<_, _>>().unwrap();
+        assert_eq!(
+            cmds,
+            vec![
+                Command::SurfaceCreate { surface: 5, width: 16, height: 8 },
+                Command::SurfaceBind { surface: 5 },
+                Command::SurfaceBind { surface: 0 },
+                Command::SurfaceDestroy { surface: 5 },
+            ]
+        );
+        // Each op's payload is exactly its declared size.
+        assert_eq!(n, STREAM_HEADER_SIZE + 4 * RECORD_HEADER_SIZE + 12 + 4 + 4 + 4);
+    }
+
+    #[test]
+    fn rejects_version_1_stream() {
+        let mut buf = [0u8; 256];
+        let n = sample(&mut buf);
+        let mut v1 = buf[..n].to_vec();
+        v1[4..6].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(decode(&v1).err(), Some(StreamError::BadVersion));
     }
 
     #[test]

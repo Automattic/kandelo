@@ -6075,6 +6075,10 @@ fn render_kgpu_stream_header() -> String {
         ("KGPU_OP_CLEAR_COLOR", Op::ClearColor as u32),
         ("KGPU_OP_CLEAR", Op::Clear as u32),
         ("KGPU_OP_READ_PIXELS", Op::ReadPixels as u32),
+        ("KGPU_OP_SURFACE_CREATE", Op::SurfaceCreate as u32),
+        ("KGPU_OP_SURFACE_DESTROY", Op::SurfaceDestroy as u32),
+        ("KGPU_OP_SURFACE_BIND", Op::SurfaceBind as u32),
+        ("KGPU_MAX_SURFACE_DIM", MAX_SURFACE_DIM),
     ] {
         out.push_str(&format!("#define {name} ({value}u)\n"));
     }
@@ -6109,6 +6113,13 @@ fn render_kgpu_stream_header() -> String {
          \tint32_t x, y, w, h;\n\
          \tuint32_t buffer;\n\
          };\n\
+         /* A nonzero name unique in the context; 1..KGPU_MAX_SURFACE_DIM each way. */\n\
+         struct __attribute__((packed)) kgpu_surface_create {\n\
+         \tuint32_t surface, width, height;\n\
+         };\n\
+         struct __attribute__((packed)) kgpu_surface_destroy { uint32_t surface; };\n\
+         /* Make `surface` the draw and read surface; 0 = none. */\n\
+         struct __attribute__((packed)) kgpu_surface_bind { uint32_t surface; };\n\
          \n\
          #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L\n",
     );
@@ -6119,6 +6130,9 @@ fn render_kgpu_stream_header() -> String {
         ("kgpu_clear_color", CLEAR_COLOR_PAYLOAD_SIZE),
         ("kgpu_clear", CLEAR_PAYLOAD_SIZE),
         ("kgpu_read_pixels", READ_PIXELS_PAYLOAD_SIZE),
+        ("kgpu_surface_create", SURFACE_CREATE_PAYLOAD_SIZE),
+        ("kgpu_surface_destroy", SURFACE_DESTROY_PAYLOAD_SIZE),
+        ("kgpu_surface_bind", SURFACE_BIND_PAYLOAD_SIZE),
     ] {
         out.push_str(&format!(
             "_Static_assert(sizeof(struct {ty}) == {size}, \"{ty} ABI size\");\n"

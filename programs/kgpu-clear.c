@@ -1,7 +1,7 @@
 /*
- * kgpu-clear: the smallest complete kgpu client. It clears a 4x4 target to
- * (0.2, 0.4, 0.6, 1.0), reads it back and prints each pixel as
- * `pixel <i> <r> <g> <b> <a>`.
+ * kgpu-clear: the smallest complete kgpu client. It creates and binds a 4x4
+ * surface, clears it to (0.2, 0.4, 0.6, 1.0), reads it back and prints
+ * each pixel as `pixel <i> <r> <g> <b> <a>`.
  *
  * WHY it exists: it proves the whole kgpu path end to end in a real host --
  * the `kandelo.kgpu.v1` program extension, the kernel's kgpu device (pins,
@@ -63,9 +63,15 @@ static void record(uint16_t op, const void *payload, uint32_t len) {
   stream_len += sizeof h + len;
 }
 
-/* Viewport, clear color, clear and a readback into buffer 0. */
+/* Surface 1, then viewport, clear color, clear and a readback into
+ * buffer 0. A new context has no surface, so the stream creates one and
+ * binds it before drawing. */
 static void encode(uint32_t context) {
   stream_len = sizeof(struct kgpu_stream_header);
+  struct kgpu_surface_create surface = {1, WIDTH, HEIGHT};
+  record(KGPU_OP_SURFACE_CREATE, &surface, sizeof surface);
+  struct kgpu_surface_bind bind = {1};
+  record(KGPU_OP_SURFACE_BIND, &bind, sizeof bind);
   struct kgpu_viewport viewport = {0, 0, WIDTH, HEIGHT};
   record(KGPU_OP_VIEWPORT, &viewport, sizeof viewport);
   struct kgpu_clear_color color = {0.2f, 0.4f, 0.6f, 1.0f};

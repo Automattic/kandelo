@@ -7,12 +7,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define KGPU_STREAM_VERSION (0x1u)
+#define KGPU_STREAM_VERSION (0x2u)
 #define KGPU_STREAM_MAGIC (0x55474b4bu)
 #define KGPU_OP_VIEWPORT (1u)
 #define KGPU_OP_CLEAR_COLOR (2u)
 #define KGPU_OP_CLEAR (3u)
 #define KGPU_OP_READ_PIXELS (4u)
+#define KGPU_OP_SURFACE_CREATE (5u)
+#define KGPU_OP_SURFACE_DESTROY (6u)
+#define KGPU_OP_SURFACE_BIND (7u)
+#define KGPU_MAX_SURFACE_DIM (4096u)
 #define KGPU_CLEAR_COLOR_BIT (0x4000u)
 #define KGPU_CLEAR_DEPTH_BIT (0x100u)
 #define KGPU_CLEAR_STENCIL_BIT (0x400u)
@@ -39,6 +43,13 @@ struct __attribute__((packed)) kgpu_read_pixels {
 	int32_t x, y, w, h;
 	uint32_t buffer;
 };
+/* A nonzero name unique in the context; 1..KGPU_MAX_SURFACE_DIM each way. */
+struct __attribute__((packed)) kgpu_surface_create {
+	uint32_t surface, width, height;
+};
+struct __attribute__((packed)) kgpu_surface_destroy { uint32_t surface; };
+/* Make `surface` the draw and read surface; 0 = none. */
+struct __attribute__((packed)) kgpu_surface_bind { uint32_t surface; };
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(struct kgpu_stream_header) == 16, "kgpu_stream_header ABI size");
@@ -47,6 +58,9 @@ _Static_assert(sizeof(struct kgpu_viewport) == 16, "kgpu_viewport ABI size");
 _Static_assert(sizeof(struct kgpu_clear_color) == 16, "kgpu_clear_color ABI size");
 _Static_assert(sizeof(struct kgpu_clear) == 4, "kgpu_clear ABI size");
 _Static_assert(sizeof(struct kgpu_read_pixels) == 20, "kgpu_read_pixels ABI size");
+_Static_assert(sizeof(struct kgpu_surface_create) == 12, "kgpu_surface_create ABI size");
+_Static_assert(sizeof(struct kgpu_surface_destroy) == 4, "kgpu_surface_destroy ABI size");
+_Static_assert(sizeof(struct kgpu_surface_bind) == 4, "kgpu_surface_bind ABI size");
 #endif
 
 #endif /* KANDELO_KGPU_STREAM_H */

@@ -7682,8 +7682,9 @@ describes slice 1, the part that is implemented. A guest program in a memory
 group creates a kernel GPU context and submits a low-level command stream.
 The kernel pins the memory the submission names and queues it. A
 kernel-owned GPU worker then runs it through a Rust executor on WebGL 2,
-and the kernel retires it. Slice 1's commands are viewport, clear color,
-clear and read pixels, on a fixed 4x4 surface per context. There is no GL
+and the kernel retires it. The commands are surface create, bind and
+destroy, viewport, clear color, clear and read pixels (stream version 2,
+from slice 2). There is no GL
 or EGL driver over kgpu, no presentation, and no fences from kgpu work. No
 shipped program, image or demo uses kgpu. GL programs still use the
 existing graphics devices described under
@@ -7696,11 +7697,11 @@ existing graphics devices described under
 | Kernel device (`crates/runtime-core/src/dri/kgpu`) | Contexts, submission sequence numbers, translation and pinning, the submission outbox, completions, waits, context loss and device reset |
 | Memory-group storage (`crates/runtime-core/src/memory_group`) | Which backing frames a guest range names, device pins, and refusing to reuse a pinned frame |
 | Kernel Wasm boundary (`crates/kernel/src/wasm_api.rs`) | The `kernel_kgpu_*` and `kernel_device_pinned_frames` exports and the `host_kgpu_kick` import |
-| Formats (`crates/shared/src/kgpu.rs`, `crates/kgpu-stream`) | Argument structs, submission and completion records (`KGPU_PROTOCOL_VERSION = 1`), and the command stream (`KGPU_STREAM_VERSION = 1`) |
-| Executor (`crates/gpu-executor`, `kandelo_gpu_executor32.wasm`) | Decoding and validating every record and stream, per-context isolation, backend calls, and one completion per record |
+| Formats (`crates/shared/src/kgpu.rs`, `crates/kgpu-stream`) | Argument structs, submission and completion records (`KGPU_PROTOCOL_VERSION = 1`), and the command stream (`KGPU_STREAM_VERSION = 2`) |
+| Executor (`crates/gpu-executor`, `kandelo_gpu_executor32.wasm`) | Decoding and validating every record and stream, each context's surface table, per-context isolation, backend calls, and one completion per record |
 | GPU worker shell (`host/src/kgpu/gpu-worker.ts`) | Transport only: rings, doorbells, the single copy of stream bytes into executor memory, and writing read-back pixels at the extents a record names |
 | `KgpuHost` (`host/src/kgpu/kgpu-host.ts`, in the kernel worker) | The GPU worker's lifecycle and moving records between the kernel and the rings |
-| WebGL 2 backend (`host/src/kgpu/webgl2-backend.ts`) | GL objects for each context's surface; it decides nothing a guest can observe |
+| WebGL 2 backend (`host/src/kgpu/webgl2-backend.ts`) | GL objects for each surface, and each context's bound surface, viewport and clear color; it decides nothing a guest can observe |
 
 The host moves records; Rust decides what they mean. The kernel validates a
 stream's header, and the executor validates the rest, because the stream is
@@ -7776,7 +7777,21 @@ executor drives a `Backend`. It uses the WebGL 2 backend through
 `kgpu_backend` imports, one import per backend call (a
 [measured choice](measurements/2026-11-27-kgpu-crossing.md)). Native
 `cargo test` uses a recording backend, and a host without a renderer uses
-a null backend.
+a null backend, which refuses context creation with `-19` (`ENODEV`).
+
+A new context has no surface. Its streams create surfaces by a nonzero
+name the driver chooses, unique within the context, sized 1 to
+`MAX_SURFACE_DIM` (4096) each way and at most 64 at once
+(`MAX_SURFACES_PER_CONTEXT`). `SurfaceBind` picks the surface that clears
+and reads target, and binding 0 leaves none. The executor checks each
+surface command against the context's table as the stream's earlier
+commands leave it, so a duplicate or unknown name, a size out of range, a
+full table, or a clear or read with no surface bound faults the context
+before any of its commands run. Destroying the bound surface leaves none
+bound, and destroying a context releases all of its surfaces. Viewport
+and clear color are per context, not per surface, as in GL. The WebGL 2
+backend gives each surface its own framebuffer with an RGBA8
+renderbuffer of its size.
 
 When the worker exits, throws, reports a fault or breaks the protocol, the
 host terminates it. This includes the loss of its WebGL context. It then
@@ -7787,7 +7802,7 @@ loses every context and unpins all in-flight work, so those waits answer
 reset happens when the group backing the worker was given is replaced.
 
 In browsers, `BrowserKernelOptions.gpuExecutorUrl` supplies the executor,
-and the worker draws with WebGL 2 on a 1x1 `OffscreenCanvas`, each context
+and the worker draws with WebGL 2 on a 1x1 `OffscreenCanvas`, each surface
 on its own framebuffer. `apps/browser-demos/test/kgpu-clear.spec.ts` runs
 `programs/kgpu-clear.c` this way in Playwright's Firefox, WebKit and
 Chromium builds.

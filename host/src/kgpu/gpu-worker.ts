@@ -175,8 +175,12 @@ class GpuShell {
   imports(): WebAssembly.ModuleImports {
     const b = this.backend;
     return {
-      create_surface: (context: number, width: number, height: number) => b.createSurface(context >>> 0, width >>> 0, height >>> 0),
-      destroy_surface: (context: number) => b.destroySurface(context >>> 0),
+      create_context: (context: number) => b.createContext(context >>> 0),
+      destroy_context: (context: number) => b.destroyContext(context >>> 0),
+      create_surface: (context: number, surface: number, width: number, height: number) =>
+        b.createSurface(context >>> 0, surface >>> 0, width >>> 0, height >>> 0),
+      destroy_surface: (context: number, surface: number) => b.destroySurface(context >>> 0, surface >>> 0),
+      bind_surface: (context: number, surface: number) => b.bindSurface(context >>> 0, surface >>> 0),
       viewport: (context: number, x: number, y: number, w: number, h: number) => b.viewport(context >>> 0, x, y, w, h),
       clear_color: (context: number, r: number, g: number, bl: number, a: number) => b.clearColor(context >>> 0, r, g, bl, a),
       clear: (context: number, mask: number) => b.clear(context >>> 0, mask >>> 0),

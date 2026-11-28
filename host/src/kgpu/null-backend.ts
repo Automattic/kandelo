@@ -4,15 +4,19 @@
  * WHY it exists: "no renderer" must fail visibly, never render nothing and
  * report success. The kernel already refuses context creation with ENODEV
  * while no renderer is set, so a null worker normally never sees a record;
- * if one does arrive, every surface creation answers ENODEV and the executor
+ * if one does arrive, every context creation answers ENODEV and the executor
  * reports the context lost with that errno.
  */
 import { ENODEV, type KgpuBackend } from "./backend.ts";
 
 export function createNullBackend(): KgpuBackend {
   return {
+    createContext: () => -ENODEV,
+    destroyContext: () => {},
+    // Unreachable: no context can exist.
     createSurface: () => -ENODEV,
     destroySurface: () => {},
+    bindSurface: () => {},
     viewport: () => {},
     clearColor: () => {},
     clear: () => {},

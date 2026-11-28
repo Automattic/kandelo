@@ -10,7 +10,10 @@
 //! Every method receives the context it acts for, and the executor only
 //! ever passes the context of the record it is handling, so a backend keeps
 //! per-context objects keyed by that id and never needs to police access
-//! across contexts itself.
+//! across contexts itself. Surfaces are keyed by `(context, surface)`: the
+//! executor has checked each name against the context's surface table, so a
+//! backend is only asked to create a name that is free, and to bind or
+//! destroy one it holds.
 
 extern crate alloc;
 
@@ -20,15 +23,38 @@ use wasm_posix_shared::Errno;
 use wasm_posix_shared::kgpu::Extent;
 
 pub trait Backend {
-    /// Allocate the context's render surface. Failure is a negative errno.
-    fn create_surface(&mut self, context: u32, width: u32, height: u32) -> Result<(), i32>;
-    fn destroy_surface(&mut self, context: u32);
+    /// Accept a new context, which holds no surface yet. A backend that
+    /// cannot render refuses here (`NullBackend` answers `ENODEV`), so a
+    /// guest learns the boundary when it creates a context. Failure is a
+    /// negative errno.
+    fn create_context(&mut self, context: u32) -> Result<(), i32>;
+    /// Release the context and every surface it still holds. Called once
+    /// per context the backend accepted, on destroy or on a fault.
+    fn destroy_context(&mut self, context: u32);
+    /// Allocate a `width`x`height` RGBA8 surface named `surface` in the
+    /// context. The executor has checked the name is nonzero and free and
+    /// both dimensions are in `1..=MAX_SURFACE_DIM`. Failure is a negative
+    /// errno.
+    fn create_surface(
+        &mut self,
+        context: u32,
+        surface: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), i32>;
+    /// Release one surface. If it is bound, the context has none bound.
+    fn destroy_surface(&mut self, context: u32, surface: u32);
+    /// Make `surface` the target of later clears and reads; 0 = none. The
+    /// viewport and clear color are context state and do not change.
+    fn bind_surface(&mut self, context: u32, surface: u32);
     fn viewport(&mut self, context: u32, x: i32, y: i32, w: i32, h: i32);
     fn clear_color(&mut self, context: u32, rgba: [f32; 4]);
     fn clear(&mut self, context: u32, mask: u32);
-    /// Read `w*h` RGBA8 pixels and write them across `dst`, byte ranges of
-    /// the memory group's shared backing. The executor has checked that
-    /// `dst` totals at least `w*h*4` bytes and names a write buffer.
+    /// Read `w*h` RGBA8 pixels of the bound surface and write them across
+    /// `dst`, byte ranges of the memory group's shared backing. The
+    /// executor has checked that a surface is bound and that `dst` totals
+    /// exactly `w*h*4` bytes of a write buffer. `clear` likewise runs only
+    /// with a surface bound.
     fn read_pixels(
         &mut self,
         context: u32,
@@ -52,10 +78,16 @@ pub struct NullBackend;
 const ENODEV: i32 = -(Errno::ENODEV as i32);
 
 impl Backend for NullBackend {
-    fn create_surface(&mut self, _: u32, _: u32, _: u32) -> Result<(), i32> {
+    fn create_context(&mut self, _: u32) -> Result<(), i32> {
         Err(ENODEV)
     }
-    fn destroy_surface(&mut self, _: u32) {}
+    fn destroy_context(&mut self, _: u32) {}
+    fn create_surface(&mut self, _: u32, _: u32, _: u32, _: u32) -> Result<(), i32> {
+        // Unreachable through the executor, as for `read_pixels`.
+        Err(ENODEV)
+    }
+    fn destroy_surface(&mut self, _: u32, _: u32) {}
+    fn bind_surface(&mut self, _: u32, _: u32) {}
     fn viewport(&mut self, _: u32, _: i32, _: i32, _: i32, _: i32) {}
     fn clear_color(&mut self, _: u32, _: [f32; 4]) {}
     fn clear(&mut self, _: u32, _: u32) {}
@@ -80,13 +112,25 @@ impl Backend for NullBackend {
 /// One backend call, as `RecordingBackend` saw it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
+    CreateContext {
+        context: u32,
+    },
+    DestroyContext {
+        context: u32,
+    },
     CreateSurface {
         context: u32,
+        surface: u32,
         width: u32,
         height: u32,
     },
     DestroySurface {
         context: u32,
+        surface: u32,
+    },
+    BindSurface {
+        context: u32,
+        surface: u32,
     },
     Viewport {
         context: u32,
@@ -114,13 +158,15 @@ pub enum Call {
 }
 
 /// Records every call so native tests can assert the exact sequence the
-/// executor issues. `lost` and `create_result` let a test model a lost
-/// device and a failing allocation.
+/// executor issues. `lost`, `create_context_result` and
+/// `create_surface_result` let a test model a lost device, a refused
+/// context and a failing allocation.
 #[derive(Debug)]
 pub struct RecordingBackend {
     pub calls: Vec<Call>,
     pub lost: bool,
-    pub create_result: Result<(), i32>,
+    pub create_context_result: Result<(), i32>,
+    pub create_surface_result: Result<(), i32>,
 }
 
 impl RecordingBackend {
@@ -128,7 +174,8 @@ impl RecordingBackend {
         RecordingBackend {
             calls: Vec::new(),
             lost: false,
-            create_result: Ok(()),
+            create_context_result: Ok(()),
+            create_surface_result: Ok(()),
         }
     }
 }
@@ -140,16 +187,33 @@ impl Default for RecordingBackend {
 }
 
 impl Backend for RecordingBackend {
-    fn create_surface(&mut self, context: u32, width: u32, height: u32) -> Result<(), i32> {
+    fn create_context(&mut self, context: u32) -> Result<(), i32> {
+        self.calls.push(Call::CreateContext { context });
+        self.create_context_result
+    }
+    fn destroy_context(&mut self, context: u32) {
+        self.calls.push(Call::DestroyContext { context });
+    }
+    fn create_surface(
+        &mut self,
+        context: u32,
+        surface: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), i32> {
         self.calls.push(Call::CreateSurface {
             context,
+            surface,
             width,
             height,
         });
-        self.create_result
+        self.create_surface_result
     }
-    fn destroy_surface(&mut self, context: u32) {
-        self.calls.push(Call::DestroySurface { context });
+    fn destroy_surface(&mut self, context: u32, surface: u32) {
+        self.calls.push(Call::DestroySurface { context, surface });
+    }
+    fn bind_surface(&mut self, context: u32, surface: u32) {
+        self.calls.push(Call::BindSurface { context, surface });
     }
     fn viewport(&mut self, context: u32, x: i32, y: i32, w: i32, h: i32) {
         self.calls.push(Call::Viewport {

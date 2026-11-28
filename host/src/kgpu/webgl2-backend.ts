@@ -3,15 +3,17 @@
  *
  * Ownership: one GPU worker owns one WebGL 2 context (from an
  * `OffscreenCanvas(1, 1)` in browsers, or an embedder's factory on Node) and
- * this backend owns every GL object in it. Each kgpu context gets its own
- * framebuffer object with an RGBA8 renderbuffer of the surface size; the 1x1
- * canvas is never drawn to.
+ * this backend owns every GL object in it. Each kgpu surface, keyed by
+ * `(context, surface)`, is a framebuffer object with an RGBA8 renderbuffer
+ * of its size; binding a surface makes it the target of that context's
+ * clears and reads. The 1x1 canvas is never drawn to.
  *
  * WHY per-context state is kept here: all kgpu contexts share one GL
- * context, whose clear color and viewport are global, so each kgpu
- * context's values are recorded and applied whenever that context's work
- * runs. Nothing a guest can observe is decided here; the executor validated
- * every call before making it.
+ * context, whose clear color, viewport and framebuffer binding are global,
+ * so each kgpu context's values are recorded and applied whenever that
+ * context's work runs. Nothing a guest can observe is decided here; the
+ * executor (crates/gpu-executor) validated every call before making it,
+ * including that a surface is bound before a clear or read.
  *
  * A `webglcontextlost` event makes `isLost()` true for good and calls
  * `onLost` once. The GPU worker treats that as the death of its renderer:
@@ -61,6 +63,13 @@ export interface KgpuGl {
 interface Surface {
   framebuffer: unknown;
   renderbuffer: unknown;
+}
+
+/** One kgpu context's GL state. The viewport starts empty: the guest
+ * driver sets it from the surface size when it first binds one. */
+interface Context {
+  surfaces: Map<number, Surface>;
+  bound: Surface | null;
   viewport: [number, number, number, number];
   clearColor: [number, number, number, number];
 }
@@ -84,7 +93,7 @@ export function createOffscreenWebgl2(): KgpuWebgl2Context | null {
 }
 
 export function createWebgl2Backend({ gl, canvas }: KgpuWebgl2Context, onLost?: () => void): KgpuBackend {
-  const surfaces = new Map<number, Surface>();
+  const contexts = new Map<number, Context>();
   let lost = false;
   canvas?.addEventListener("webglcontextlost", (event) => {
     // Without preventDefault the browser never offers a restore; slice 1
@@ -97,15 +106,34 @@ export function createWebgl2Backend({ gl, canvas }: KgpuWebgl2Context, onLost?: 
     onLost?.();
   });
   const isLost = () => lost || gl.isContextLost();
-  const bind = (context: number): Surface | null => {
-    const surface = surfaces.get(context);
-    if (!surface) return null;
-    gl.bindFramebuffer(GL.FRAMEBUFFER, surface.framebuffer);
-    return surface;
+  const release = (surface: Surface) => {
+    gl.deleteFramebuffer(surface.framebuffer);
+    gl.deleteRenderbuffer(surface.renderbuffer);
+  };
+  /** Bind the context's bound surface's framebuffer for GL work. */
+  const target = (context: number): Context | null => {
+    const state = contexts.get(context);
+    if (!state?.bound) return null;
+    gl.bindFramebuffer(GL.FRAMEBUFFER, state.bound.framebuffer);
+    return state;
   };
   return {
-    createSurface(context, width, height) {
-      if (surfaces.has(context)) return -EEXIST;
+    createContext(context) {
+      if (contexts.has(context)) return -EEXIST;
+      if (isLost()) return -EIO;
+      contexts.set(context, { surfaces: new Map(), bound: null, viewport: [0, 0, 0, 0], clearColor: [0, 0, 0, 0] });
+      return 0;
+    },
+    destroyContext(context) {
+      const state = contexts.get(context);
+      if (!state) return;
+      contexts.delete(context);
+      for (const surface of state.surfaces.values()) release(surface);
+    },
+    createSurface(context, name, width, height) {
+      const state = contexts.get(context);
+      if (!state) return -ENOENT;
+      if (state.surfaces.has(name)) return -EEXIST;
       if (isLost()) return -EIO;
       const framebuffer = gl.createFramebuffer();
       const renderbuffer = gl.createRenderbuffer();
@@ -116,44 +144,46 @@ export function createWebgl2Backend({ gl, canvas }: KgpuWebgl2Context, onLost?: 
       gl.framebufferRenderbuffer(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.RENDERBUFFER, renderbuffer);
       const complete = gl.checkFramebufferStatus(GL.FRAMEBUFFER) === GL.FRAMEBUFFER_COMPLETE;
       if (!complete || gl.getError() !== GL.NO_ERROR) {
-        gl.deleteFramebuffer(framebuffer);
-        gl.deleteRenderbuffer(renderbuffer);
+        release({ framebuffer, renderbuffer });
         return -EIO;
       }
-      surfaces.set(context, {
-        framebuffer, renderbuffer, viewport: [0, 0, width, height], clearColor: [0, 0, 0, 0],
-      });
+      state.surfaces.set(name, { framebuffer, renderbuffer });
       return 0;
     },
-    destroySurface(context) {
-      const surface = surfaces.get(context);
-      if (!surface) return;
-      surfaces.delete(context);
-      gl.deleteFramebuffer(surface.framebuffer);
-      gl.deleteRenderbuffer(surface.renderbuffer);
+    destroySurface(context, name) {
+      const state = contexts.get(context);
+      const surface = state?.surfaces.get(name);
+      if (!state || !surface) return;
+      state.surfaces.delete(name);
+      if (state.bound === surface) state.bound = null;
+      release(surface);
+    },
+    bindSurface(context, name) {
+      const state = contexts.get(context);
+      if (state) state.bound = name === 0 ? null : state.surfaces.get(name) ?? null;
     },
     viewport(context, x, y, w, h) {
-      const surface = surfaces.get(context);
-      if (surface) surface.viewport = [x, y, w, h];
+      const state = contexts.get(context);
+      if (state) state.viewport = [x, y, w, h];
     },
     clearColor(context, r, g, b, a) {
-      const surface = surfaces.get(context);
-      if (surface) surface.clearColor = [r, g, b, a];
+      const state = contexts.get(context);
+      if (state) state.clearColor = [r, g, b, a];
     },
     clear(context, mask) {
-      const surface = bind(context);
-      if (!surface) return;
+      const state = target(context);
+      if (!state) return;
       // Clears ignore the viewport but obey the scissor and color mask,
       // which this backend never changes from their defaults; set them
       // anyway so a future draw path cannot leak state into a clear.
       gl.disable(GL.SCISSOR_TEST);
       gl.colorMask(true, true, true, true);
-      gl.viewport(...surface.viewport);
-      gl.clearColor(...surface.clearColor);
+      gl.viewport(...state.viewport);
+      gl.clearColor(...state.clearColor);
       gl.clear(mask);
     },
     readPixels(context, x, y, w, h, out) {
-      if (!bind(context)) return -ENOENT;
+      if (!target(context)) return -ENOENT;
       gl.pixelStorei(GL.PACK_ALIGNMENT, 4);
       gl.readPixels(x, y, w, h, GL.RGBA, GL.UNSIGNED_BYTE, out);
       return gl.getError() === GL.NO_ERROR && !isLost() ? 0 : -EIO;

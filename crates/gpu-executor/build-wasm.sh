@@ -34,7 +34,8 @@ import { readFileSync } from "node:fs";
 const module = new WebAssembly.Module(readFileSync(process.argv[2]));
 // The executor may reach the platform only through its declared backend.
 const backend = {
-  create_surface: "function", destroy_surface: "function", viewport: "function",
+  create_context: "function", destroy_context: "function", create_surface: "function",
+  destroy_surface: "function", bind_surface: "function", viewport: "function",
   clear_color: "function", clear: "function", read_pixels: "function", is_lost: "function",
 };
 const imports = WebAssembly.Module.imports(module);
@@ -59,7 +60,7 @@ if (JSON.stringify(exportNames) !== JSON.stringify(expected)) {
 // must come back ContextLost (2) with -ENODEV, per the null-renderer rule.
 const memory = new WebAssembly.Memory({ initial: 32, maximum: 4096 });
 const stub = Object.fromEntries(Object.keys(backend).map((n) => [n, () => 0]));
-stub.create_surface = () => -19;
+stub.create_context = () => -19;
 const instance = new WebAssembly.Instance(module, { env: { memory }, kgpu_backend: stub });
 const e = instance.exports;
 if (e.ge_version() !== 1) throw new Error("Unexpected executor protocol version");

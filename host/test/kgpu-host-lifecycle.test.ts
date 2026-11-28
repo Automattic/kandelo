@@ -8,6 +8,7 @@ import { KgpuHost, type KgpuKernelPort } from "../src/kgpu/kgpu-host";
 import { MockWorkerHandle } from "../src/worker-adapter";
 import { createWebgl2Backend } from "../src/kgpu/webgl2-backend";
 import { createWebGL2Context } from "./support/kgpu-webgl2-double";
+import { EEXIST, EIO, ENOENT } from "../src/kgpu/backend";
 
 /** A worker whose termination completes only when the test says so. */
 class HeldWorker extends MockWorkerHandle {
@@ -152,11 +153,100 @@ describe("WebGL 2 backend", () => {
     const context = createWebGL2Context() as Parameters<typeof createWebgl2Backend>[0];
     let losses = 0;
     const backend = createWebgl2Backend(context, () => { losses++; });
-    expect(backend.createSurface(1, 4, 4)).toBe(0);
+    expect(backend.createContext(1)).toBe(0);
+    expect(backend.createSurface(1, 1, 4, 4)).toBe(0);
     expect(backend.isLost()).toBe(false);
     context.canvas!.dispatchEvent(new Event("kgpu-test-lose"));
     context.canvas!.dispatchEvent(new Event("webglcontextlost"));
     expect(losses).toBe(1);
     expect(backend.isLost()).toBe(true);
+    // Nothing new is allocated on a lost renderer.
+    expect(backend.createContext(2)).toBe(-EIO);
+    expect(backend.createSurface(1, 2, 4, 4)).toBe(-EIO);
+  });
+
+  /** The double, with every renderbuffer deletion recorded. */
+  function recordedDouble() {
+    const context = createWebGL2Context() as Parameters<typeof createWebgl2Backend>[0];
+    const inner = context.gl as unknown as Record<string, (...args: unknown[]) => unknown>;
+    const deleted: unknown[] = [];
+    const gl = new Proxy(inner, {
+      get(target, key) {
+        if (key === "deleteRenderbuffer") return (rb: unknown) => { deleted.push(rb); inner.deleteRenderbuffer!(rb); };
+        return Reflect.get(target, key);
+      },
+    });
+    return { context: { gl: gl as unknown as typeof context.gl, canvas: context.canvas }, deleted };
+  }
+
+  const read = (backend: ReturnType<typeof createWebgl2Backend>, context: number, w: number, h: number) => {
+    const out = new Uint8Array(w * h * 4).fill(0xee);
+    return { status: backend.readPixels(context, 0, 0, w, h, out), pixels: Array.from(out) };
+  };
+  const fill = (rgba: number[], count: number) => Array.from({ length: count }, () => rgba).flat();
+
+  it("keeps each context's named surfaces at their own sizes", () => {
+    const backend = createWebgl2Backend(recordedDouble().context);
+    expect(backend.createContext(1)).toBe(0);
+    expect(backend.createContext(1)).toBe(-EEXIST);
+    expect(backend.createContext(2)).toBe(0);
+    expect(backend.createSurface(1, 5, 2, 2)).toBe(0);
+    expect(backend.createSurface(1, 5, 2, 2)).toBe(-EEXIST);
+    expect(backend.createSurface(1, 6, 3, 1)).toBe(0);
+    // Names are per context.
+    expect(backend.createSurface(2, 5, 1, 1)).toBe(0);
+    expect(backend.createSurface(3, 5, 1, 1)).toBe(-ENOENT);
+
+    backend.bindSurface(1, 5);
+    backend.clearColor(1, 1, 0, 0, 1);
+    backend.clear(1, 0x4000);
+    backend.bindSurface(2, 5);
+    backend.clearColor(2, 0, 1, 0, 1);
+    backend.clear(2, 0x4000);
+    // Clear color is context state: rebinding keeps it.
+    backend.bindSurface(1, 6);
+    backend.clearColor(1, 0, 0, 1, 1);
+    backend.clear(1, 0x4000);
+
+    expect(read(backend, 1, 3, 1)).toEqual({ status: 0, pixels: fill([0, 0, 255, 255], 3) });
+    backend.bindSurface(1, 5);
+    expect(read(backend, 1, 2, 2)).toEqual({ status: 0, pixels: fill([255, 0, 0, 255], 4) });
+    expect(read(backend, 2, 1, 1)).toEqual({ status: 0, pixels: [0, 255, 0, 255] });
+  });
+
+  it("has no surface bound after binding 0 or destroying the bound one", () => {
+    const { context, deleted } = recordedDouble();
+    const backend = createWebgl2Backend(context);
+    expect(backend.createContext(1)).toBe(0);
+    expect(read(backend, 1, 1, 1).status).toBe(-ENOENT);
+    expect(backend.createSurface(1, 1, 1, 1)).toBe(0);
+    expect(read(backend, 1, 1, 1).status).toBe(-ENOENT);
+    backend.bindSurface(1, 1);
+    expect(read(backend, 1, 1, 1).status).toBe(0);
+    backend.bindSurface(1, 0);
+    expect(read(backend, 1, 1, 1).status).toBe(-ENOENT);
+    backend.bindSurface(1, 1);
+    backend.destroySurface(1, 1);
+    expect(deleted).toHaveLength(1);
+    expect(read(backend, 1, 1, 1).status).toBe(-ENOENT);
+    // The name is free again.
+    expect(backend.createSurface(1, 1, 1, 1)).toBe(0);
+  });
+
+  it("releases every surface of a destroyed context, and only its own", () => {
+    const { context, deleted } = recordedDouble();
+    const backend = createWebgl2Backend(context);
+    expect(backend.createContext(1)).toBe(0);
+    expect(backend.createContext(2)).toBe(0);
+    for (const name of [1, 2, 3]) expect(backend.createSurface(1, name, 1, 1)).toBe(0);
+    expect(backend.createSurface(2, 1, 1, 1)).toBe(0);
+    backend.bindSurface(2, 1);
+    backend.destroyContext(1);
+    expect(deleted).toHaveLength(3);
+    expect(read(backend, 1, 1, 1).status).toBe(-ENOENT);
+    expect(read(backend, 2, 1, 1).status).toBe(0);
+    // The id may be accepted again, with no surfaces.
+    expect(backend.createContext(1)).toBe(0);
+    expect(backend.createSurface(1, 1, 1, 1)).toBe(0);
   });
 });
