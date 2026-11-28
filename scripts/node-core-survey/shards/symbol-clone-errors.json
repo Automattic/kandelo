@@ -1,0 +1,23 @@
+{
+  "id": "symbol-clone-errors",
+  "fixtures": [],
+  "cases": [
+    {
+      "selector": "parallel/test-worker-broadcastchannel",
+      "file": "test/parallel/test-worker-broadcastchannel.js",
+      "origin": "upstream",
+      "family": "workers",
+      "modules": ["node:worker_threads"],
+      "contract": "Run the unchanged BroadcastChannel name, cloning, delivery, and closure assertions."
+    },
+    {
+      "selector": "parallel/test-kandelo-symbol-clone-errors",
+      "file": "test/parallel/test-kandelo-symbol-clone-errors.js",
+      "origin": "kandelo",
+      "family": "engine",
+      "modules": ["node:v8", "node:worker_threads"],
+      "owners": ["maintained SpiderMonkey engine bridge"],
+      "contract": "Reject primitive Symbols with the native diagnostic, preserving code units and the description length limit across serialization consumers."
+    }
+  ]
+}
