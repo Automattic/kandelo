@@ -9,6 +9,9 @@
 # flat src/ directory so this list stays a glob.
 kandelo_cc_inputs_stamp() {
     local repo_root="$1"
+    # Expand the source globs in the same order for callers such as cc-rs,
+    # which sets LC_ALL=C even when the SDK was built under another locale.
+    local -x LC_ALL=C
     cksum \
         "$repo_root/Cargo.toml" \
         "$repo_root/Cargo.lock" \
