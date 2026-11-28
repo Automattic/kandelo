@@ -30,7 +30,6 @@ impl Driver {
     /// other native display is unavailable, which is `EGL_NO_DISPLAY` and no
     /// error (§3.2).
     pub fn get_display(&mut self, native: usize) -> usize {
-        self.enter();
         thread::set_error(EGL_SUCCESS);
         if native == NO_HANDLE { DISPLAY } else { NO_HANDLE }
     }
@@ -39,7 +38,6 @@ impl Driver {
     /// platform; it defines no attributes, and its native display must be
     /// `EGL_DEFAULT_DISPLAY` (EGL_MESA_platform_surfaceless).
     pub fn get_platform_display(&mut self, platform: EGLenum, native: usize, attribs: &[EGLAttrib]) -> usize {
-        self.enter();
         let result = if platform != EGL_PLATFORM_SURFACELESS_MESA as EGLenum {
             Err(EGL_BAD_PARAMETER)
         } else if attribs.first().is_some_and(|&a| a != EGL_NONE as EGLAttrib) {
@@ -53,8 +51,7 @@ impl Driver {
     }
 
     /// `eglInitialize`. A repeat call only reports the version again; it is
-    /// not reference counted. The first call records the pid, so a fork
-    /// child is recognized (`Driver::enter`).
+    /// not reference counted.
     pub fn initialize(
         &mut self,
         dev: &mut impl Device,
@@ -62,7 +59,6 @@ impl Driver {
         major: Option<&mut EGLint>,
         minor: Option<&mut EGLint>,
     ) -> EGLBoolean {
-        self.enter();
         let result = (|| {
             if dpy != DISPLAY {
                 return Err(EGL_BAD_DISPLAY);
@@ -75,7 +71,6 @@ impl Driver {
                     self.epoch = thread::fresh_epoch();
                 }
                 self.initialized = true;
-                self.owner_pid = Some(self.pid());
             }
             if let Some(major) = major {
                 *major = 1;
@@ -92,7 +87,6 @@ impl Driver {
     /// its handle is invalid at once; those current to a thread are
     /// destroyed when released (§3.2).
     pub fn terminate(&mut self, dev: &mut impl Device, dpy: usize) -> EGLBoolean {
-        self.enter();
         let result = if dpy != DISPLAY {
             Err(EGL_BAD_DISPLAY)
         } else {
@@ -114,7 +108,6 @@ impl Driver {
     /// `eglQueryString`. With `EGL_NO_DISPLAY` it answers the client
     /// extensions and the client version.
     pub fn query_string(&mut self, dpy: usize, name: EGLint) -> Option<&'static CStr> {
-        self.enter();
         let result = if dpy == NO_HANDLE {
             match name {
                 EGL_EXTENSIONS => Ok(CLIENT_EXTENSIONS),

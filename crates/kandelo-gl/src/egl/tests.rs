@@ -413,7 +413,7 @@ fn make_current_surfaceless_ok() {
     assert_eq!(e.drv.get_current_display(), DISPLAY);
     let (_, r) = current().expect("current");
     assert_eq!(r.kgpu_context(), 2, "the probe used kgpu context 1");
-    assert_eq!(e.drv.context_mut(r).unwrap().first_bind, Some((0, 0)));
+    assert_eq!(e.drv.context_mut(r).unwrap().gl().viewport(), [0, 0, 0, 0]);
     let mut v = 0;
     assert_eq!(e.drv.query_context(DISPLAY, c, EGL_RENDER_BUFFER, Some(&mut v)), T);
     assert_eq!(v, EGL_NONE);
@@ -446,9 +446,9 @@ fn first_bind_gives_the_surface_size_once() {
     let s2 = e.pbuffer(3, 2);
     assert_eq!(e.make_current(s, c), T);
     let (_, r) = current().unwrap();
-    assert_eq!(e.drv.context_mut(r).unwrap().first_bind, Some((16, 8)));
+    assert_eq!(e.drv.context_mut(r).unwrap().gl().viewport(), [0, 0, 16, 8]);
     assert_eq!(e.make_current(s2, c), T);
-    assert_eq!(e.drv.context_mut(r).unwrap().first_bind, Some((16, 8)), "§3.7.3: only the first time");
+    assert_eq!(e.drv.context_mut(r).unwrap().gl().viewport(), [0, 0, 16, 8], "§3.7.3: only the first time");
     assert_eq!(e.drv.get_current_surface(EGL_READ), s2);
     assert_eq!(e.drv.get_current_surface(0x1234), NO_HANDLE);
     assert_eq!(error(), EGL_BAD_PARAMETER);
@@ -457,6 +457,8 @@ fn first_bind_gives_the_surface_size_once() {
     assert_eq!(e.submits(), [vec![
         Command::SurfaceCreate { surface: n, width: 16, height: 8 },
         Command::SurfaceBind { surface: n },
+        // The executor's viewport starts at 0,0,0,0 (plan ruling S6).
+        Command::Viewport { x: 0, y: 0, w: 16, h: 8 },
         Command::SurfaceCreate { surface: n2, width: 3, height: 2 },
         Command::SurfaceBind { surface: n2 },
     ]]);
@@ -535,6 +537,7 @@ fn destroy_current_surface_deferred() {
     assert_eq!(e.submits(), [vec![
         Command::SurfaceCreate { surface: name, width: 4, height: 4 },
         Command::SurfaceBind { surface: name },
+        Command::Viewport { x: 0, y: 0, w: 4, h: 4 },
         Command::SurfaceDestroy { surface: name },
     ]]);
     assert!(e.drv.surface(s).is_none());
@@ -609,6 +612,7 @@ fn swap_pbuffer_submits_without_wait() {
     assert_eq!(e.submits(), [vec![
         Command::SurfaceCreate { surface: name, width: 16, height: 8 },
         Command::SurfaceBind { surface: name },
+        Command::Viewport { x: 0, y: 0, w: 16, h: 8 },
     ]]);
     assert!(!e.dev.log().iter().any(|c| matches!(c, Call::Wait { .. })));
     assert!(e.dev.log().iter().any(|call| matches!(call, Call::Submit { context: 2, stream_context: 2, .. })));
@@ -799,31 +803,6 @@ fn get_proc_address_known_and_unknown() {
     for name in ["eglCreateWindowSurface", "eglGetPlatformDisplayEXT", "glDrawArrays", "", "eglgeterror"] {
         assert!(get_proc_address(name.as_bytes()).is_none(), "{name}");
     }
-}
-
-#[test]
-fn pid_change_drops_state_without_destroys() {
-    let mut e = Egl::new();
-    e.drv.set_test_pid(Some(100));
-    assert_eq!(e.drv.initialize(&mut e.dev, DISPLAY, None, None), T);
-    let c = e.context();
-    let s = e.pbuffer(4, 4);
-    assert_eq!(e.make_current(s, c), T);
-    let log = e.dev.calls();
-    // The fork child.
-    e.drv.set_test_pid(Some(101));
-    assert_eq!(e.drv.get_current_context(), NO_HANDLE);
-    assert_eq!(current(), None);
-    let mut v = 0;
-    assert_eq!(e.drv.query_surface(DISPLAY, s, EGL_WIDTH, Some(&mut v)), F);
-    assert_eq!(error(), EGL_NOT_INITIALIZED);
-    assert_eq!(e.dev.calls(), log, "no kgpu call: the parent's contexts are not the child's");
-    // The child may initialize anew; old handles name nothing.
-    assert_eq!(e.drv.initialize(&mut e.dev, DISPLAY, None, None), T);
-    assert_eq!(e.dev.log()[log..], [Call::ContextCreate, Call::ContextDestroy { context: 3 }]);
-    assert_eq!(e.make_current(s, c), F);
-    assert_eq!(error(), EGL_BAD_CONTEXT);
-    assert!(!e.dev.log().iter().any(|call| matches!(call, Call::ContextDestroy { context: 2 })));
 }
 
 #[test]

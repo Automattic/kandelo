@@ -11,13 +11,61 @@
 
 use super::thread::{self, DriverLock};
 use super::*;
+use crate::gles::{
+    glClear, glClearColor, glFinish, glFlush, glGetBooleanv, glGetError, glGetFloatv, glGetIntegerv, glGetString,
+    glReadPixels, glViewport,
+};
 use crate::kgpu::KgpuDevice;
 use core::ffi::{CStr, c_char, c_void};
 
 static DRIVER: DriverLock<Driver> = DriverLock::new(Driver::new());
 
+/// The `pthread_atfork` child handler: a fork child did not inherit the
+/// parent's kgpu contexts, so it drops the driver state without destroying
+/// any (`Driver::reset_after_fork`), and releases the lock another parent
+/// thread may have held.
+extern "C" fn fork_child() {
+    reset_in_fork_child(&DRIVER);
+}
+
+fn reset_in_fork_child(lock: &DriverLock<Driver>) {
+    // SAFETY: a child handler runs on the child's only thread.
+    let (mut driver, was_held) = unsafe { lock.reset_after_fork() };
+    driver.reset_after_fork(!was_held);
+}
+
+/// Registers `fork_child` once, at the first `eglInitialize`: before it no
+/// state exists to reset.
+fn register_fork_handler() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static REGISTERED: AtomicBool = AtomicBool::new(false);
+    if REGISTERED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        type Handler = Option<extern "C" fn()>;
+        unsafe extern "C" {
+            fn pthread_atfork(prepare: Handler, parent: Handler, child: Handler) -> core::ffi::c_int;
+        }
+        if unsafe { pthread_atfork(None, None, Some(fork_child)) } != 0 {
+            // Only ENOMEM is possible; a fork child would then reuse the
+            // parent's context ids, which the kernel refuses loudly.
+            crate::diag(format_args!("eglInitialize: pthread_atfork failed; fork children inherit EGL state"));
+        }
+    }
+    #[cfg(test)]
+    let _ = fork_child;
+}
+
+/// Test hook: the fork child handler, over a test's own lock.
+#[cfg(test)]
+pub(crate) fn fork_child_reset_for_test(lock: &DriverLock<Driver>) {
+    reset_in_fork_child(lock);
+}
+
 /// Runs `f` on the process's driver state, under the driver lock, with the
-/// real device. Task 4's GL entry points use it too.
+/// real device. The GL entry points reach it through `gles::Global`.
 pub fn with_driver<R>(f: impl FnOnce(&mut Driver, &mut KgpuDevice) -> R) -> R {
     let mut driver = DRIVER.lock();
     f(&mut driver, &mut KgpuDevice)
@@ -82,6 +130,7 @@ pub unsafe extern "C" fn eglGetPlatformDisplay(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn eglInitialize(dpy: Handle, major: *mut EGLint, minor: *mut EGLint) -> EGLBoolean {
     let (major, minor) = unsafe { (major.as_mut(), minor.as_mut()) };
+    register_fork_handler();
     with_driver(|d, dev| d.initialize(dev, dpy as usize, major, minor))
 }
 
@@ -239,8 +288,7 @@ pub type Proc = unsafe extern "C" fn();
 
 macro_rules! procs {
     ($($name:ident),* $(,)?) => {
-        /// Every function this library exports, by name. Task 4 adds the
-        /// GL functions here as it defines them.
+        /// Every function this library exports, by name.
         fn lookup(name: &[u8]) -> Option<Proc> {
             $(
                 if name == stringify!($name).as_bytes() {
@@ -260,6 +308,8 @@ procs! {
     eglQuerySurface, eglBindAPI, eglQueryAPI, eglCreateContext, eglDestroyContext, eglMakeCurrent,
     eglGetCurrentContext, eglGetCurrentSurface, eglGetCurrentDisplay, eglQueryContext, eglSwapBuffers,
     eglSwapInterval, eglWaitClient, eglReleaseThread, eglGetProcAddress,
+    glGetError, glGetString, glGetBooleanv, glGetIntegerv, glGetFloatv, glViewport, glClearColor,
+    glClear, glReadPixels, glFlush, glFinish,
 }
 
 /// `eglGetProcAddress` over a name without its terminator: the address of

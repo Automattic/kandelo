@@ -20,7 +20,8 @@
 extern crate alloc;
 
 pub mod egl;
+pub mod gles;
 pub mod kgpu;
 mod sys;
 
-pub use sys::{Errno, diag};
+pub use sys::{Errno, diag, not_implemented};

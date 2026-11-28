@@ -25,6 +25,10 @@ unsafe extern "C" {
     fn free(ptr: *mut c_void);
     fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
     fn aligned_alloc(align: usize, size: usize) -> *mut c_void;
+}
+
+#[cfg(not(test))]
+unsafe extern "C" {
     fn abort() -> !;
 }
 
@@ -161,6 +165,21 @@ pub fn diag(args: fmt::Arguments) {
             rest = &rest[n as usize..];
         }
     });
+}
+
+/// A defined entry point received a valid enum the driver does not model
+/// yet: it says so on stderr and ends the process with `abort()` (SIGABRT),
+/// rather than answering a made-up value (plan scope, "Only implemented
+/// entry points are defined"). Test builds panic instead, so a test can
+/// expect it.
+pub fn not_implemented(function: &str, value: u32) -> ! {
+    diag(format_args!("{function} {value:#06x} not implemented"));
+    #[cfg(not(test))]
+    unsafe {
+        abort()
+    }
+    #[cfg(test)]
+    panic!("{function} {value:#06x} not implemented")
 }
 
 #[cfg(test)]

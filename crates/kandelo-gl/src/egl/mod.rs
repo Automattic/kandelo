@@ -38,6 +38,8 @@ use alloc::collections::BTreeMap;
 
 pub use context::Context;
 pub use entry::{eglGetError, get_proc_address, with_driver};
+#[cfg(test)]
+pub(crate) use entry::fork_child_reset_for_test;
 pub use surface::Surface;
 pub use thread::{ContextRef, DisplayRef, current};
 
@@ -233,10 +235,6 @@ fn next_handle(counter: &mut usize, tag: usize) -> Result<usize> {
 pub struct Driver {
     /// `eglInitialize` succeeded and no `eglTerminate` followed.
     initialized: bool,
-    /// The pid that initialized the display. A different `getpid()` means
-    /// this is a fork child, which did not inherit the kernel's kgpu
-    /// contexts.
-    owner_pid: Option<i32>,
     /// Tags the per-thread current-context records that belong to this
     /// state. A fresh `eglInitialize` and a fork reset take a new epoch, so
     /// a thread's record from before either names nothing.
@@ -245,8 +243,6 @@ pub struct Driver {
     next_surface: usize,
     contexts: BTreeMap<usize, Context>,
     surfaces: BTreeMap<usize, Surface>,
-    #[cfg(test)]
-    test_pid: Option<i32>,
 }
 
 impl Default for Driver {
@@ -259,24 +255,26 @@ impl Driver {
     pub const fn new() -> Self {
         Self {
             initialized: false,
-            owner_pid: None,
             epoch: 0,
             next_context: 1,
             next_surface: 1,
             contexts: BTreeMap::new(),
             surfaces: BTreeMap::new(),
-            #[cfg(test)]
-            test_pid: None,
         }
     }
 
-    /// The live context `r` names, if it still exists in this state. Task 4's
-    /// GL entry points reach their context's state through this.
+    /// The live context `r` names, if it still exists in this state. The GL
+    /// entry points reach their context's state through this.
     pub fn context_mut(&mut self, r: ContextRef) -> Option<&mut Context> {
         if r.epoch != self.epoch {
             return None;
         }
         self.contexts.get_mut(&r.handle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialized_for_test(&self) -> bool {
+        self.initialized
     }
 
     /// The surface `handle` names, including one marked for deletion that
@@ -285,38 +283,24 @@ impl Driver {
         self.surfaces.get(&handle)
     }
 
-    /// Test hook: the pid `getpid()` would report, to model a fork child.
-    #[cfg(test)]
-    pub(crate) fn set_test_pid(&mut self, pid: Option<i32>) {
-        self.test_pid = pid;
-    }
-
-    fn pid(&self) -> i32 {
-        #[cfg(test)]
-        if let Some(pid) = self.test_pid {
-            return pid;
-        }
-        unsafe extern "C" {
-            fn getpid() -> i32;
-        }
-        unsafe { getpid() }
-    }
-
-    /// Every entry point that reaches driver state calls this first. In a
-    /// fork child the parent's kgpu contexts belong to the parent, so the
-    /// child forgets every display, context and surface without destroying
-    /// any kgpu context and answers as a never-initialized display; it may
+    /// The fork child's reset (`entry`'s `pthread_atfork` child handler).
+    /// The parent's kgpu contexts belong to the parent, so the child
+    /// forgets every display, context and surface without destroying any
+    /// kgpu context, and answers as a never-initialized display; it may
     /// initialize anew. The calling thread is the child's only thread, so
-    /// its current-context record is the only one to clear.
-    fn enter(&mut self) {
-        let Some(owner) = self.owner_pid else { return };
-        if owner == self.pid() {
-            return;
+    /// its current-context record is the only one to clear, and GL calls
+    /// then find no current context.
+    ///
+    /// `consistent` is false when another thread held the driver lock at
+    /// the fork: that thread may have been midway through changing this
+    /// state, so it is leaked rather than walked to free it.
+    pub(crate) fn reset_after_fork(&mut self, consistent: bool) {
+        let inherited = core::mem::replace(self, Driver::new());
+        if consistent {
+            drop(inherited);
+        } else {
+            core::mem::forget(inherited);
         }
-        self.contexts.clear();
-        self.surfaces.clear();
-        self.initialized = false;
-        self.owner_pid = None;
         self.epoch = thread::fresh_epoch();
         thread::set_current(None);
     }

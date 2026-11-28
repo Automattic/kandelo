@@ -311,7 +311,6 @@ fn deliver<'a>(
 impl Driver {
     /// `eglGetConfigs`.
     pub fn get_configs(&mut self, dpy: usize, configs: Option<&mut [usize]>, num: Option<&mut EGLint>) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| deliver(CONFIGS.iter(), configs, num));
         thread::report(result.map(|()| EGL_TRUE as EGLBoolean), EGL_FALSE as EGLBoolean)
     }
@@ -324,7 +323,6 @@ impl Driver {
         configs: Option<&mut [usize]>,
         num: Option<&mut EGLint>,
     ) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             let request = Request::parse(attribs)?;
             let mut chosen: alloc::vec::Vec<&Config> = CONFIGS.iter().filter(|c| request.matches(c)).collect();
@@ -342,7 +340,6 @@ impl Driver {
         attribute: EGLint,
         value: Option<&mut EGLint>,
     ) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             let config = by_handle(config).ok_or(EGL_BAD_CONFIG)?;
             let v = config.get(attribute).ok_or(EGL_BAD_ATTRIBUTE)?;

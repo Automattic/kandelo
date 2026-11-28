@@ -6,13 +6,15 @@
 //! submitted, without waiting, when the context is flushed: when
 //! `eglMakeCurrent` releases it, on `eglSwapBuffers` and `eglWaitClient`,
 //! and when a surface's storage is released while the context is not
-//! current. `pending` is a placeholder for Task 4's GLES command buffer.
+//! current. The stream is the context's `gles::CommandBuffer`, and its GL
+//! state is `gles::State`.
 
 use super::surface::Storage;
 use super::*;
+use crate::gles::{self, CommandBuffer};
 use crate::kgpu::Device;
 use alloc::vec::Vec;
-use kgpu_stream::{Command, Encoder, Op, RECORD_HEADER_SIZE, STREAM_HEADER_SIZE};
+use kgpu_stream::Command;
 
 /// The most surfaces one kgpu context may hold; the executor's
 /// `MAX_SURFACES_PER_CONTEXT` (`crates/gpu-executor/src/lib.rs`), which
@@ -23,58 +25,6 @@ const EIO: i32 = 5;
 const ENODEV: i32 = 19;
 const ENOMEM: i32 = 12;
 const ENOSPC: i32 = 28;
-
-/// Commands queued for the context's next submission.
-#[derive(Default)]
-pub struct Pending {
-    commands: Vec<Command>,
-}
-
-impl Pending {
-    pub fn push(&mut self, command: Command) {
-        self.commands.push(command);
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.commands.is_empty()
-    }
-
-    pub fn commands(&self) -> &[Command] {
-        &self.commands
-    }
-
-    /// One complete stream holding every queued command, sized exactly.
-    fn encode(&self, context: u32) -> Vec<u8> {
-        let op = |c: &Command| match c {
-            Command::Viewport { .. } => Op::Viewport,
-            Command::ClearColor { .. } => Op::ClearColor,
-            Command::Clear { .. } => Op::Clear,
-            Command::ReadPixels { .. } => Op::ReadPixels,
-            Command::SurfaceCreate { .. } => Op::SurfaceCreate,
-            Command::SurfaceDestroy { .. } => Op::SurfaceDestroy,
-            Command::SurfaceBind { .. } => Op::SurfaceBind,
-        };
-        let len = STREAM_HEADER_SIZE
-            + self.commands.iter().map(|c| RECORD_HEADER_SIZE + op(c).payload_size() as usize).sum::<usize>();
-        let mut bytes = alloc::vec![0u8; len];
-        let mut e = Encoder::new(&mut bytes, context);
-        for &c in &self.commands {
-            let r = match c {
-                Command::Viewport { x, y, w, h } => e.viewport(x, y, w, h),
-                Command::ClearColor { r, g, b, a } => e.clear_color(r, g, b, a),
-                Command::Clear { mask } => e.clear(mask),
-                Command::ReadPixels { x, y, w, h, buffer } => e.read_pixels(x, y, w, h, buffer),
-                Command::SurfaceCreate { surface, width, height } => e.surface_create(surface, width, height),
-                Command::SurfaceDestroy { surface } => e.surface_destroy(surface),
-                Command::SurfaceBind { surface } => e.surface_bind(surface),
-            };
-            r.expect("the stream is sized for its records");
-        }
-        let written = e.finish().expect("the stream is sized for its records");
-        debug_assert_eq!(written, len);
-        bytes
-    }
-}
 
 pub struct Context {
     pub(crate) handle: usize,
@@ -96,9 +46,10 @@ pub struct Context {
     bound_name: u32,
     /// Surfaces whose storage this context holds.
     storage_count: usize,
-    pub(crate) pending: Pending,
-    /// What `on_first_bind` was given. Task 4's GL state replaces this.
-    pub(crate) first_bind: Option<(EGLint, EGLint)>,
+    /// The records queued for the next submission.
+    pub(crate) cmds: CommandBuffer,
+    /// The OpenGL ES state, errors included.
+    pub(crate) gl: gles::State,
 }
 
 impl Context {
@@ -115,11 +66,28 @@ impl Context {
         self.lost
     }
 
-    /// The hook EGL 1.5 §3.7.3 calls for the first time a context is made
-    /// current: the GL viewport and scissor become the draw surface's size,
-    /// or 0x0 without one. Task 4 owns the GL state and moves this there.
-    pub fn on_first_bind(&mut self, width: EGLint, height: EGLint) {
-        self.first_bind = Some((width, height));
+    /// The context's OpenGL ES state.
+    pub fn gl(&self) -> &gles::State {
+        &self.gl
+    }
+
+    /// Queues `command`. A lost context queues nothing, and a failed
+    /// submission on the way (a full stream) loses the context.
+    pub(crate) fn push(&mut self, dev: &mut impl Device, call: &str, command: Command) {
+        if self.lost {
+            return;
+        }
+        if let Err(errno) = self.cmds.record(dev, command) {
+            self.fail(call, "submit", errno);
+        }
+    }
+
+    /// Queues what brings the executor's viewport and clear color to the GL
+    /// state, if a surface is bound.
+    pub(crate) fn sync_gl(&mut self, dev: &mut impl Device, call: &str) {
+        for command in self.gl.sync().into_iter().flatten() {
+            self.push(dev, call, command);
+        }
     }
 
     /// Reports a kgpu failure once and marks the context lost. `-EIO` is the
@@ -131,30 +99,20 @@ impl Context {
         self.lost = true;
     }
 
-    /// Submits the queued commands without waiting. `Err` means the
-    /// context is lost (now or before); its queue is discarded.
-    pub fn flush(&mut self, dev: &mut impl Device, call: &str) -> core::result::Result<(), ()> {
+    /// Submits the queued commands without waiting and returns the
+    /// submission's sequence number, `None` if nothing was queued. `Err`
+    /// means the context is lost (now or before); its queue is discarded.
+    pub fn flush(&mut self, dev: &mut impl Device, call: &str) -> core::result::Result<Option<u64>, ()> {
         if self.lost {
-            self.pending.commands.clear();
+            self.cmds.discard();
             return Err(());
         }
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-        let stream = self.pending.encode(self.kgpu);
-        self.pending.commands.clear();
-        match dev.submit(self.kgpu, &stream, &[]) {
-            Ok(_) => Ok(()),
-            Err(errno) => {
-                self.fail(call, "submit", errno);
-                Err(())
-            }
-        }
+        self.cmds.flush(dev).map_err(|errno| self.fail(call, "submit", errno))
     }
 
-    fn bind_name(&mut self, name: u32) {
+    fn bind_name(&mut self, dev: &mut impl Device, call: &str, name: u32) {
         if self.bound_name != name {
-            self.pending.push(Command::SurfaceBind { surface: name });
+            self.push(dev, call, Command::SurfaceBind { surface: name });
             self.bound_name = name;
         }
     }
@@ -231,7 +189,6 @@ impl Driver {
         share: usize,
         attribs: &[EGLint],
     ) -> usize {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             if thread::api() != EGL_OPENGL_ES_API as EGLenum {
                 return Err(EGL_BAD_MATCH);
@@ -278,8 +235,8 @@ impl Driver {
                 made_current: false,
                 bound_name: 0,
                 storage_count: 0,
-                pending: Pending::default(),
-                first_bind: None,
+                cmds: CommandBuffer::new(kgpu),
+                gl: gles::State::new(),
             });
             Ok(handle)
         });
@@ -289,7 +246,6 @@ impl Driver {
     /// `eglDestroyContext`. A context current to some thread is only marked;
     /// its kgpu context is destroyed once it is released (§3.7.2).
     pub fn destroy_context(&mut self, dev: &mut impl Device, dpy: usize, context: usize) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             self.live_context(context)?;
             self.contexts.get_mut(&context).expect("live").deleted = true;
@@ -301,7 +257,6 @@ impl Driver {
 
     /// `eglQueryContext`. It makes no kgpu call.
     pub fn query_context(&mut self, dpy: usize, context: usize, attribute: EGLint, value: Option<&mut EGLint>) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             let c = self.live_context(context)?;
             let v = match attribute {
@@ -322,7 +277,6 @@ impl Driver {
 
     /// `eglMakeCurrent`.
     pub fn make_current(&mut self, dev: &mut impl Device, dpy: usize, draw: usize, read: usize, context: usize) -> EGLBoolean {
-        self.enter();
         let result = self.make_current_inner(dev, dpy, draw, read, context);
         thread::report(result.map(|()| EGL_TRUE as EGLBoolean), EGL_FALSE as EGLBoolean)
     }
@@ -418,17 +372,24 @@ impl Driver {
         let name = if draw == NO_HANDLE { 0 } else { self.surfaces[&draw].name() };
         let c = self.contexts.get_mut(&context).expect("live");
         if let Some((name, (width, height))) = create {
-            c.pending.push(Command::SurfaceCreate { surface: name, width, height });
+            c.push(dev, "eglMakeCurrent", Command::SurfaceCreate { surface: name, width, height });
             c.storage_count += 1;
         }
-        c.bind_name(name);
+        c.bind_name(dev, "eglMakeCurrent", name);
         c.thread = Some(me);
         c.surface = draw;
         if !c.made_current {
+            // §3.7.3: the first time, the viewport becomes the draw
+            // surface's size, or 0x0 surfaceless.
             c.made_current = true;
             let (width, height) = size.unwrap_or((0, 0));
-            c.on_first_bind(width, height);
+            c.gl.first_bind(width, height);
         }
+        // The executor starts every context at viewport 0,0,0,0 (plan
+        // ruling S6), so binding a surface encodes the GL viewport even
+        // when it is the GL default.
+        c.gl.bind_surface(size);
+        c.sync_gl(dev, "eglMakeCurrent");
         let kgpu = c.kgpu;
         if draw != NO_HANDLE {
             let s = self.surfaces.get_mut(&draw).expect("live");
@@ -483,7 +444,7 @@ impl Driver {
             {
                 c.storage_count -= 1;
                 if !(c.deleted && c.thread.is_none()) {
-                    c.pending.push(Command::SurfaceDestroy { surface: s.name() });
+                    c.push(dev, call, Command::SurfaceDestroy { surface: s.name() });
                     // Destroying the bound surface leaves none bound.
                     if c.bound_name == s.name() {
                         c.bound_name = 0;
@@ -513,14 +474,12 @@ impl Driver {
 
     /// `eglGetCurrentContext`.
     pub fn get_current_context(&mut self) -> usize {
-        self.enter();
         thread::set_error(EGL_SUCCESS);
         self.current().map_or(NO_HANDLE, |c| c.context)
     }
 
     /// `eglGetCurrentSurface`.
     pub fn get_current_surface(&mut self, readdraw: EGLint) -> usize {
-        self.enter();
         let result = match readdraw {
             EGL_READ | EGL_DRAW => Ok(self.current().map_or(NO_HANDLE, |c| c.surface)),
             _ => Err(EGL_BAD_PARAMETER),
@@ -530,7 +489,6 @@ impl Driver {
 
     /// `eglGetCurrentDisplay`.
     pub fn get_current_display(&mut self) -> usize {
-        self.enter();
         thread::set_error(EGL_SUCCESS);
         self.current().map_or(NO_HANDLE, |_| DISPLAY)
     }
@@ -538,7 +496,6 @@ impl Driver {
     /// `eglSwapBuffers`. A pbuffer swap has no effect (§3.10.1) beyond the
     /// implicit flush (§3.10.3): queued work is submitted, never waited for.
     pub fn swap_buffers(&mut self, dev: &mut impl Device, dpy: usize, surface: usize) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             self.live_surface(surface)?;
             let current = self.current().filter(|c| c.surface == surface).ok_or(EGL_BAD_SURFACE)?;
@@ -552,7 +509,6 @@ impl Driver {
     /// `eglSwapInterval`: stored on the draw surface, clamped to the
     /// config's `EGL_MIN_SWAP_INTERVAL`..=`EGL_MAX_SWAP_INTERVAL` (0..=1).
     pub fn swap_interval(&mut self, dpy: usize, interval: EGLint) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             let current = self.current().ok_or(EGL_BAD_CONTEXT)?;
             let s = self.surfaces.get_mut(&current.surface).ok_or(EGL_BAD_SURFACE)?;
@@ -566,7 +522,6 @@ impl Driver {
     /// platform to order against, so a flush meets §3.8: later kgpu work
     /// runs after it. It does not wait.
     pub fn wait_client(&mut self, dev: &mut impl Device) -> EGLBoolean {
-        self.enter();
         let result = match self.current() {
             None => Ok(EGL_TRUE as EGLBoolean),
             Some(current) => {
@@ -574,7 +529,7 @@ impl Driver {
                     Err(EGL_BAD_CURRENT_SURFACE)
                 } else {
                     let c = self.contexts.get_mut(&current.context).expect("current");
-                    c.flush(dev, "eglWaitClient").map(|()| EGL_TRUE as EGLBoolean).map_err(|()| EGL_CONTEXT_LOST)
+                    c.flush(dev, "eglWaitClient").map(|_| EGL_TRUE as EGLBoolean).map_err(|()| EGL_CONTEXT_LOST)
                 }
             }
         };
@@ -584,7 +539,6 @@ impl Driver {
     /// `eglReleaseThread` (§3.12): releases the current context and resets
     /// the bound API. It cannot fail.
     pub fn release_thread(&mut self, dev: &mut impl Device) -> EGLBoolean {
-        self.enter();
         self.release_current(dev, "eglReleaseThread");
         thread::reset_api();
         thread::set_error(EGL_SUCCESS);

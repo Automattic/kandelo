@@ -159,7 +159,6 @@ impl Driver {
     /// `eglCreatePbufferSurface`. It makes no kgpu call: storage is created
     /// when the surface is first made current.
     pub fn create_pbuffer_surface(&mut self, dpy: usize, config: usize, attribs: &[EGLint]) -> usize {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             let config = config::by_handle(config).ok_or(EGL_BAD_CONFIG)?;
             let r = PbufferRequest::parse(attribs)?;
@@ -215,7 +214,6 @@ impl Driver {
     /// `eglDestroySurface`. A surface current to some thread is only marked;
     /// its storage is released once it is no longer current (§3.5.5).
     pub fn destroy_surface(&mut self, dev: &mut impl Device, dpy: usize, surface: usize) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             self.live_surface(surface)?;
             self.surfaces.get_mut(&surface).expect("live").deleted = true;
@@ -227,7 +225,6 @@ impl Driver {
 
     /// `eglQuerySurface`. It makes no kgpu call.
     pub fn query_surface(&mut self, dpy: usize, surface: usize, attribute: EGLint, value: Option<&mut EGLint>) -> EGLBoolean {
-        self.enter();
         let result = self.initialized_display(dpy).and_then(|()| {
             let v = self.live_surface(surface)?.query(attribute)?;
             *value.ok_or(EGL_BAD_PARAMETER)? = v;

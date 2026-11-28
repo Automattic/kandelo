@@ -7,10 +7,10 @@
 //! `DriverLock`, which every other entry point takes.
 //!
 //! The lock spins on an atomic flag. It is held only for the length of one
-//! EGL or GL call's bookkeeping, and nothing here waits on the GPU while
-//! holding it. It is not fork-safe: a fork while another thread is inside an
-//! EGL call leaves the child's copy locked, as POSIX permits for a
-//! multithreaded fork (the child may call only async-signal-safe functions).
+//! EGL or GL call's bookkeeping, and nothing waits on the GPU while holding
+//! it (plan ruling S7). A fork while another thread holds it would leave the
+//! child's copy locked; the driver's `pthread_atfork` child handler
+//! releases it (`DriverLock::reset_after_fork`) and resets the state.
 
 use super::{EGL_OPENGL_ES_API, EGL_SUCCESS, EGLenum, EGLint};
 use core::cell::{Cell, UnsafeCell};
@@ -186,6 +186,20 @@ impl<T> DriverLock<T> {
             }
         }
         DriverGuard { lock: self }
+    }
+}
+
+impl<T> DriverLock<T> {
+    /// Releases the lock in a fork child, whatever thread held it in the
+    /// parent, and returns the state with whether it was held: if it was,
+    /// that thread may have been midway through changing it.
+    ///
+    /// # Safety
+    /// The calling thread is the only thread (a `pthread_atfork` child
+    /// handler), so no guard of the lock is live.
+    pub(crate) unsafe fn reset_after_fork(&self) -> (DriverGuard<'_, T>, bool) {
+        let was_held = self.held.swap(true, Ordering::Acquire);
+        (DriverGuard { lock: self }, was_held)
     }
 }
 
