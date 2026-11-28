@@ -11,7 +11,7 @@
 // so only here do the printed pixels come from an actual GPU clear.
 import { test, expect } from '../playwright-test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { KandeloImageFs } from '../../../images/vfs/lib/kandelo-image-fs';
 import { resolveBinary } from '../../../host/src/binary-resolver';
@@ -27,6 +27,8 @@ let out: string;
 test.beforeAll(async () => {
     test.setTimeout(180000);
     requireBuiltFixtures([program]);
+    // .scratch/ is gitignored, so a fresh checkout may not have it yet.
+    mkdirSync(join(root, '.scratch'), { recursive: true });
     out = mkdtempSync(join(root, '.scratch/kgpu-clear-'));
     const grouped = join(out, 'kgpu-clear.grouped.wasm');
     execFileSync(join(root, 'sdk/bin/wasm32posix-shared-memory'), [program, '-o', grouped], { stdio: 'pipe' });
@@ -143,7 +145,13 @@ test('refuses kgpu outside a memory group with EOPNOTSUPP', async ({ page }, inf
     expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
-test('releases every pinned frame across repeated runs', async ({ page }, info) => {
+// The post-exit invariant only: after each of 20 runs exits, no device-pinned
+// frame remains, so pins do not leak across exits. The page cannot observe
+// pins mid-flight (there is deliberately no test-only hold hook, Ruling
+// R19); that pins are held while work is in flight and released only once
+// it retires is proven on Node by `exit_while_pinned_publishes_after_retired`
+// in host/test/kgpu-host.test.ts.
+test('leaves no device-pinned frames after each of 20 runs exits', async ({ page }, info) => {
     test.setTimeout(240000);
     const pageErrors = await open(page);
     const result = await machine(page, Array.from({ length: 20 }, () => ({ path: '/bin/kgpu-clear', backend: 'memory-group' as const })),
