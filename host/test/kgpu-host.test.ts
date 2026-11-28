@@ -6,7 +6,7 @@
 // (fixtures/kgpu-host-worker.ts) so a crash case cannot leak into the next.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -26,33 +26,52 @@ import { RING_DATA_BYTES } from '../src/device-worker/ring';
 
 const root = resolve(import.meta.dirname, '../..');
 const ENODEV = 19, EIO = 5;
+/** The Rust GL driver (crates/kandelo-gl/build-archive.sh). */
+const glArchive = join(root, 'local-binaries/libkandelo_gl.a');
 let directory: string, image: string;
 
+/** Build `source` the normal way (SDK, fork instrumentation, ABI stamp)
+ * and convert it to a memory-group module. */
+function grouped(source: URL, linkArgs: string[] = []): Uint8Array {
+  const fixture = compileSdkFixture(source, linkArgs, { forkInstrument: true });
+  try {
+    const out = fixture.programPath + '.grouped.wasm';
+    execFileSync(fileURLToPath(new URL('../../sdk/bin/wasm32posix-shared-memory', import.meta.url)),
+      [fixture.programPath, '-o', out], { stdio: 'pipe' });
+    return new Uint8Array(readFileSync(out));
+  } finally { fixture.cleanup(); }
+}
+
 beforeAll(async () => {
+  if (!existsSync(glArchive)) {
+    throw Error(`${glArchive} is missing; build it with scripts/dev-shell.sh bash crates/kandelo-gl/build-archive.sh`);
+  }
   mkdirSync(join(root, '.scratch'), { recursive: true });
   directory = mkdtempSync(join(root, '.scratch/kgpu-host-'));
   image = join(directory, 'rootfs.vfs');
-  const fixture = compileSdkFixture(new URL('./fixtures/kgpu-host.c', import.meta.url), [], { forkInstrument: true });
   const fs = KandeloImageFs.create();
   try {
-    const grouped = fixture.programPath + '.grouped.wasm';
-    execFileSync(fileURLToPath(new URL('../../sdk/bin/wasm32posix-shared-memory', import.meta.url)),
-      [fixture.programPath, '-o', grouped], { stdio: 'pipe' });
     fs.mkdir('/tmp', 0o1777); fs.mkdir('/bin', 0o755);
-    fs.writeFile('/bin/kgpu-host', new Uint8Array(readFileSync(grouped)), 0o755);
+    fs.writeFile('/bin/kgpu-host', grouped(new URL('./fixtures/kgpu-host.c', import.meta.url)), 0o755);
+    for (const name of ['kgpu-egl-clear', 'kgpu-egl-fork']) {
+      fs.writeFile(`/bin/${name}`, grouped(new URL(`../../programs/${name}.c`, import.meta.url), [glArchive]), 0o755);
+    }
     writeFileSync(image, await fs.saveImage());
-  } finally { fs.reset(); fixture.cleanup(); }
-}, 180_000);
+  } finally { fs.reset(); }
+}, 300_000);
 afterAll(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
 
-/** Run one scenario in a disposable kernel Worker and return its report. */
-async function scenario(name: string, renderer: 'webgl2' | 'null' = 'webgl2'): Promise<any> {
+/** Run one scenario in a disposable kernel Worker and return its report.
+ * `program` replaces the fixture for the `run` scenarios; a case that
+ * expects driver diagnostics checks stderr itself (`stderr: 'any'`). */
+async function scenario(name: string, renderer: 'webgl2' | 'null' = 'webgl2',
+  { program, stderr = 'empty' }: { program?: string; stderr?: 'empty' | 'any' } = {}): Promise<any> {
   const registration = new URL('../node_modules/tsx/dist/esm/api/index.mjs', import.meta.url).href;
   const entry = new URL('./fixtures/kgpu-host-worker.ts', import.meta.url).href;
   const worker = new Worker(`import{register}from ${JSON.stringify(registration)};register();await import(${JSON.stringify(entry)});`, {
     eval: true,
     workerData: {
-      scenario: name, renderer, image,
+      scenario: name, renderer, image, program,
       kernel: resolveBinary('kernel.wasm'),
       webgl2Factory: new URL('./support/kgpu-webgl2-double.ts', import.meta.url).href,
     },
@@ -67,7 +86,7 @@ async function scenario(name: string, renderer: 'webgl2' | 'null' = 'webgl2'): P
     });
     expect(r.failure, `${r.failure}\n${r.stack}`).toBeUndefined();
     expect(r.fatal).toBeUndefined();
-    expect(r.stderr).toBe('');
+    if (stderr === 'empty') expect(r.stderr).toBe('');
     return r;
   } finally {
     clearTimeout(timer);
@@ -186,6 +205,58 @@ describe('kgpu host', () => {
     expect(r.code).toBe(1);
     // No renderer: no GPU worker is ever started.
     expect(r.status.workersStarted).toBe(0);
+  }, 240_000);
+});
+
+// The Rust GL driver (crates/kandelo-gl) over the same path: C programs
+// that use only the Khronos EGL 1.5 and GLES 2.0 headers.
+describe('kandelo-gl on the kgpu host', () => {
+  const cleared = [0, 63, 127].map(i => `pixel ${i} 51 102 153 255`);
+
+  it('egl_clear_reads_back', async () => {
+    const r = await scenario('run', 'webgl2', { program: '/bin/kgpu-egl-clear' });
+    expect(r.code, r.stdout).toBe(0);
+    // R2: clear color (0.2, 0.4, 0.6, 1.0) reads back as 51, 102, 153, 255.
+    expect(r.stdout).toBe([...cleared, 'egl ok', ''].join('\n'));
+    expect(r.pinnedAfter).toBe(0);
+    expect(r.imagesAfter).toBe(0);
+    expect(r.status.resets).toBe(0);
+    expect(r.status.workersStarted).toBe(1);
+  }, 240_000);
+
+  it('egl_fork_child_reinitializes', async () => {
+    const r = await scenario('run', 'webgl2', { program: '/bin/kgpu-egl-fork' });
+    expect(r.code, JSON.stringify(r.outputs)).toBe(0);
+    // In pid order: the parent (which printed after waiting), then the
+    // child that reinitialized EGL and read back on its own context.
+    expect(r.outputs).toEqual(['parent ok\n', 'child ok\n']);
+    expect(r.pinnedAfter).toBe(0);
+    expect(r.imagesAfter).toBe(0);
+    expect(r.status.resets).toBe(0);
+  }, 240_000);
+
+  it('egl_without_renderer_reports_not_initialized', async () => {
+    // kgpu context creation answers -ENODEV, which eglInitialize reports
+    // as EGL_NOT_INITIALIZED with no diagnostic.
+    const r = await scenario('run', 'null', { program: '/bin/kgpu-egl-clear' });
+    expect(r.stdout).toBe('kgpu-egl-clear: eglInitialize failed: 0x3001\n');
+    expect(r.code).toBe(1);
+    expect(r.status.workersStarted).toBe(0);
+  }, 240_000);
+
+  it('egl_worker_crash_loses_context', async () => {
+    const r = await scenario('run-crash', 'webgl2', { program: '/bin/kgpu-egl-clear', stderr: 'any' });
+    // Parked: glReadPixels submitted its readback and waits on it.
+    expect(r.pinnedWhileHeld).toBeGreaterThan(0);
+    expect(r.exitedWhileHeld).toBe(false);
+    // The wait fails with EIO: one diagnostic, the context is lost, the
+    // swap reports it, and the program exits.
+    expect(r.stderr).toBe('kandelo-gl: glReadPixels: GPU context lost\n');
+    expect(r.stdout).toBe('kgpu-egl-clear: eglSwapBuffers failed: 0x300e\n');
+    expect(r.code).toBe(1);
+    expect(r.status.resets).toBe(1);
+    expect(r.pinnedAfter).toBe(0);
+    expect(r.imagesAfter).toBe(0);
   }, 240_000);
 });
 

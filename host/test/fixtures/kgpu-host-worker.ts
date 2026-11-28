@@ -20,10 +20,11 @@ import { NodeWorkerAdapter, type WorkerHandle } from '../../src/worker-adapter';
 import { createNodeGpuWorker, nodeKgpuConfig } from '../../src/kgpu-node';
 
 const { scenario, renderer } = workerData as { scenario: string; renderer: 'webgl2' | 'null' };
-/** The image path the scenarios launch; `run` launches another kgpu program
- * (host/test/kgpu-gl-link.test.ts) with no arguments. */
+/** The image path the scenarios launch; `run` and `run-crash` launch
+ * another kgpu program (host/test/kgpu-gl-link.test.ts, the EGL cases of
+ * host/test/kgpu-host.test.ts) with no arguments. */
 const program: string = workerData.program ?? '/bin/kgpu-host';
-const hold = ['exit', 'crash-exit', 'crash-wait', 'lose'].includes(scenario);
+const hold = ['exit', 'crash-exit', 'crash-wait', 'lose', 'run-crash'].includes(scenario);
 /** The `lose` scenario's first GPU worker loads the double in its
  * lose-on-first-clear mode, so the renderer is lost mid-submission. */
 const loseFirst = scenario === 'lose';
@@ -128,6 +129,23 @@ async function execute() {
   if (scenario === 'run') {
     const p = await launch();
     result.code = await within(p.exited, 60_000, 'exit');
+    result.stdout = p.out();
+    // A program that forks prints from each process; the launched one
+    // first, then its children in pid order.
+    result.outputs = [...stdout.entries()].sort(([a], [b]) => a - b).map(([, text]) => text);
+  } else if (scenario === 'run-crash') {
+    // The program's first readback pins its buffer and parks in the wait;
+    // the held GPU worker never answers it, and is then killed.
+    const p = await launch();
+    for (const deadline = Date.now() + 60_000; (await pinned()) === 0;) {
+      if (fatal || p.done() || Date.now() > deadline) throw Error(`no pinned readback: ${JSON.stringify(debug())}`);
+      await sleep(5);
+    }
+    await sleep(300);
+    result.pinnedWhileHeld = await pinned();
+    result.exitedWhileHeld = p.done();
+    await held!.kill();
+    result.code = await within(p.exited, 30_000, 'exit after kill');
     result.stdout = p.out();
   } else if (scenario === 'clear' || scenario === 'create' || scenario === 'fault') {
     const p = await launch(scenario);

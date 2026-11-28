@@ -309,10 +309,17 @@ reviewed series.
 2. **Userspace driver skeleton:** Rust `libEGL`/`libGLESv2` static libraries
    linked through the SDK into C programs (including fork-instrumented ones);
    EGL on GBM, Wayland and surfaceless; clear and swap.
+   *As built (2026-11-28):* one archive, `libkandelo_gl.a`, with EGL on the
+   surfaceless platform and pbuffers only. GBM and Wayland moved to slice 5.
+   Window swap on them needs a present path and a buffer tier the kgpu
+   executor does not have yet, and today `libgbm` and `libwayland-egl` hand
+   EGL old-stack buffers, so changing them would change the live old stack.
+   See the [slice 2 plan](2026-11-28-rust-gpu-slice2-plan.md).
 3. **State model by area,** driven by conformance families: buffers, textures
    and formats, framebuffers, draw state, drawing, queries and errors.
 4. **GLSL ES 1.00 front end,** link rules, reflection and GLSL ES 3.00 output.
-5. **Presentation and KMS** in the GPU worker; fences from completions.
+5. **Presentation and KMS** in the GPU worker; fences from completions;
+   EGL on GBM and Wayland (moved from slice 2).
 6. **Programs into the group:** demos and conformance runner.
 7. **Bring-up** of Sway+Foot, ScummVM, Freeciv, SDL2 and modeset in Firefox,
    then WebKit (including group defects found there), then Chromium.

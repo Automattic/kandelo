@@ -103,12 +103,12 @@ test('kgpu executor crossing cost per backend call @slow', async ({ page }, info
         const u = new DataView(submit.buffer);
         u.setUint32(F.submission.kind, abi.KGPU_SUBMISSION_SUBMIT, true);
         u.setUint32(F.submission.context, CONTEXT, true);
-        u.setBigUint64(F.submission.seqno, 2n, true);
+        u.setBigUint64(F.submission.seqno, 3n, true);
         u.setUint32(F.submission.streamExtentCount, 1, true);
         u.setUint32(abi.KGPU_SUBMISSION_HEADER_SIZE + F.extent.len, stream.byteLength, true);
         const setupSubmit = submit.slice();
         const su = new DataView(setupSubmit.buffer);
-        su.setBigUint64(F.submission.seqno, 3n, true);
+        su.setBigUint64(F.submission.seqno, 2n, true);
         su.setUint32(abi.KGPU_SUBMISSION_HEADER_SIZE + F.extent.len, setup.byteLength, true);
 
         const expectedPixels = Array.from({ length: 16 }, () => '51,102,153,255').join();

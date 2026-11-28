@@ -37,10 +37,11 @@
 //!
 //! A violation faults the submitting context: the backend releases it and
 //! every surface it holds, it answers `ContextLost` with a negative errno,
-//! and every later record for it answers `ContextLost` too. No other context's state is consulted or
-//! changed. No guest input reaches a panic, so hostile input can neither trap
-//! the module nor reach a neighbour. Allocation failure still aborts, but the
-//! kernel's context limit bounds what the executor allocates.
+//! and every later record for it answers `ContextLost` too. No other
+//! context's state is consulted or changed. No guest input reaches a panic,
+//! so hostile input can neither trap the module nor reach a neighbour.
+//! Allocation failure still aborts, but the kernel's context limit bounds
+//! what the executor allocates.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -123,8 +124,9 @@ impl Surfaces {
                 self.len += 1;
             }
             Command::SurfaceDestroy { surface } => {
-                let at = self.position(surface).filter(|_| surface != 0);
-                let at = at.ok_or(ENOENT)?;
+                // The table never holds name 0 (`SurfaceCreate` refuses
+                // it), so destroying 0 is `ENOENT` like any unknown name.
+                let at = self.position(surface).ok_or(ENOENT)?;
                 self.len -= 1;
                 self.names[at] = self.names[self.len];
                 if self.bound == surface {

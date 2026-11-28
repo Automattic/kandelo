@@ -7678,16 +7678,18 @@ green through the rewrite).
 
 kgpu is the foundation of the Rust GPU driver
 ([design](plans/2026-11-27-rust-gpu-driver-design.md)). This section
-describes slice 1, the part that is implemented. A guest program in a memory
-group creates a kernel GPU context and submits a low-level command stream.
-The kernel pins the memory the submission names and queues it. A
-kernel-owned GPU worker then runs it through a Rust executor on WebGL 2,
-and the kernel retires it. The commands are surface create, bind and
-destroy, viewport, clear color, clear and read pixels (stream version 2,
-from slice 2). There is no GL
-or EGL driver over kgpu, no presentation, and no fences from kgpu work. No
-shipped program, image or demo uses kgpu. GL programs still use the
-existing graphics devices described under
+describes slices 1 and 2, the parts that are implemented. A guest program
+in a memory group creates a kernel GPU context and submits a low-level
+command stream. The kernel pins the memory the submission names and queues
+it. A kernel-owned GPU worker then runs it through a Rust executor on
+WebGL 2, and the kernel retires it. The commands are surface create, bind
+and destroy, viewport, clear color, clear and read pixels (stream version
+2). Slice 2 adds a userspace EGL 1.5 and GLES 2.0 driver skeleton over
+kgpu, `crates/kandelo-gl`, which only its own test programs link (see
+[the userspace driver](#userspace-driver-slice-2)). There is no
+presentation and no fences from kgpu work. No shipped program, image or
+demo uses kgpu. GL programs still use the existing graphics devices
+described under
 [Linux-compatible graphics devices](#linux-compatible-graphics-devices).
 
 ### Who owns what
@@ -7702,6 +7704,7 @@ existing graphics devices described under
 | GPU worker shell (`host/src/kgpu/gpu-worker.ts`) | Transport only: rings, doorbells, the single copy of stream bytes into executor memory, and writing read-back pixels at the extents a record names |
 | `KgpuHost` (`host/src/kgpu/kgpu-host.ts`, in the kernel worker) | The GPU worker's lifecycle and moving records between the kernel and the rings |
 | WebGL 2 backend (`host/src/kgpu/webgl2-backend.ts`) | GL objects for each surface, and each context's bound surface, viewport and clear color; it decides nothing a guest can observe |
+| Userspace driver (`crates/kandelo-gl`, `local-binaries/libkandelo_gl.a`) | In the guest process: the EGL and GLES2 entry points, EGL and GL state, validation and errors, each context's command buffer, and its kgpu calls |
 
 The host moves records; Rust decides what they mean. The kernel validates a
 stream's header, and the executor validates the rest, because the stream is
@@ -7780,7 +7783,8 @@ executor drives a `Backend`. It uses the WebGL 2 backend through
 a null backend, which refuses context creation with `-19` (`ENODEV`).
 
 A new context has no surface. Its streams create surfaces by a nonzero
-name the driver chooses, unique within the context, sized 1 to
+name the driver chooses (`kandelo-gl` creates one for each EGL pbuffer,
+the first time it is made current), unique within the context, sized 1 to
 `MAX_SURFACE_DIM` (4096) each way and at most 64 at once
 (`MAX_SURFACES_PER_CONTEXT`). `SurfaceBind` picks the surface that clears
 and reads target, and binding 0 leaves none. The executor checks each
@@ -7805,7 +7809,8 @@ In browsers, `BrowserKernelOptions.gpuExecutorUrl` supplies the executor,
 and the worker draws with WebGL 2 on a 1x1 `OffscreenCanvas`, each surface
 on its own framebuffer. `apps/browser-demos/test/kgpu-clear.spec.ts` runs
 `programs/kgpu-clear.c` this way in Playwright's Firefox, WebKit and
-Chromium builds.
+Chromium builds, and `apps/browser-demos/test/kgpu-egl-clear.spec.ts`
+runs the driver's `programs/kgpu-egl-clear.c` the same way.
 
 ### The Node boundary
 
@@ -7816,9 +7821,121 @@ a module whose `createWebGL2Context()` returns `{ gl, canvas }`, the
 renderer is never set and context creation answers `-19`. The device does
 not pretend to draw. `host/test/kgpu-host.test.ts` runs the whole path on
 Node against a WebGL 2 test double. It covers backpressure, pins held
-across exit, worker crash and reset, and the no-renderer answer.
+across exit, worker crash and reset, and the no-renderer answer, and runs
+the userspace driver's programs: a clear and readback, a fork child that
+reinitializes EGL, the no-renderer answer and a worker crash during
+`glReadPixels`.
 
-### Known gaps in slice 1
+### Userspace driver (slice 2)
+
+`crates/kandelo-gl` is the guest side of the Rust GPU driver: one no_std
+Rust crate (core and alloc) built as one wasm32 static library,
+`local-binaries/libkandelo_gl.a`, that defines both the EGL and the GLES2
+entry points with the Khronos signatures. `crates/kandelo-gl/build-archive.sh`
+builds it with LTO, and `scripts/build-programs.sh` builds it before linking
+the `programs/kgpu-gl-*.c` and `programs/kgpu-egl-*.c` programs against it
+instead of the old-stack `libEGL.a`/`libGLESv2.a`. It is not in the sysroot:
+`-lEGL`, `-lGLESv2`, `egl.pc` and `glesv2.pc` still name the old stack
+until slice 8. The library allocates with the program's musl `malloc`, and
+a panic writes `kandelo-gl: panic: <message>` and calls `abort()`. Its only
+host import is `kandelo.kgpu.v1.__kandelo_kgpu_v1`
+(`host/test/kgpu-gl-link.test.ts` checks the linked program's imports).
+
+All EGL and GL state lives in the process and is validated there. The
+driver calls kgpu only to create and destroy contexts, submit and wait.
+Queries (`glGet*`, `glGetError`, `glGetString`, `eglQuery*`,
+`eglGetConfigAttrib`) and state setters make no kgpu call. Only
+`glReadPixels`, `glFinish` and `eglInitialize`'s device probe wait; `glFlush`
+and `eglSwapBuffers` submit without waiting. One spin lock guards the shared
+state, and no thread holds it across a wait.
+
+**EGL.** There is one display, the surfaceless platform: both
+`eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY,
+NULL)` and `eglGetDisplay(EGL_DEFAULT_DISPLAY)` return it. `eglInitialize`
+probes the device by creating and destroying one kgpu context. `-ENODEV`
+(no renderer) and `-EOPNOTSUPP` (outside a memory group) leave the display
+uninitialized with `EGL_NOT_INITIALIZED` and no diagnostic. The client
+extensions are `EGL_EXT_client_extensions EGL_MESA_platform_surfaceless`
+and the display extensions `EGL_KHR_surfaceless_context
+EGL_KHR_no_config_context`. The one config is RGBA8 with pbuffer surfaces
+and the ES2 renderable type. `eglChooseConfig` applies the EGL 1.5 Table 3.4
+defaults, which are a window surface and an ES 1 renderable, so a program
+must ask for `EGL_SURFACE_TYPE, EGL_PBUFFER_BIT` and `EGL_RENDERABLE_TYPE,
+EGL_OPENGL_ES2_BIT` to get it. Pbuffers follow §3.5.2: the size defaults to
+0x0, which is valid and is backed by 1x1 executor storage, and a size over
+4096 is `EGL_BAD_ALLOC` unless `EGL_LARGEST_PBUFFER` clamps it. A pbuffer's
+executor surface is created in the kgpu context it is first made current
+with. Contexts are ES 2.0. The error, the bound API and the current context
+are per thread (§3.12). Destroying a current context or surface, or
+terminating the display, defers deletion until it is no longer current
+(§3.7.3, §3.2). `eglSwapBuffers` on a pbuffer submits the queued commands
+and has no other effect (§3.10.1). `eglWaitClient` submits without waiting,
+since the surfaceless platform has no native rendering to order against.
+
+**GLES2.** This slice defines `glGetError`, `glGetString`, `glGetBooleanv`,
+`glGetIntegerv`, `glGetFloatv`, `glViewport`, `glClearColor`, `glClear`,
+`glReadPixels`, `glFlush` and `glFinish`. Each context keeps a sticky error
+and its GL state, and answers `glGet*` from that model with the §6.1.2
+conversions. A valid pname the skeleton does not model yet (state tables
+6.2 to 6.24) writes `kandelo-gl: <function> <enum> not implemented` and
+calls `abort()` once the driver lock is released, instead of answering a
+made-up value. With no current context, and on a lost one, every GL call
+does nothing: `glGetError` returns `GL_NO_ERROR` and `glGetString` returns
+NULL. The first make-current of a context sets its viewport to the surface
+size (0x0 if surfaceless) and encodes it even when it equals the executor's
+0x0 start. `glReadPixels` checks its arguments in this order, and none of
+the failures submits:
+
+1. A negative size is `GL_INVALID_VALUE`.
+2. A format other than `ALPHA`, `RGB` and `RGBA`, or a type other than
+   `UNSIGNED_BYTE` and the three packed types, is `GL_INVALID_ENUM`
+   (§2.5, §4.3.1).
+3. Any other pair than `RGBA`/`UNSIGNED_BYTE`, which is also the
+   implementation read pair, is `GL_INVALID_OPERATION`.
+4. With no surface, the framebuffer is incomplete:
+   `GL_INVALID_FRAMEBUFFER_OPERATION` (§4.4.5).
+5. A zero-area read does nothing.
+6. A NULL pointer, or a byte count no kgpu buffer can name, is
+   `GL_INVALID_VALUE`. GLES leaves both undefined; the driver never hands
+   the kernel address 0.
+
+A read is clipped to the EGL surface. One that lies partly outside reads
+through a staging buffer, and the pixels outside stay as they were, since
+they are undefined (§4.3.1).
+
+**Command buffers.** Each context encodes `kgpu-stream` records into a heap
+buffer as calls are made, and submits it whole. Making another context
+current submits the previous one's queue, and a record that would take the
+stream past `KGPU_MAX_STREAM` first submits what is queued.
+
+**Errors and loss.** Every kgpu error that reaches the driver writes one
+`kandelo-gl: <call> ...` line to stderr, except `-ENODEV` and `-EOPNOTSUPP`
+from the initialization probe, which are the expected boundary. `-EIO` from
+a submit or wait means the renderer lost the context: the driver writes
+`kandelo-gl: <call>: GPU context lost` once and marks the context lost.
+Later GL calls on it do nothing, and `eglSwapBuffers` and `eglMakeCurrent`
+fail with `EGL_CONTEXT_LOST`. Context creation maps `-ENOSPC` and `-ENOMEM`
+to `EGL_BAD_ALLOC`, and `-EIO` or `-ENODEV` after initialization to
+`EGL_CONTEXT_LOST`. Any other errno is reported as a driver defect: context
+creation then fails with `EGL_BAD_ALLOC`, and any other call loses the
+context. If a wait fails with anything but `-EIO`, the GPU may
+still write a staging buffer, so the driver leaks it rather than free it.
+
+**Fork.** The first `eglInitialize` registers a `pthread_atfork` child
+handler. A fork child does not own its parent's kgpu contexts, so the
+handler forgets the inherited driver state without destroying any context
+and leaves the driver lock free. It never frees that state: Kandelo's
+`fork` runs the handlers without musl's malloc-lock handling, so `free` in
+the child could deadlock. The child then sees an uninitialized display and
+no current context, and may call `eglInitialize` again.
+`programs/kgpu-egl-fork.c` runs this on Node.
+
+The native tests (`cargo test -p kandelo-gl`) drive the EGL and GL models
+over a fake device that decodes every submitted stream.
+`programs/kgpu-egl-clear.c` uses only the Khronos headers. It clears a 16x8
+pbuffer and reads it back on Node and in each browser engine.
+
+### Known gaps
 
 - **Restart is not public.** After a reset the device has no renderer until
   the kernel worker's `restartKgpu()` runs. Neither `BrowserKernel` nor
@@ -7842,10 +7959,46 @@ across exit, worker crash and reset, and the no-renderer answer.
   budgeted, but no production caller checks the machine's declared
   reservation against it.
 - **Evidence not yet gathered.** `./run.sh test browser-memory` has not
-  run against kgpu. It was waived for slice 1, because no shipped image
-  opens the device. In the browser, pins are checked only after each exit,
-  not while work is held; Node covers the held case. Native Safari and iOS
-  are unverified.
+  run against kgpu. It was waived for slices 1 and 2, because no shipped
+  image opens the device. In the browser, pins are checked only after each
+  exit, not while work is held; Node covers the held case. Native Safari
+  and iOS are unverified.
+- **Surfaceless and pbuffer only.** The driver has no GBM or Wayland
+  platform and no window surfaces. Window swap needs a present path and a
+  buffer tier the executor does not have yet, and `libgbm` and
+  `libwayland-egl` still hand EGL old-stack buffers. Both platforms move to
+  slice 5 (presentation).
+- **Not in the sysroot.** Only the `kgpu-gl-*` and `kgpu-egl-*` test
+  programs link `libkandelo_gl.a`. Slice 8 decides how `-lEGL` and
+  `-lGLESv2` reach it.
+- **wasm32 only (an initial limitation, maintainer decision 2026-11-28).**
+  kgpu needs a memory group, and groups are memory32 only; there is no
+  wasm64 Kandelo Rust target either. No package that builds for wasm64
+  uses GL today; only the old stack's own wasm64 archives and the wasm64
+  variants of its host tests do. At the switch (slice 8) the wasm64 GL
+  archives and those test variants go away with the old stack, so a
+  wasm64 GL program fails to link. Lifting the limitation depends on
+  memory groups gaining memory64.
+- **Only implemented entry points exist.** A program that calls an EGL or
+  GL function the skeleton does not define fails to link, and a valid
+  enum it does not model aborts the program with a `kandelo-gl:` line.
+- **No sharing.** `eglCreateContext` with a share context is
+  `EGL_BAD_MATCH`. A pbuffer's storage lives in the kgpu context it was
+  first made current with. Making it current with another context is
+  `EGL_BAD_MATCH`, with a diagnostic naming the limit, and so is making it
+  current after that context was destroyed, because its contents cannot
+  be moved. Each kgpu context holds at most 64 such surfaces; the 65th is
+  `EGL_BAD_ALLOC`. Slice 3 (share groups) or slice 5 (surfaces as kernel
+  buffers) lifts this.
+- **Thread exit.** A thread that exits with a context current never
+  releases it, so other threads get `EGL_BAD_ACCESS` for it, as if
+  `eglReleaseThread` had not run.
+- **Fork leaks.** A fork child leaks its copy of the parent's driver
+  state, once per fork, until it execs or exits. A fork while another
+  thread is inside an EGL or GL call is outside what POSIX allows a child
+  to rely on. If `pthread_atfork` fails, the driver reports it and retries
+  at the next `eglInitialize`; a child forked meanwhile reuses the parent's
+  context ids, which the kernel refuses.
 
 ## Signal Subsystem
 
