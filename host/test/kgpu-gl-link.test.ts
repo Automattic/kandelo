@@ -1,8 +1,9 @@
 // The Rust GL driver's toolchain contract on Node: an ordinary SDK-built C
 // program (programs/kgpu-gl-link.c) links local-binaries/libkandelo_gl.a,
 // passes fork instrumentation and the memory-group conversion, and runs
-// grouped on the real kernel. The driver archive is built by
-// crates/kandelo-gl/build-archive.sh; it is not part of the sysroot yet.
+// grouped on the real kernel, with and without a renderer. The driver
+// archive is built by crates/kandelo-gl/build-archive.sh; it is not part of
+// the sysroot yet.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -55,35 +56,52 @@ afterAll(() => { if (directory) rmSync(directory, { recursive: true, force: true
 const importNames = (bytes: Uint8Array) =>
   WebAssembly.Module.imports(new WebAssembly.Module(bytes)).map(i => `${i.module}.${i.name}`);
 
-describe('kandelo-gl link', () => {
-  it('runs a C program linked with the driver grouped on Node', async () => {
-    const registration = new URL('../node_modules/tsx/dist/esm/api/index.mjs', import.meta.url).href;
-    const entry = new URL('./fixtures/kgpu-host-worker.ts', import.meta.url).href;
-    const worker = new Worker(`import{register}from ${JSON.stringify(registration)};register();await import(${JSON.stringify(entry)});`, {
-      eval: true,
-      workerData: {
-        scenario: 'run', program: '/bin/kgpu-gl-link', renderer: 'webgl2', image,
-        kernel: resolveBinary('kernel.wasm'),
-        webgl2Factory: new URL('./support/kgpu-webgl2-double.ts', import.meta.url).href,
-      },
+/** Run the linked program grouped on Node through the real kernel, GPU
+ * host and executor; `webgl2` gives the GPU worker the WebGL 2 test double
+ * as an embedder would, `null` leaves the machine without a renderer. */
+async function run(renderer: 'webgl2' | 'null'): Promise<any> {
+  const registration = new URL('../node_modules/tsx/dist/esm/api/index.mjs', import.meta.url).href;
+  const entry = new URL('./fixtures/kgpu-host-worker.ts', import.meta.url).href;
+  const worker = new Worker(`import{register}from ${JSON.stringify(registration)};register();await import(${JSON.stringify(entry)});`, {
+    eval: true,
+    workerData: {
+      scenario: 'run', program: '/bin/kgpu-gl-link', renderer, image,
+      kernel: resolveBinary('kernel.wasm'),
+      webgl2Factory: new URL('./support/kgpu-webgl2-double.ts', import.meta.url).href,
+    },
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const r: any = await new Promise((yes, no) => {
+      timer = setTimeout(() => no(Error('kernel Worker deadline')), 150_000);
+      worker.once('message', yes);
+      worker.once('error', no);
+      worker.once('exit', code => no(Error(`worker exit ${code}`)));
     });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const r: any = await new Promise((yes, no) => {
-        timer = setTimeout(() => no(Error('kernel Worker deadline')), 150_000);
-        worker.once('message', yes);
-        worker.once('error', no);
-        worker.once('exit', code => no(Error(`worker exit ${code}`)));
-      });
-      expect(r.failure, `${r.failure}\n${r.stack}`).toBeUndefined();
-      expect(r.fatal).toBeUndefined();
-      expect(r.stderr).toBe('');
-      expect(r.code, r.stdout).toBe(0);
-      expect(r.stdout).toBe('egl error 0x3000\n');
-    } finally {
-      clearTimeout(timer);
-      await worker.terminate();
-    }
+    expect(r.failure, `${r.failure}\n${r.stack}`).toBeUndefined();
+    expect(r.fatal).toBeUndefined();
+    return r;
+  } finally {
+    clearTimeout(timer);
+    await worker.terminate();
+  }
+}
+
+describe('kandelo-gl link', () => {
+  it('initializes EGL through kgpu with a renderer', async () => {
+    const r = await run('webgl2');
+    expect(r.stderr).toBe('');
+    expect(r.code, r.stdout).toBe(0);
+    expect(r.stdout).toBe('egl error 0x3000\ninitialize 1 error 0x3000\nversion 1.5\n');
+  }, 240_000);
+
+  it('answers EGL_NOT_INITIALIZED without a renderer', async () => {
+    // kgpu context creation answers -ENODEV; the driver reports it as
+    // EGL_NOT_INITIALIZED (0x3001) and writes no diagnostic.
+    const r = await run('null');
+    expect(r.stderr).toBe('');
+    expect(r.code, r.stdout).toBe(0);
+    expect(r.stdout).toBe('egl error 0x3000\ninitialize 0 error 0x3001\n');
   }, 240_000);
 
   it('adds no import beyond an ordinary program and the kgpu extension', () => {
@@ -96,7 +114,8 @@ describe('kandelo-gl link', () => {
     expect(memories(control)).toEqual(memories(linked));
     const ordinary = new Set(importNames(control));
     const extra = importNames(linked).filter(name => !ordinary.has(name));
-    expect(extra.filter(name => name !== KGPU_IMPORT)).toEqual([]);
+    // eglInitialize's device probe keeps the real kgpu path in the link.
+    expect(extra).toEqual([KGPU_IMPORT]);
     // The driver defines its entry points; none may become a host import.
     expect(importNames(linked).filter(name => /\.egl|\.gl[A-Z]/.test(name))).toEqual([]);
   });

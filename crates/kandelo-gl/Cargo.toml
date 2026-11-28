@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Kandelo's userspace EGL and OpenGL ES driver. build-wasm.sh builds the
+# Kandelo's userspace EGL and OpenGL ES driver. build-archive.sh builds the
 # staticlib for wasm32 Kandelo guests (local-binaries/libkandelo_gl.a); the
 # rlib lets native `cargo test` drive the same state machine over
 # `kgpu::FakeDevice`.
