@@ -1,0 +1,26 @@
+{
+  "id": "atomics-wait-and-loader-hook",
+  "fixtures": [
+    "test/fixtures/es-module-loaders/assertionless-json-import.mjs",
+    "test/fixtures/experimental.json"
+  ],
+  "cases": [
+    {
+      "selector": "es-module/test-esm-assertionless-json-import",
+      "file": "test/es-module/test-esm-assertionless-json-import.js",
+      "origin": "upstream",
+      "family": "loading",
+      "modules": ["node:module"],
+      "contract": "Run the unchanged async loader and JSON import attribute assertions."
+    },
+    {
+      "selector": "parallel/test-kandelo-atomics-wait-on-node-threads",
+      "file": "test/parallel/test-kandelo-atomics-wait-on-node-threads.js",
+      "origin": "kandelo",
+      "family": "workers",
+      "modules": ["node:worker_threads"],
+      "owners": ["maintained SpiderMonkey engine bridge"],
+      "contract": "Both the main isolate and its Worker wait on shared memory and wake one another through Atomics.notify."
+    }
+  ]
+}

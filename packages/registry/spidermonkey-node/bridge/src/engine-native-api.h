@@ -1038,6 +1038,7 @@ class Isolate {
     ResourceConstraints constraints;
     FatalErrorCallback fatal_error_callback=nullptr;
     OOMErrorCallback oom_error_callback=nullptr;
+    bool allow_atomics_wait = true;
   };
   template<class T> MaybeLocal<T> GetDataFromSnapshotOnce(size_t) {
     Crash("V8 startup snapshot deserialization is unavailable");
