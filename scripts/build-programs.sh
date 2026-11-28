@@ -257,9 +257,17 @@ build_program() {
     # Static linking won't pick symbols out of libEGL.a / libGLESv2.a
     # unless the program references them, so this is a no-op for
     # non-GL programs even if the archives are appended.
-    if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](EGL|GLES[23]?)/' "$src" 2>/dev/null; then
-        extra_libs+=("$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a")
-    fi
+    # kgpu-gl-* and kgpu-egl-* programs link the Rust driver
+    # (libkandelo_gl.a) instead; appending the old-stack archives would
+    # let them resolve whatever the new driver does not define yet.
+    case "$name" in
+        kgpu-gl-*|kgpu-egl-*) ;;
+        *)
+            if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](EGL|GLES[23]?)/' "$src" 2>/dev/null; then
+                extra_libs+=("$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a")
+            fi
+            ;;
+    esac
 
     echo "  Compiling $name..."
     # WHY: a failed compile or instrumentation pass must not leave a raw or
@@ -678,6 +686,18 @@ if ls "$REPO_ROOT"/programs/libinput_smoke.c >/dev/null 2>&1; then
     LIBINPUT_MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
 fi
 
+# kandelo-gl: the Rust EGL/GLES driver (crates/kandelo-gl), built as one
+# wasm32 static library. It is not in the sysroot yet (slice 8 decides how
+# -lEGL/-lGLESv2 reach it), so only the kgpu-gl-*/kgpu-egl-* programs link
+# it, by path. Built inline like libwpkdraw; cargo makes a current build
+# cheap.
+KANDELO_GL_ARCHIVE="$REPO_ROOT/local-binaries/libkandelo_gl.a"
+if compgen -G "$REPO_ROOT/programs/kgpu-gl-*.c" >/dev/null ||
+   compgen -G "$REPO_ROOT/programs/kgpu-egl-*.c" >/dev/null; then
+    echo "==> Building kandelo-gl (Rust EGL/GLES driver archive)..."
+    bash "$REPO_ROOT/crates/kandelo-gl/build-archive.sh"
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -698,6 +718,12 @@ for src in "$REPO_ROOT/programs/"*.c; do
         libdrm-kms-smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
+            ;;
+        kgpu-gl-*.c|kgpu-egl-*.c)
+            # The Rust driver alone supplies EGL and GLES (the Khronos
+            # headers come from the sysroot). build_program skips the
+            # old-stack auto-append for these names.
+            build_program "$src" "$OUT_DIR_32" "$KANDELO_GL_ARCHIVE"
             ;;
         wpkdraw_smoke.c)
             # PR7 Phase 1: links the in-tree CPU rasterizer built above.

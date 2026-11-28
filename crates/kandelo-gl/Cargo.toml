@@ -1,0 +1,28 @@
+[package]
+name = "kandelo-gl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Kandelo's userspace EGL and OpenGL ES driver. build-wasm.sh builds the
+# staticlib for wasm32 Kandelo guests (local-binaries/libkandelo_gl.a); the
+# rlib lets native `cargo test` drive the same state machine over
+# `kgpu::FakeDevice`.
+[lib]
+name = "kandelo_gl"
+crate-type = ["staticlib", "rlib"]
+# The crate is no_std outside tests and only a wasm32 build supplies its
+# allocator and panic handler, so a native non-test build (which doctests
+# need) cannot link.
+doctest = false
+
+[features]
+# Exposes `kgpu::FakeDevice` outside this crate's own unit tests.
+fake = []
+
+[dependencies]
+kgpu-stream = { path = "../kgpu-stream" }
+# The kandelo.kgpu.v1 argument structs and constants, from their single
+# definition (the C header <kandelo/kgpu.h> is generated from the same).
+wasm-posix-shared = { path = "../shared" }

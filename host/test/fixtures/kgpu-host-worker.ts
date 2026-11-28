@@ -20,6 +20,9 @@ import { NodeWorkerAdapter, type WorkerHandle } from '../../src/worker-adapter';
 import { createNodeGpuWorker, nodeKgpuConfig } from '../../src/kgpu-node';
 
 const { scenario, renderer } = workerData as { scenario: string; renderer: 'webgl2' | 'null' };
+/** The image path the scenarios launch; `run` launches another kgpu program
+ * (host/test/kgpu-gl-link.test.ts) with no arguments. */
+const program: string = workerData.program ?? '/bin/kgpu-host';
 const hold = ['exit', 'crash-exit', 'crash-wait', 'lose'].includes(scenario);
 /** The `lose` scenario's first GPU worker loads the double in its
  * lose-on-first-clear mode, so the renderer is lost mid-submission. */
@@ -90,13 +93,13 @@ async function execute() {
     }
     return lines(pid, prefix)[0]!;
   };
-  /** Launch /bin/kgpu-host grouped; `exited` settles when its exit publishes. */
+  /** Launch `program` grouped; `exited` settles when its exit publishes. */
   const launch = async (...args: string[]) => {
     const pid = await retry(() => kernel.createProcess(CAPTURED_STDIO));
     if (args[0] === 'lose') await retry(() => kernel.installHostStdinPipe(pid));
     let done = false;
     const exited = new Promise<number>(resolve => exits.set(pid, code => { done = true; resolve(code); }));
-    const launched = await kernel.launchInitialPath(pid, '/bin/kgpu-host', ['kgpu-host', ...args], [],
+    const launched = await kernel.launchInitialPath(pid, program, [program.slice(program.lastIndexOf('/') + 1), ...args], [],
       async request => ({ onCommitFailure: () => {}, startAfterCommit: async () => {
         await session.launch(pid, request.targetBytes, request.targetModule, request.argv, request.envp, 2048, 8,
           kernel.takeCommittedExecSecureExec(pid), true);
@@ -122,7 +125,11 @@ async function execute() {
 
   note(scenario);
   const result: Record<string, unknown> = {};
-  if (scenario === 'clear' || scenario === 'create' || scenario === 'fault') {
+  if (scenario === 'run') {
+    const p = await launch();
+    result.code = await within(p.exited, 60_000, 'exit');
+    result.stdout = p.out();
+  } else if (scenario === 'clear' || scenario === 'create' || scenario === 'fault') {
     const p = await launch(scenario);
     result.code = await within(p.exited, 60_000, 'exit');
     result.stdout = p.out();

@@ -4,6 +4,7 @@ members = [
     "crates/shared",
     "crates/program-abi",
     "crates/kgpu-stream",
+    "crates/kandelo-gl",
     "crates/gpu-executor",
     "crates/runtime-core",
     "crates/overlay-prototype",
